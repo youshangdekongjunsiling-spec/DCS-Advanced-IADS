@@ -1,9 +1,70 @@
 -- === EA-18G EW Script by Timberwolf - Minimal Update ===
 -- 基于原始脚本的最小化修改版本
 -- 只修改导弹诱爆逻辑，其他功能保持不变
--- 修改：使用新的干扰值计算和0.5秒循环频率
+-- 修改：使用新的干扰值计算和1秒循环频率
 -- Requires MIST to be loaded before this script
-trigger.action.outText("EA-18G 电子战脚本已加载 (最小化更新版)", 10)
+trigger.action.outText("EA-18G 电子战脚本已加载 (Flyingsampig版)", 10)
+
+-- === SAFE wrapper: prevent silent loop crashes ===
+local function SAFE(name, fn)
+    return function(...)
+        local args = {...}
+        local ok, ret = xpcall(function() return fn(unpack(args)) end, function(err)
+            env.error(string.format("[EW:%s] %s\n%s", name, tostring(err), debug.traceback()), false)
+            return nil  -- 不再续约
+        end)
+        return ret
+    end
+end
+
+-- === Radar helpers: define BEFORE any use (global, not local) ===
+function isRadarishUnit(u)
+    if not u or not u.isExist or not u:isExist() then return false end
+    return u:hasAttribute("SAM SR") or u:hasAttribute("SAM TR")
+        or u:hasAttribute("SAM STR") or u:hasAttribute("EWR")
+end
+
+function pickRadarLeadUnit(g)
+    if not g or not g.isExist or not g:isExist() then return nil end
+    local units = g:getUnits()
+    if not units then return nil end
+    for _, u in ipairs(units) do
+        if isRadarishUnit(u) then return u end
+    end
+    local u1 = units[1]
+    return (u1 and u1.isExist and u1:isExist()) and u1 or nil
+end
+
+function getNatoName(unit)
+    local typeName = unit:getTypeName()
+    local mapping = {
+        ["S-300PS 40B6M tr"] = "SA-10 TR",
+        ["S-300PS 40B6MD sr"] = "SA-10 SR",
+        ["S-300PS 64H6E sr"] = "SA-10 BB",
+        ["SNR_75V"] = "SA-2",
+        ["Kub STR"] = "SA-6",
+        ["Tor 9A331"] = "SA-15",
+        ["Buk SR 9S18M1"] = "SA-11 SR",
+        ["SA-11 Buk LN 9A310M1"] = "SA-11 TR",
+        ["SA-17 Buk M1-2 LN"] = "SA-17",
+        ["Roland ADS"] = "Roland",
+        ["Patriot str"] = "Patriot",
+        ["Hawk tr"] = "Hawk TR",
+        ["Hawk sr"] = "Hawk SR"
+    }
+    return mapping[typeName] or typeName
+end
+
+-- ESM 标记相关常量
+local ESM_MARK_COAL = coalition.side.BLUE
+local ESM_MARK_READONLY = true
+local g_esmMarkUid = 910000
+
+function addCoalMark(text, pos)
+    g_esmMarkUid = g_esmMarkUid + 1
+    trigger.action.markToCoalition(g_esmMarkUid, text, pos, ESM_MARK_COAL, ESM_MARK_READONLY, "ELINT")
+    return g_esmMarkUid
+end
 
 local jammerUnits = {
   "Growler"
@@ -34,6 +95,21 @@ local lastReportTime = {}
 local trackedMissiles = {}
 local missileUID = 1
 local suppressedSAMs = {}
+
+-- === ESM / ELINT（基于 RWR） ===
+local ESM_TICK            = 1.0          -- 判定周期（秒）
+local ESM_DWELL_SEC       = 30           -- 连续探测阈值（秒）
+local ESM_DROPOUT_SEC     = 2.0          -- 允许短丢失（秒）
+local ESM_MAX_RANGE_M     = 80 * 1852    -- 80nm
+local ESM_REQUIRE_LOS     = true         -- 是否要求地形LOS
+-- ESM 标记常量已移动到文件开头
+
+local esmState = {}       -- [jammerName] = { targetUnitName=..., dwell=0, lastSeen=0, markId=nil, lastProgressReport=0 }
+local esmMenus = {}       -- [jammerName] = {root=..., listRoot=...}
+-- g_esmMarkUid 已移动到文件开头
+
+-- ESM 进度报告间隔
+local ESM_PROGRESS_INTERVAL = 5  -- 每5秒报告一次进度
 
 -- 修改：导弹循环间隔改为0.5秒
 local missileUpdateInterval = 1
@@ -477,6 +553,264 @@ local function missileLoop()
     return timer.getTime() + missileUpdateInterval
 end
 
+-- ESM 辅助函数：检查单个雷达单位是否开机
+local function checkRadarUnitActive(unit)
+    local methods = {
+        unit_exists = false,
+        unit_radar_on = false,
+        unit_life = false,
+        has_tracked_obj = false
+    }
+
+    local detectionMethods = {}
+    local isActive = false
+    local trackedObj = nil
+
+    -- 方法1: 检查单位是否存在
+    if unit and unit:isExist() then
+        methods.unit_exists = true
+    else
+        return false, {}, methods, nil  -- 单位不存在直接返回
+    end
+
+    -- 方法2: 检查生命值
+    local life = unit:getLife()
+    local life0 = unit:getLife0()
+    if life and life0 and life > 0 and life0 > 0 and (life / life0) > 0.1 then -- 生命值超过10%
+        methods.unit_life = true
+    else
+        return false, {}, methods, nil  -- 单位已毁坏
+    end
+
+    -- 方法3: 使用正确的 Unit.getRadar() 方法检查雷达开机状态
+    if unit.getRadar then
+        local radarOn, trackedObject = unit:getRadar()
+        if radarOn then
+            methods.unit_radar_on = true
+            isActive = true
+            table.insert(detectionMethods, "雷达开机")
+
+            if trackedObject then
+                methods.has_tracked_obj = true
+                table.insert(detectionMethods, "正在跟踪")
+                trackedObj = trackedObject
+            end
+        end
+    end
+
+    return isActive, detectionMethods, methods, trackedObj
+end
+
+-- ESM 循环函数 - 要求雷达真正开机且无地形阻挡持续30秒
+local function esmLoop()
+    local now = timer.getTime()
+
+    -- 运行计数器调试
+    if not _ESM_LOOP_COUNT then
+        _ESM_LOOP_COUNT = 0
+    end
+    _ESM_LOOP_COUNT = _ESM_LOOP_COUNT + 1
+
+    -- 全局 ESM 循环调试信息（每30秒一次）
+    if not _ESM_LOOP_DEBUG_LAST then
+        _ESM_LOOP_DEBUG_LAST = 0
+    end
+    if (now - _ESM_LOOP_DEBUG_LAST) >= 10 then  -- 改为10秒间隔
+        local activeTargets = 0
+        for _, jammer in ipairs(jammerUnits) do
+            if esmState[jammer] and esmState[jammer].targetUnitName then
+                activeTargets = activeTargets + 1
+            end
+        end
+        -- 始终显示调试信息，包括运行计数
+        env.info(string.format("[ESM循环调试] 计数=%d, 时间=%.1fs, 活跃目标=%d", _ESM_LOOP_COUNT, now, activeTargets))
+
+        -- 如果有活跃目标，同时向相关群组发送消息
+        if activeTargets > 0 then
+            for _, jammer in ipairs(jammerUnits) do
+                if esmState[jammer] and esmState[jammer].targetUnitName and jammerGroupIDs[jammer] then
+                    trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                        string.format("🔍 ESM循环状态检查\n计数: %d | 时间: %.1fs\n目标: %s",
+                            _ESM_LOOP_COUNT, now, esmState[jammer].targetUnitName), 3)
+                    break  -- 只发送一次
+                end
+            end
+        end
+        _ESM_LOOP_DEBUG_LAST = now
+    end
+
+    for _, jammer in ipairs(jammerUnits) do
+        local st = esmState[jammer]
+        local me = Unit.getByName(jammer)
+
+        -- 调试：直接检查状态（首次调试）
+        if _ESM_LOOP_COUNT <= 5 and jammerGroupIDs[jammer] then
+            local stStatus = st and "存在" or "nil"
+            local targetStatus = (st and st.targetUnitName) and st.targetUnitName or "无目标"
+            local meStatus = (me and me:isExist()) and "存在" or "不存在"
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                string.format("🐛 ESM状态[%d]: 干扰器=%s, st=%s, 目标=%s, me=%s",
+                    _ESM_LOOP_COUNT, jammer, stStatus, targetStatus, meStatus), 3)
+        end
+
+        -- 调试：打印 ESM 循环状态
+        if st and st.targetUnitName then
+            local debugPrefix = string.format("[ESM循环] %s -> %s: ", jammer, st.targetUnitName)
+            if jammerGroupIDs[jammer] then
+                -- 每10秒输出一次调试信息以避免刷屏
+                local debugInterval = 10
+                if not st.lastDebugReport then
+                    st.lastDebugReport = 0
+                end
+                if (now - st.lastDebugReport) >= debugInterval then
+                    trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                        debugPrefix .. "循环运行中...", 2)
+                    st.lastDebugReport = now
+                end
+            end
+        end
+        if st and st.targetUnitName and me and me:isExist() then
+            local targetUnit = Unit.getByName(st.targetUnitName)
+            if not (targetUnit and targetUnit:isExist()) then
+                if jammerGroupIDs[jammer] then
+                    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "ESM：目标单位丢失，停止监听 "..st.targetUnitName, 4)
+                end
+                st.targetUnitName = nil
+                st.dwell = 0
+                st.lastSeen = 0
+            else
+                -- 使用正确的 Unit.getRadar() 方法检查单个雷达单位的开机状态
+                local radarActive, detectionMethods, unitMethods, trackedObj = checkRadarUnitActive(targetUnit)
+
+                -- 计算到目标雷达单位的距离
+                local meP = me:getPoint()
+                local rp = targetUnit:getPoint()
+                local dx, dz = rp.x - meP.x, rp.z - meP.z
+                local dist = math.sqrt(dx*dx + dz*dz)
+                local distNM = math.floor(dist / 1852 + 0.5)
+                local inRange = dist <= ESM_MAX_RANGE_M
+                local losOK = land.isVisible(meP, rp)
+
+                local detectionStr = #detectionMethods > 0 and ("(" .. table.concat(detectionMethods, ",") .. ")") or "(无探测)"
+                local losStr = losOK and "LOS:通" or "LOS:阻"
+                local statusStr = radarActive and "开机" or "关机"
+                local trackStr = trackedObj and ("跟踪:" .. tostring(trackedObj)) or ""
+
+                -- 初始化进度报告时间
+                if not st.lastProgressReport then
+                    st.lastProgressReport = 0
+                end
+
+                -- 调试：详细的三门槛诊断（每30秒一次，避免刷屏）
+                if not st.lastGateReport then
+                    st.lastGateReport = 0
+                end
+                if (now - st.lastGateReport) >= 30 and jammerGroupIDs[jammer] then
+                    local unitName = getNatoName(targetUnit)
+                    local gateResult = ""
+                    gateResult = gateResult .. string.format("🚪 门槛检查 [%s]\n", unitName)
+                    gateResult = gateResult .. string.format("1️⃣ 距离: %.1fnm/%dnm %s\n", distNM, math.floor(ESM_MAX_RANGE_M/1852), inRange and "✅" or "❌")
+                    gateResult = gateResult .. string.format("2️⃣ 地形: %s %s\n", losStr, losOK and "✅" or "❌")
+                    gateResult = gateResult .. string.format("3️⃣ 雷达: %s %s\n", statusStr, radarActive and "✅" or "❌")
+                    if radarActive then
+                        gateResult = gateResult .. string.format("   检测方法: %s\n", detectionStr)
+                        if trackedObj then
+                            gateResult = gateResult .. string.format("   跟踪目标: %s\n", trackStr)
+                        end
+                    end
+                    gateResult = gateResult .. string.format("🎯 综合结果: %s", (inRange and losOK and radarActive) and "累积中✅" or "等待中⏳")
+
+                    trigger.action.outTextForGroup(jammerGroupIDs[jammer], gateResult, 8)
+                    st.lastGateReport = now
+                end
+
+                if inRange and losOK and radarActive then
+                    -- 雷达开机且满足条件，累积时间
+                    local oldDwell = st.dwell
+                    st.dwell = math.min(ESM_DWELL_SEC, st.dwell + ESM_TICK)
+                    st.lastSeen = now
+
+                    -- 每5秒或首次开始计时时报告进度
+                    local shouldReport = false
+                    if st.dwell <= ESM_TICK then
+                        -- 刚开始计时
+                        shouldReport = true
+                        st.lastProgressReport = now
+                    elseif (now - st.lastProgressReport) >= ESM_PROGRESS_INTERVAL then
+                        -- 达到报告间隔
+                        shouldReport = true
+                        st.lastProgressReport = now
+                    end
+
+                    if jammerGroupIDs[jammer] and shouldReport then
+                        local progressPercent = math.floor((st.dwell / ESM_DWELL_SEC) * 100)
+                        local unitName = getNatoName(targetUnit)
+
+                        -- 格式化坐标信息
+                        local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
+
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                            string.format("🔍 ESM进度：%s\n📍 位置：%s (%dnm %s)\n⏱️  计时：%.1f/%.0fs (%d%%)\n📡 状态：%s %s %s",
+                                unitName, coordStr, distNM, losStr, st.dwell, ESM_DWELL_SEC, progressPercent, statusStr, detectionStr, trackStr), 8)
+                    end
+                else
+                    -- 雷达关机或不满足条件，立即重置计时
+                    if st.dwell > 0 and jammerGroupIDs[jammer] then
+                        local reason = ""
+                        if not inRange then reason = reason .. "超出范围 " end
+                        if not losOK then reason = reason .. "地形阻挡 " end
+                        if not radarActive then reason = reason .. "雷达关机 " end
+
+                        local unitName = getNatoName(targetUnit)
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                            string.format("❌ ESM中断：%s\n📍 %dnm | %s | %s %s\n🔄 计时重置：%.1fs → 0s\n💡 原因：%s",
+                                unitName, distNM, losStr, statusStr, detectionStr, st.dwell, reason), 6)
+                    end
+                    st.dwell = 0
+                    st.lastSeen = 0
+                    st.lastProgressReport = 0
+                end
+
+                -- 检查是否达到定位条件
+                if st.dwell >= ESM_DWELL_SEC then
+                    env.info(string.format("[ESM成功调试] 达到定位条件: dwell=%.1fs >= %ds", st.dwell, ESM_DWELL_SEC))
+                    local nato = getNatoName(targetUnit)
+                    local txt = string.format("ELINT FIX: %s (%s)\n持续开机≥%ds", targetUnit:getName(), nato, ESM_DWELL_SEC)
+                    st.markId = addCoalMark(txt, rp)
+                    env.info(string.format("[ESM成功调试] 标记已创建: ID=%d", st.markId))
+
+                    -- 格式化详细的成功报告
+                    local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
+
+                    -- 尝试获取MGRS坐标（如果coord库可用）
+                    local mgrsStr = "N/A"
+                    if coord and coord.LLtoMGRS and coord.LOtoLL then
+                        local success, mgrs = pcall(function()
+                            return coord.LLtoMGRS(coord.LOtoLL(rp))
+                        end)
+                        if success and mgrs and mgrs.MGRSDigits then
+                            mgrsStr = mgrs.MGRSDigits
+                        end
+                    end
+
+                    if jammerGroupIDs[jammer] then
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                            string.format("✅ ESM定位成功！\n🎯 目标：%s (%s)\n📍 坐标：%s\n🗺️  MGRS：%s\n📡 雷达：%s\n⏱️  用时：%.1fs\n🏷️  标记ID：%d\n📍 已在F10地图标注",
+                                targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId), 10)
+                        env.info(string.format("[ESM成功调试] 成功消息已发送到群组 %d", jammerGroupIDs[jammer]))
+                    else
+                        env.info("[ESM成功调试] 警告: jammerGroupIDs[jammer] 为 nil，无法发送成功消息")
+                    end
+
+                    -- 重置计时，允许重复定位
+                    st.dwell, st.lastSeen, st.lastProgressReport = 0, 0, 0
+                end
+            end
+        end
+    end
+    return now + ESM_TICK
+end
+
 local function getBearing(from, to)
     local dx = to.x - from.x
     local dz = to.z - from.z
@@ -485,24 +819,75 @@ local function getBearing(from, to)
     return math.floor(bearing + 0.5)
 end
 
-local function getNatoName(unit)
-    local typeName = unit:getTypeName()
-    local mapping = {
-        ["S-300PS 40B6M tr"] = "SA-10 TR",
-        ["S-300PS 40B6MD sr"] = "SA-10 SR",
-        ["S-300PS 64H6E sr"] = "SA-10 BB",
-        ["SNR_75V"] = "SA-2",
-        ["Kub STR"] = "SA-6",
-        ["Tor 9A331"] = "SA-15",
-        ["Buk SR 9S18M1"] = "SA-11 SR",
-        ["SA-11 Buk LN 9A310M1"] = "SA-11 TR",
-        ["SA-17 Buk M1-2 LN"] = "SA-17",
-        ["Roland ADS"] = "Roland",
-        ["Patriot str"] = "Patriot",
-        ["Hawk tr"] = "Hawk TR",
-        ["Hawk sr"] = "Hawk SR"
-    }
-    return mapping[typeName] or typeName
+-- 已移动到文件开头的全局函数
+
+-- addCoalMark 已移动到文件开头
+
+-- 正确的雷达开机状态检测（使用 Unit.getRadar()）
+
+-- 检查雷达组的开机状态（使用正确的 Unit.getRadar() 方法）
+local function checkRadarGroupActive(group, debugGroupName)
+    if not group or not group:isExist() then
+        return false, {}, nil, {}, "组无效"
+    end
+
+    local activeRadars = {}
+    local detectionMethods = {}
+    local bestRadarUnit = nil
+    local groupActive = false
+    local debugInfo = ""
+
+    debugInfo = debugInfo .. string.format("\n  检查组 %s:\n", debugGroupName or group:getName())
+
+    local units = group:getUnits()
+    debugInfo = debugInfo .. string.format("    组内单位数: %d\n", #units)
+
+    for i, unit in ipairs(units) do
+        if unit and unit:isExist() then
+            local unitType = unit:getTypeName()
+            local isRadar = isRadarishUnit(unit)
+            debugInfo = debugInfo .. string.format("    单位%d: %s | 是雷达:%s", i, unitType, isRadar and "是" or "否")
+
+            if isRadar then
+                -- 使用正确的 Unit.getRadar() 方法检测雷达开机状态
+                local unitActive, unitDetections, allMethods, trackedObj = checkRadarUnitActive(unit)
+
+                -- 显示检测方法的结果
+                local methodStr = string.format("存在:%s,生命:%s,雷达:%s,跟踪:%s",
+                    allMethods.unit_exists and "√" or "×",
+                    allMethods.unit_life and "√" or "×",
+                    allMethods.unit_radar_on and "√" or "×",
+                    allMethods.has_tracked_obj and "√" or "×"
+                )
+
+                local detectionStr = #unitDetections > 0 and ("(" .. table.concat(unitDetections, ",") .. ")") or "(无探测)"
+                local trackStr = trackedObj and ("跟踪:" .. tostring(trackedObj)) or ""
+
+                debugInfo = debugInfo .. string.format(" | 开机:%s %s %s\n    检测: %s\n",
+                    unitActive and "是" or "否", detectionStr, trackStr, methodStr)
+
+                if unitActive then
+                    groupActive = true
+                    table.insert(activeRadars, unitType)
+                    if not bestRadarUnit then bestRadarUnit = unit end
+                    for _, method in ipairs(unitDetections) do
+                        if not detectionMethods[method] then
+                            detectionMethods[method] = true
+                            table.insert(detectionMethods, method)
+                        end
+                    end
+                end
+            else
+                debugInfo = debugInfo .. "\n"
+            end
+        else
+            debugInfo = debugInfo .. string.format("    单位%d: 不存在或已销毁\n", i)
+        end
+    end
+
+    debugInfo = debugInfo .. string.format("  结果: 组状态=%s, 活跃雷达=%d\n", groupActive and "开机" or "关机", #activeRadars)
+
+    return groupActive, activeRadars, bestRadarUnit, detectionMethods, debugInfo
 end
 
 local function setupMenus()
@@ -645,6 +1030,149 @@ end
                     end)
                 end
 
+                -- === ESM / ELINT（RWR 目标列表） ===
+                local esmRoot = missionCommands.addSubMenuForGroup(gid, "ESM / ELINT (RWR)", root)
+                esmMenus[jammer] = { root = esmRoot }
+
+                -- 动态生成"开机雷达目标列表（≤80nm）"，只显示当前开机的雷达
+                missionCommands.addCommandForGroup(gid, "刷新开机雷达列表（≤80nm）", esmRoot, function()
+                    if esmMenus[jammer].listRoot then
+                        missionCommands.removeItemForGroup(gid, esmMenus[jammer].listRoot)
+                    end
+                    esmMenus[jammer].listRoot = missionCommands.addSubMenuForGroup(gid, "开机雷达选择", esmRoot)
+
+                    local jammerUnit = Unit.getByName(jammer)
+                    if not jammerUnit or not jammerUnit:isExist() then
+                        trigger.action.outTextForGroup(gid, "本机不存在，无法刷新。", 4)
+                        return
+                    end
+                    local jammerPos = jammerUnit:getPoint()
+                    local ctrl = jammerUnit:getController()
+                    local count = 0
+                    local totalRadars = 0
+
+                    -- Debug信息汇总
+                    local debugMsg = "=== ESM 雷达扫描调试 ===\n"
+
+                    local redGroups = coalition.getGroups(coalition.side.RED)
+                    if not redGroups then
+                        debugMsg = debugMsg .. "未找到红方单位组！\n"
+                    else
+                        debugMsg = debugMsg .. "发现 " .. #redGroups .. " 个红方单位组\n"
+                    end
+
+                    for _, group in ipairs(redGroups or {}) do
+                        local hasSAM = false
+                        local targetUnit = nil
+                        for _, unit in ipairs(group:getUnits()) do
+                            if unit:hasAttribute("SAM SR") or unit:hasAttribute("SAM TR") or unit:hasAttribute("SAM STR") then
+                                hasSAM = true
+                                targetUnit = unit
+                                break
+                            end
+                        end
+                        if not hasSAM then
+                            for _, unit in ipairs(group:getUnits()) do
+                                if unit:getCategory() == Object.Category.UNIT and unit:hasAttribute("Ships") then
+                                    hasSAM = true
+                                    targetUnit = unit
+                                    break
+                                end
+                            end
+                        end
+
+                        if hasSAM and targetUnit and targetUnit:isExist() then
+                            local tgtPos = targetUnit:getPoint()
+                            local dist = get3DDist(jammerPos, tgtPos)
+                            local distNM = math.floor(dist / 1852 + 0.5)
+                            local name = getNatoName(targetUnit)
+                            local bearing = getBearing(jammerPos, tgtPos)
+
+                            if dist <= 148160 then -- 80nm in meters
+                                local losOK = land.isVisible(jammerPos, tgtPos)
+
+                                -- 检查组内每个雷达单位的开机状态
+                                for _, unit in ipairs(group:getUnits()) do
+                                    if unit and unit:isExist() and isRadarishUnit(unit) then
+                                        totalRadars = totalRadars + 1
+                                        local unitPos = unit:getPoint()
+                                        local unitDist = get3DDist(jammerPos, unitPos)
+                                        local unitDistNM = math.floor(unitDist / 1852 + 0.5)
+                                        local unitName = getNatoName(unit)
+                                        local unitBearing = getBearing(jammerPos, unitPos)
+
+                                        -- 检查单个雷达单位的开机状态
+                                        local unitActive, unitDetections, unitMethods, trackedObj = checkRadarUnitActive(unit)
+
+                                        local detectionStr = #unitDetections > 0 and ("(" .. table.concat(unitDetections, ",") .. ")") or "(无探测)"
+                                        local unitLosOK = land.isVisible(jammerPos, unitPos)
+                                        local losStr = unitLosOK and "LOS:通" or "LOS:阻"
+                                        local statusStr = unitActive and "开机" or "关机"
+
+                                        debugMsg = debugMsg .. string.format("  %s | %d° %dnm | %s | %s %s\n",
+                                            unitName, unitBearing, unitDistNM, losStr, statusStr, detectionStr)
+
+                                        -- 只有开机的雷达单位才加入列表
+                                        if unitActive and unitDist <= 148160 then
+                                            count = count + 1
+                                            local label = string.format("%s | %d° %dnm [开机]", unitName, unitBearing, unitDistNM)
+                                            missionCommands.addCommandForGroup(gid, label, esmMenus[jammer].listRoot, function()
+                                                -- 确保 esmState 表存在
+                                                if not esmState[jammer] then
+                                                    esmState[jammer] = {}
+                                                end
+
+                                                esmState[jammer].targetUnitName = unit:getName()
+                                                esmState[jammer].dwell = 0
+                                                esmState[jammer].lastSeen = 0
+                                                esmState[jammer].lastProgressReport = 0
+                                                esmState[jammer].lastDebugReport = 0
+                                                if esmState[jammer].markId then
+                                                    trigger.action.removeMark(esmState[jammer].markId)
+                                                    esmState[jammer].markId = nil
+                                                end
+
+                                                -- 详细的目标选择确认信息
+                                                local trackStr = trackedObj and ("跟踪:" .. tostring(trackedObj)) or ""
+                                                trigger.action.outTextForGroup(gid,
+                                                    string.format("🎯 ESM目标已选择：%s\n📍 距离：%dnm (%d°)\n📡 状态：%s %s\n⏱️  需要持续开机30秒进行定位\n🔍 开始监听...\n🐛 调试：ESM状态已初始化\n🐛 目标单位名: %s\n🐛 干扰器: %s",
+                                                        unitName, unitDistNM, unitBearing, statusStr, trackStr, esmState[jammer].targetUnitName, jammer), 10)
+                                            end)
+                                        end
+                                    end
+                                end
+                            else
+                                debugMsg = debugMsg .. string.format("%s组 | %d° %dnm | 超出80nm\n",
+                                    group:getName(), bearing, distNM)
+                            end
+                        end
+                    end
+
+                    debugMsg = debugMsg .. string.format("=== 扫描完成：%d/%d 雷达可选 ===", count, totalRadars)
+                    trigger.action.outTextForGroup(gid, debugMsg, 15)
+
+                    if count == 0 then
+                        missionCommands.addCommandForGroup(gid, "（当前无开机雷达）", esmMenus[jammer].listRoot, function() end)
+                    end
+                end)
+
+                missionCommands.addCommandForGroup(gid, "取消当前 ESM 目标", esmRoot, function()
+                    if esmState[jammer] and esmState[jammer].targetUnitName then
+                        local targetName = esmState[jammer].targetUnitName
+                        esmState[jammer].targetUnitName = nil
+                        esmState[jammer].dwell = 0
+                        esmState[jammer].lastSeen = 0
+                        esmState[jammer].lastProgressReport = 0
+                        if esmState[jammer].markId then
+                            trigger.action.removeMark(esmState[jammer].markId)
+                            esmState[jammer].markId = nil
+                        end
+                        trigger.action.outTextForGroup(gid, "❌ ESM目标已清除：" .. targetName, 4)
+                    else
+                        trigger.action.outTextForGroup(gid, "❌ 当前无ESM目标", 4)
+                    end
+                end)
+
 if jammerGroupIDs[jammer] then
     trigger.action.outTextForGroup(jammerGroupIDs[jammer], "电子战干扰菜单已创建: " .. jammer, 4)
 end
@@ -654,10 +1182,11 @@ end
     return timer.getTime() + menuCheckInterval
 end
 
--- 修改：启动两个循环，导弹循环使用0.5秒间隔
-timer.scheduleFunction(jammerLoop, {}, timer.getTime() + 3)
-timer.scheduleFunction(missileLoop, {}, timer.getTime() + 1)  -- 导弹循环0.5秒间隔
-timer.scheduleFunction(setupMenus, {}, timer.getTime() + 2)
+-- 修改：启动三个循环，导弹循环使用0.5秒间隔，ESM循环使用1秒间隔
+timer.scheduleFunction(SAFE("jammerLoop", jammerLoop), {}, timer.getTime() + 3)
+timer.scheduleFunction(SAFE("missileLoop", missileLoop), {}, timer.getTime() + 1)  -- 导弹循环0.5秒间隔
+timer.scheduleFunction(SAFE("esmLoop", esmLoop), {}, timer.getTime() + ESM_TICK)  -- ESM循环1秒间隔
+timer.scheduleFunction(SAFE("setupMenus", setupMenus), {}, timer.getTime() + 2)
 
 local function refreshSpotTargets()
     for _, jammer in ipairs(jammerUnits) do
@@ -721,4 +1250,4 @@ local function refreshSpotTargets()
     end
     return timer.getTime() + 10
 end
-timer.scheduleFunction(refreshSpotTargets, {}, timer.getTime() + 10)
+timer.scheduleFunction(SAFE("refreshSpotTargets", refreshSpotTargets), {}, timer.getTime() + 10)
