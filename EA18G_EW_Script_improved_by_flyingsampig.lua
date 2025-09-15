@@ -77,7 +77,7 @@ local MISSILE_THRESHOLD = 100  -- 导弹自爆阈值
 local REFERENCE_DISTANCE = 9260  -- 参考距离：5海里 = 9260米
 
 -- Debug 模式开关
-local DEBUG_MODE = false  -- 设为 true 启用详细调试信息
+local DEBUG_MODE = true  -- 设为 true 启用详细调试信息
 
 local jammerSettings = {}
 local jammerGroupIDs = {}
@@ -685,7 +685,11 @@ local function esmLoop()
             local targetUnit = Unit.getByName(st.targetUnitName)
             if not (targetUnit and targetUnit:isExist()) then
                 if jammerGroupIDs[jammer] then
-                    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "ESM：目标单位丢失，停止监听 "..st.targetUnitName, 4)
+                    if DEBUG_MODE then
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "ESM：目标单位丢失，停止监听 "..st.targetUnitName, 4)
+                    else
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "目标雷达接触中断，定位中止", 4)
+                    end
                 end
                 st.targetUnitName = nil
                 st.dwell = 0
@@ -780,9 +784,13 @@ local function esmLoop()
                         if not radarActive then reason = reason .. "雷达关机 " end
 
                         local unitName = getNatoName(targetUnit)
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                            string.format("❌ ESM中断：%s\n📍 %dnm | %s | %s %s\n🔄 计时重置：%.1fs → 0s\n💡 原因：%s",
-                                unitName, distNM, losStr, statusStr, detectionStr, st.dwell, reason), 6)
+                        if DEBUG_MODE then
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                string.format("ESM中断：%s\n%dnm | %s | %s %s\n计时重置：%.1fs → 0s\n原因：%s",
+                                    unitName, distNM, losStr, statusStr, detectionStr, st.dwell, reason), 6)
+                        else
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "目标雷达接触中断，定位中止", 4)
+                        end
                     end
                     st.dwell = 0
                     st.lastSeen = 0
@@ -1083,8 +1091,11 @@ end
                 local esmRoot = missionCommands.addSubMenuForGroup(gid, "ESM / ELINT (RWR)", root)
                 esmMenus[jammer] = { root = esmRoot }
 
-                -- 创建雷达选择子菜单，并立即生成初始列表
+                -- 创建动态刷新的雷达选择子菜单
                 esmMenus[jammer].listRoot = missionCommands.addSubMenuForGroup(gid, "开机雷达选择（≤80nm）", esmRoot)
+
+                -- 简化为纯手动刷新机制
+                esmMenus[jammer].radarItems = {}
 
                 -- 创建刷新函数
                 local function refreshRadarList()
@@ -1171,36 +1182,81 @@ end
                                         -- 只有开机的雷达单位才加入列表
                                         if unitActive and unitDist <= 148160 then
                                             count = count + 1
-                                            local label = string.format("%s | %d° %dnm [开机]", unitName, unitBearing, unitDistNM)
+                                            -- 强绑定：直接显示内部单位名称确保100%准确
+                                            local internalName = unit:getName()
+                                            local label = string.format("%s | %d° %dnm [开机] [%s]", unitName, unitBearing, unitDistNM, internalName)
+
+                                            -- 创建回调函数：每次点击时重新获取最新信息，避免竞态条件
+                                            local capturedUnitName = internalName  -- 在创建时捕获单位名
+                                            local capturedLabel = label  -- 在创建时捕获标签
+
                                             local radarItem = missionCommands.addCommandForGroup(gid, label, esmMenus[jammer].listRoot, function()
                                                 -- 确保 esmState 表存在
                                                 if not esmState[jammer] then
                                                     esmState[jammer] = {}
                                                 end
 
+                                                -- 使用捕获的单位名，避免从可能已变化的label解析
+                                                local extractedUnitName = capturedUnitName
+
+                                                if DEBUG_MODE then
+                                                    trigger.action.outTextForGroup(gid,
+                                                        string.format("===选择解析===\n你选择的列表项: %s\n捕获的单位名: %s\n================",
+                                                            capturedLabel, extractedUnitName or "解析失败"), 6)
+                                                end
+
+                                                if not extractedUnitName then
+                                                    trigger.action.outTextForGroup(gid, "无法解析列表中的单位名，请重新选择", 3)
+                                                    return
+                                                end
+
+                                                -- 根据解析出的单位名查找实际单位
+                                                local actualUnit = Unit.getByName(extractedUnitName)
+                                                if not actualUnit or not actualUnit:isExist() then
+                                                    trigger.action.outTextForGroup(gid, "目标雷达已不存在，请重新选择", 3)
+                                                    return
+                                                end
+
+                                                -- 获取实际单位的当前信息
+                                                local actualUnitName = getNatoName(actualUnit)
+                                                local jammerUnit = Unit.getByName(jammer)
+                                                local currentDistance = 0
+                                                if jammerUnit and jammerUnit:isExist() then
+                                                    local jammerPos = jammerUnit:getPoint()
+                                                    local targetPos = actualUnit:getPoint()
+                                                    currentDistance = math.floor(get3DDist(jammerPos, targetPos) / 1852 + 0.5)
+                                                end
+
+                                                if DEBUG_MODE then
+                                                    trigger.action.outTextForGroup(gid,
+                                                        string.format("===最终确认===\n解析单位名: %s\n实际雷达类型: %s\n当前距离: %dnm\n================",
+                                                            extractedUnitName, actualUnitName, currentDistance), 6)
+                                                end
+
                                                 -- 只有当重新选择同一个目标时才移除旧标记
-                                                if esmState[jammer].targetUnitName == unit:getName() and esmState[jammer].markId then
+                                                if esmState[jammer].targetUnitName == extractedUnitName and esmState[jammer].markId then
                                                     trigger.action.removeMark(esmState[jammer].markId)
                                                     esmState[jammer].markId = nil
                                                 end
 
-                                                esmState[jammer].targetUnitName = unit:getName()
+                                                esmState[jammer].targetUnitName = extractedUnitName
                                                 esmState[jammer].dwell = 0
                                                 esmState[jammer].lastSeen = 0
                                                 esmState[jammer].lastProgressReport = 0
                                                 esmState[jammer].lastDebugReport = 0
 
+
                                                 -- 目标选择确认信息
                                                 if DEBUG_MODE then
-                                                    local trackStr = trackedObj and ("跟踪:" .. tostring(trackedObj)) or ""
                                                     trigger.action.outTextForGroup(gid,
-                                                        string.format("ESM目标已选择：%s\n距离：%dnm (%d°)\n状态：%s %s\n需要持续开机30秒进行定位\n开始监听...\n调试：ESM状态已初始化\n目标单位名: %s\n干扰器: %s",
-                                                            unitName, unitDistNM, unitBearing, statusStr, trackStr, esmState[jammer].targetUnitName, jammer), 10)
+                                                        string.format("ESM目标已选择：%s\n距离：%dnm\n需要持续开机30秒进行定位\n开始监听...\n目标内部名: %s\n干扰器: %s",
+                                                            actualUnitName, currentDistance, extractedUnitName, jammer), 8)
                                                 else
                                                     trigger.action.outTextForGroup(gid,
-                                                        string.format("开始定位：%s (%dnm)", unitName, unitDistNM), 3)
+                                                        string.format("开始定位：%s (%dnm)", actualUnitName, currentDistance), 3)
                                                 end
                                             end)
+
                                             table.insert(esmMenus[jammer].radarItems, radarItem)
                                         end
                                     end
@@ -1221,19 +1277,17 @@ end
                         local noRadarItem = missionCommands.addCommandForGroup(gid, "（当前无开机雷达）", esmMenus[jammer].listRoot, function() end)
                         table.insert(esmMenus[jammer].radarItems, noRadarItem)
                     end
-                end
 
-                -- 初始化雷达选择项数组
-                esmMenus[jammer].radarItems = {}
+                    -- 添加手动刷新按钮
+                    local refreshButton = missionCommands.addCommandForGroup(gid, "手动刷新雷达列表", esmMenus[jammer].listRoot, function()
+                        refreshRadarList()
+                        trigger.action.outTextForGroup(gid, "雷达列表已刷新", 2)
+                    end)
+                    table.insert(esmMenus[jammer].radarItems, refreshButton)
+                end
 
                 -- 立即执行第一次刷新
                 refreshRadarList()
-
-                -- 设置定时器，每5秒自动刷新雷达列表
-                esmMenus[jammer].refreshTimer = timer.scheduleFunction(function()
-                    refreshRadarList()
-                    return timer.getTime() + 5  -- 5秒后再次执行
-                end, nil, timer.getTime() + 5)
 
                 missionCommands.addCommandForGroup(gid, "取消当前 ESM 目标", esmRoot, function()
                     if esmState[jammer] and esmState[jammer].targetUnitName then
