@@ -76,6 +76,9 @@ local ALQ249_JAM_VALUE = 4  -- ALQ-249 单吊舱干扰值
 local MISSILE_THRESHOLD = 100  -- 导弹自爆阈值
 local REFERENCE_DISTANCE = 9260  -- 参考距离：5海里 = 9260米
 
+-- Debug 模式开关
+local DEBUG_MODE = false  -- 设为 true 启用详细调试信息
+
 local jammerSettings = {}
 local jammerGroupIDs = {}
 local jammerMenus = {}
@@ -518,16 +521,23 @@ local function defensiveLoop(jammer)
                     else
                         modeText = "[区域]"
                     end
-                    local debugMsg = string.format("导弹#%s判定%s | 距离:%.2f海里 | 速度:%dkm/h | 干扰值:%.1f | 成功率:%.2f%% | ", 
-                        tostring(id), modeText, distNM, speedKmh, jamValue, probabilityPercent)
-                    
                     if success then
-                        local bearing = getClockBearing(unit, mpos)
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "✓ 诱爆成功 (" .. bearing .. ")", 4)
+                        if DEBUG_MODE then
+                            local bearing = getClockBearing(unit, mpos)
+                            local debugMsg = string.format("导弹#%s判定%s | 距离:%.2f海里 | 速度:%dkm/h | 干扰值:%.1f | 成功率:%.2f%% | ",
+                                tostring(id), modeText, distNM, speedKmh, jamValue, probabilityPercent)
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "✓ 诱爆成功 (" .. bearing .. ")", 4)
+                        end
+                        -- 非调试模式下静默处理 - 飞行员无法知道干扰是否成功
                         Object.destroy(m)
                         trackedMissiles[id] = nil -- 只移除这一枚导弹
                     else
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "✗ 诱爆失败", 3)
+                        if DEBUG_MODE then
+                            local debugMsg = string.format("导弹#%s判定%s | 距离:%.2f海里 | 速度:%dkm/h | 干扰值:%.1f | 成功率:%.2f%% | ",
+                                tostring(id), modeText, distNM, speedKmh, jamValue, probabilityPercent)
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "✗ 诱爆失败", 3)
+                        end
+                        -- 非调试模式下静默处理 - 飞行员无法知道干扰是否成功
                     end
                 else
                     if success then
@@ -622,17 +632,19 @@ local function esmLoop()
                 activeTargets = activeTargets + 1
             end
         end
-        -- 始终显示调试信息，包括运行计数
-        env.info(string.format("[ESM循环调试] 计数=%d, 时间=%.1fs, 活跃目标=%d", _ESM_LOOP_COUNT, now, activeTargets))
+        -- 调试信息（仅 DEBUG 模式）
+        if DEBUG_MODE then
+            env.info(string.format("[ESM循环调试] 计数=%d, 时间=%.1fs, 活跃目标=%d", _ESM_LOOP_COUNT, now, activeTargets))
 
-        -- 如果有活跃目标，同时向相关群组发送消息
-        if activeTargets > 0 then
-            for _, jammer in ipairs(jammerUnits) do
-                if esmState[jammer] and esmState[jammer].targetUnitName and jammerGroupIDs[jammer] then
-                    trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                        string.format("🔍 ESM循环状态检查\n计数: %d | 时间: %.1fs\n目标: %s",
-                            _ESM_LOOP_COUNT, now, esmState[jammer].targetUnitName), 3)
-                    break  -- 只发送一次
+            -- 如果有活跃目标，同时向相关群组发送消息
+            if activeTargets > 0 then
+                for _, jammer in ipairs(jammerUnits) do
+                    if esmState[jammer] and esmState[jammer].targetUnitName and jammerGroupIDs[jammer] then
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                            string.format("🔍 ESM循环状态检查\n计数: %d | 时间: %.1fs\n目标: %s",
+                                _ESM_LOOP_COUNT, now, esmState[jammer].targetUnitName), 3)
+                        break  -- 只发送一次
+                    end
                 end
             end
         end
@@ -643,8 +655,8 @@ local function esmLoop()
         local st = esmState[jammer]
         local me = Unit.getByName(jammer)
 
-        -- 调试：直接检查状态（首次调试）
-        if _ESM_LOOP_COUNT <= 5 and jammerGroupIDs[jammer] then
+        -- 调试：直接检查状态（仅 DEBUG 模式）
+        if DEBUG_MODE and _ESM_LOOP_COUNT <= 5 and jammerGroupIDs[jammer] then
             local stStatus = st and "存在" or "nil"
             local targetStatus = (st and st.targetUnitName) and st.targetUnitName or "无目标"
             local meStatus = (me and me:isExist()) and "存在" or "不存在"
@@ -653,8 +665,8 @@ local function esmLoop()
                     _ESM_LOOP_COUNT, jammer, stStatus, targetStatus, meStatus), 3)
         end
 
-        -- 调试：打印 ESM 循环状态
-        if st and st.targetUnitName then
+        -- 调试：打印 ESM 循环状态（仅 DEBUG 模式）
+        if DEBUG_MODE and st and st.targetUnitName then
             local debugPrefix = string.format("[ESM循环] %s -> %s: ", jammer, st.targetUnitName)
             if jammerGroupIDs[jammer] then
                 -- 每10秒输出一次调试信息以避免刷屏
@@ -701,27 +713,29 @@ local function esmLoop()
                     st.lastProgressReport = 0
                 end
 
-                -- 调试：详细的三门槛诊断（每30秒一次，避免刷屏）
-                if not st.lastGateReport then
-                    st.lastGateReport = 0
-                end
-                if (now - st.lastGateReport) >= 30 and jammerGroupIDs[jammer] then
-                    local unitName = getNatoName(targetUnit)
-                    local gateResult = ""
-                    gateResult = gateResult .. string.format("🚪 门槛检查 [%s]\n", unitName)
-                    gateResult = gateResult .. string.format("1️⃣ 距离: %.1fnm/%dnm %s\n", distNM, math.floor(ESM_MAX_RANGE_M/1852), inRange and "✅" or "❌")
-                    gateResult = gateResult .. string.format("2️⃣ 地形: %s %s\n", losStr, losOK and "✅" or "❌")
-                    gateResult = gateResult .. string.format("3️⃣ 雷达: %s %s\n", statusStr, radarActive and "✅" or "❌")
-                    if radarActive then
-                        gateResult = gateResult .. string.format("   检测方法: %s\n", detectionStr)
-                        if trackedObj then
-                            gateResult = gateResult .. string.format("   跟踪目标: %s\n", trackStr)
-                        end
+                -- 调试：详细的三门槛诊断（仅 DEBUG 模式）
+                if DEBUG_MODE then
+                    if not st.lastGateReport then
+                        st.lastGateReport = 0
                     end
-                    gateResult = gateResult .. string.format("🎯 综合结果: %s", (inRange and losOK and radarActive) and "累积中✅" or "等待中⏳")
+                    if (now - st.lastGateReport) >= 30 and jammerGroupIDs[jammer] then
+                        local unitName = getNatoName(targetUnit)
+                        local gateResult = ""
+                        gateResult = gateResult .. string.format("🚪 门槛检查 [%s]\n", unitName)
+                        gateResult = gateResult .. string.format("1️⃣ 距离: %.1fnm/%dnm %s\n", distNM, math.floor(ESM_MAX_RANGE_M/1852), inRange and "✅" or "❌")
+                        gateResult = gateResult .. string.format("2️⃣ 地形: %s %s\n", losStr, losOK and "✅" or "❌")
+                        gateResult = gateResult .. string.format("3️⃣ 雷达: %s %s\n", statusStr, radarActive and "✅" or "❌")
+                        if radarActive then
+                            gateResult = gateResult .. string.format("   检测方法: %s\n", detectionStr)
+                            if trackedObj then
+                                gateResult = gateResult .. string.format("   跟踪目标: %s\n", trackStr)
+                            end
+                        end
+                        gateResult = gateResult .. string.format("🎯 综合结果: %s", (inRange and losOK and radarActive) and "累积中✅" or "等待中⏳")
 
-                    trigger.action.outTextForGroup(jammerGroupIDs[jammer], gateResult, 8)
-                    st.lastGateReport = now
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], gateResult, 8)
+                        st.lastGateReport = now
+                    end
                 end
 
                 if inRange and losOK and radarActive then
@@ -746,12 +760,16 @@ local function esmLoop()
                         local progressPercent = math.floor((st.dwell / ESM_DWELL_SEC) * 100)
                         local unitName = getNatoName(targetUnit)
 
-                        -- 格式化坐标信息
-                        local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
-
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                            string.format("🔍 ESM进度：%s\n📍 位置：%s (%dnm %s)\n⏱️  计时：%.1f/%.0fs (%d%%)\n📡 状态：%s %s %s",
-                                unitName, coordStr, distNM, losStr, st.dwell, ESM_DWELL_SEC, progressPercent, statusStr, detectionStr, trackStr), 8)
+                        if DEBUG_MODE then
+                            -- 格式化坐标信息
+                            local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                string.format("🔍 ESM进度：%s\n📍 位置：%s (%dnm %s)\n⏱️  计时：%.1f/%.0fs (%d%%)\n📡 状态：%s %s %s",
+                                    unitName, coordStr, distNM, losStr, st.dwell, ESM_DWELL_SEC, progressPercent, statusStr, detectionStr, trackStr), 8)
+                        else
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                string.format("已定位 %.0f/30秒", st.dwell), 2)
+                        end
                     end
                 else
                     -- 雷达关机或不满足条件，立即重置计时
@@ -773,11 +791,15 @@ local function esmLoop()
 
                 -- 检查是否达到定位条件
                 if st.dwell >= ESM_DWELL_SEC then
-                    env.info(string.format("[ESM成功调试] 达到定位条件: dwell=%.1fs >= %ds", st.dwell, ESM_DWELL_SEC))
+                    if DEBUG_MODE then
+                        env.info(string.format("[ESM成功调试] 达到定位条件: dwell=%.1fs >= %ds", st.dwell, ESM_DWELL_SEC))
+                    end
                     local nato = getNatoName(targetUnit)
                     local txt = string.format("ELINT FIX: %s (%s)\n持续开机≥%ds", targetUnit:getName(), nato, ESM_DWELL_SEC)
                     st.markId = addCoalMark(txt, rp)
-                    env.info(string.format("[ESM成功调试] 标记已创建: ID=%d", st.markId))
+                    if DEBUG_MODE then
+                        env.info(string.format("[ESM成功调试] 标记已创建: ID=%d", st.markId))
+                    end
 
                     -- 格式化详细的成功报告
                     local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
@@ -794,15 +816,26 @@ local function esmLoop()
                     end
 
                     if jammerGroupIDs[jammer] then
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                            string.format("✅ ESM定位成功！\n🎯 目标：%s (%s)\n📍 坐标：%s\n🗺️  MGRS：%s\n📡 雷达：%s\n⏱️  用时：%.1fs\n🏷️  标记ID：%d\n📍 已在F10地图标注",
-                                targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId), 10)
-                        env.info(string.format("[ESM成功调试] 成功消息已发送到群组 %d", jammerGroupIDs[jammer]))
+                        if DEBUG_MODE then
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                string.format("✅ ESM定位成功！\n🎯 目标：%s (%s)\n📍 坐标：%s\n🗺️  MGRS：%s\n📡 雷达：%s\n⏱️  用时：%.1fs\n🏷️  标记ID：%d\n📍 已在F10地图标注",
+                                    targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId), 10)
+                            env.info(string.format("[ESM成功调试] 成功消息已发送到群组 %d", jammerGroupIDs[jammer]))
+                        else
+                            -- 简化输出：只显示目标名称、坐标和性质
+                            local lat, lon = coord.LOtoLL(rp)
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                string.format("定位完成：%s (%s)\n经纬度：%.6f, %.6f\nMGRS：%s",
+                                    nato, targetUnit:getName(), lat, lon, mgrsStr), 6)
+                        end
                     else
-                        env.info("[ESM成功调试] 警告: jammerGroupIDs[jammer] 为 nil，无法发送成功消息")
+                        if DEBUG_MODE then
+                            env.info("[ESM成功调试] 警告: jammerGroupIDs[jammer] 为 nil，无法发送成功消息")
+                        end
                     end
 
-                    -- 重置计时，允许重复定位
+                    -- 定位完成后自动退出
+                    st.targetUnitName = nil
                     st.dwell, st.lastSeen, st.lastProgressReport = 0, 0, 0
                 end
             end
@@ -930,13 +963,21 @@ end
                 missionCommands.addCommandForGroup(gid, "开启", dmenu, function()
                     jammerSettings[jammer].defensive = true
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "防御区域干扰已开启", 4)
+    if DEBUG_MODE then
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "防御区域干扰已开启", 4)
+    else
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "防御干扰：开启", 2)
+    end
 end
                 end)
                 missionCommands.addCommandForGroup(gid, "关闭", dmenu, function()
                     jammerSettings[jammer].defensive = false
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "防御区域干扰已关闭", 4)
+    if DEBUG_MODE then
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "防御区域干扰已关闭", 4)
+    else
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "防御干扰：关闭", 2)
+    end
 end
                 end)
 
@@ -945,13 +986,21 @@ end
                 missionCommands.addCommandForGroup(gid, "On", aomenu, function()
                     jammerSettings[jammer].offensive = true
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "攻击区域干扰已开启", 4)
+    if DEBUG_MODE then
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "攻击区域干扰已开启", 4)
+    else
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "攻击干扰：开启", 2)
+    end
 end
                 end)
                 missionCommands.addCommandForGroup(gid, "Off", aomenu, function()
                     jammerSettings[jammer].offensive = false
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "攻击区域干扰已关闭", 4)
+    if DEBUG_MODE then
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "攻击区域干扰已关闭", 4)
+    else
+        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "攻击干扰：关闭", 2)
+    end
 end
                 end)
 
@@ -1034,20 +1083,27 @@ end
                 local esmRoot = missionCommands.addSubMenuForGroup(gid, "ESM / ELINT (RWR)", root)
                 esmMenus[jammer] = { root = esmRoot }
 
-                -- 动态生成"开机雷达目标列表（≤80nm）"，只显示当前开机的雷达
-                missionCommands.addCommandForGroup(gid, "刷新开机雷达列表（≤80nm）", esmRoot, function()
-                    if esmMenus[jammer].listRoot then
-                        missionCommands.removeItemForGroup(gid, esmMenus[jammer].listRoot)
+                -- 创建雷达选择子菜单，并立即生成初始列表
+                esmMenus[jammer].listRoot = missionCommands.addSubMenuForGroup(gid, "开机雷达选择（≤80nm）", esmRoot)
+
+                -- 创建刷新函数
+                local function refreshRadarList()
+                    -- 移除所有现有的雷达选择项
+                    if esmMenus[jammer].radarItems then
+                        for _, item in ipairs(esmMenus[jammer].radarItems) do
+                            missionCommands.removeItemForGroup(gid, item)
+                        end
                     end
-                    esmMenus[jammer].listRoot = missionCommands.addSubMenuForGroup(gid, "开机雷达选择", esmRoot)
+                    esmMenus[jammer].radarItems = {}
 
                     local jammerUnit = Unit.getByName(jammer)
                     if not jammerUnit or not jammerUnit:isExist() then
-                        trigger.action.outTextForGroup(gid, "本机不存在，无法刷新。", 4)
+                        local noUnitItem = missionCommands.addCommandForGroup(gid, "（本机不存在）", esmMenus[jammer].listRoot, function() end)
+                        table.insert(esmMenus[jammer].radarItems, noUnitItem)
                         return
                     end
+
                     local jammerPos = jammerUnit:getPoint()
-                    local ctrl = jammerUnit:getController()
                     local count = 0
                     local totalRadars = 0
 
@@ -1116,10 +1172,16 @@ end
                                         if unitActive and unitDist <= 148160 then
                                             count = count + 1
                                             local label = string.format("%s | %d° %dnm [开机]", unitName, unitBearing, unitDistNM)
-                                            missionCommands.addCommandForGroup(gid, label, esmMenus[jammer].listRoot, function()
+                                            local radarItem = missionCommands.addCommandForGroup(gid, label, esmMenus[jammer].listRoot, function()
                                                 -- 确保 esmState 表存在
                                                 if not esmState[jammer] then
                                                     esmState[jammer] = {}
+                                                end
+
+                                                -- 只有当重新选择同一个目标时才移除旧标记
+                                                if esmState[jammer].targetUnitName == unit:getName() and esmState[jammer].markId then
+                                                    trigger.action.removeMark(esmState[jammer].markId)
+                                                    esmState[jammer].markId = nil
                                                 end
 
                                                 esmState[jammer].targetUnitName = unit:getName()
@@ -1127,17 +1189,19 @@ end
                                                 esmState[jammer].lastSeen = 0
                                                 esmState[jammer].lastProgressReport = 0
                                                 esmState[jammer].lastDebugReport = 0
-                                                if esmState[jammer].markId then
-                                                    trigger.action.removeMark(esmState[jammer].markId)
-                                                    esmState[jammer].markId = nil
-                                                end
 
-                                                -- 详细的目标选择确认信息
-                                                local trackStr = trackedObj and ("跟踪:" .. tostring(trackedObj)) or ""
-                                                trigger.action.outTextForGroup(gid,
-                                                    string.format("🎯 ESM目标已选择：%s\n📍 距离：%dnm (%d°)\n📡 状态：%s %s\n⏱️  需要持续开机30秒进行定位\n🔍 开始监听...\n🐛 调试：ESM状态已初始化\n🐛 目标单位名: %s\n🐛 干扰器: %s",
-                                                        unitName, unitDistNM, unitBearing, statusStr, trackStr, esmState[jammer].targetUnitName, jammer), 10)
+                                                -- 目标选择确认信息
+                                                if DEBUG_MODE then
+                                                    local trackStr = trackedObj and ("跟踪:" .. tostring(trackedObj)) or ""
+                                                    trigger.action.outTextForGroup(gid,
+                                                        string.format("ESM目标已选择：%s\n距离：%dnm (%d°)\n状态：%s %s\n需要持续开机30秒进行定位\n开始监听...\n调试：ESM状态已初始化\n目标单位名: %s\n干扰器: %s",
+                                                            unitName, unitDistNM, unitBearing, statusStr, trackStr, esmState[jammer].targetUnitName, jammer), 10)
+                                                else
+                                                    trigger.action.outTextForGroup(gid,
+                                                        string.format("开始定位：%s (%dnm)", unitName, unitDistNM), 3)
+                                                end
                                             end)
+                                            table.insert(esmMenus[jammer].radarItems, radarItem)
                                         end
                                     end
                                 end
@@ -1148,13 +1212,28 @@ end
                         end
                     end
 
-                    debugMsg = debugMsg .. string.format("=== 扫描完成：%d/%d 雷达可选 ===", count, totalRadars)
-                    trigger.action.outTextForGroup(gid, debugMsg, 15)
+                    if DEBUG_MODE then
+                        debugMsg = debugMsg .. string.format("=== 扫描完成：%d/%d 雷达可选 ===", count, totalRadars)
+                        trigger.action.outTextForGroup(gid, debugMsg, 15)
+                    end
 
                     if count == 0 then
-                        missionCommands.addCommandForGroup(gid, "（当前无开机雷达）", esmMenus[jammer].listRoot, function() end)
+                        local noRadarItem = missionCommands.addCommandForGroup(gid, "（当前无开机雷达）", esmMenus[jammer].listRoot, function() end)
+                        table.insert(esmMenus[jammer].radarItems, noRadarItem)
                     end
-                end)
+                end
+
+                -- 初始化雷达选择项数组
+                esmMenus[jammer].radarItems = {}
+
+                -- 立即执行第一次刷新
+                refreshRadarList()
+
+                -- 设置定时器，每5秒自动刷新雷达列表
+                esmMenus[jammer].refreshTimer = timer.scheduleFunction(function()
+                    refreshRadarList()
+                    return timer.getTime() + 5  -- 5秒后再次执行
+                end, nil, timer.getTime() + 5)
 
                 missionCommands.addCommandForGroup(gid, "取消当前 ESM 目标", esmRoot, function()
                     if esmState[jammer] and esmState[jammer].targetUnitName then
