@@ -77,7 +77,30 @@ local MISSILE_THRESHOLD = 100  -- 导弹自爆阈值
 local REFERENCE_DISTANCE = 9260  -- 参考距离：5海里 = 9260米
 
 -- Debug 模式开关
-local DEBUG_MODE = true  -- 设为 true 启用详细调试信息
+local DEBUG_MODE = false  -- 设为 true 启用详细调试信息
+
+-- === 载荷模拟系统配置 ===
+local LOADOUT_SIM = {
+    LBI = {
+        names = {"AIM-9L"},  -- 只有AIM-9L可以模拟长基线定位吊舱
+        required = 2,
+        description = "长基线干涉定位吊舱"
+    },
+    ALQ99 = {
+        names = {"Mk-83"},  -- 只有Mk-83可以模拟ALQ-99
+        perPod = 1,
+        description = "ALQ-99战术干扰吊舱"
+    },
+    ALQ249 = {
+        names = {"Mk-84"},  -- 只有Mk-84可以模拟ALQ-249
+        perPod = 1,
+        description = "ALQ-249下一代干扰吊舱"
+    }
+}
+
+-- 载荷模拟状态跟踪
+local loadoutState = {}  -- [unitName] = {hasLBI=false, alq99Count=0, alq249Count=0, lastCheck=0}
+local esmEnabled = {}    -- [unitName] = boolean，ESM功能是否启用
 
 local jammerSettings = {}
 local jammerGroupIDs = {}
@@ -265,6 +288,138 @@ end
     end
 end
 
+-- === 载荷模拟系统函数 ===
+
+-- 统计指定武器名称的数量
+local function countAmmoByNames(unit, weaponNames)
+    local count = 0
+    local ammo = unit:getAmmo()
+    if not ammo then return 0 end
+
+    for _, ammoData in ipairs(ammo) do
+        if ammoData.desc and ammoData.desc.displayName then
+            local displayName = ammoData.desc.displayName
+            for _, weaponName in ipairs(weaponNames) do
+                if string.find(displayName, weaponName, 1, true) then
+                    count = count + (ammoData.count or 1)
+                    break
+                end
+            end
+        end
+    end
+    return count
+end
+
+-- 检查单位的载荷状态
+local function checkLoadoutState(unitName)
+    local unit = Unit.getByName(unitName)
+    if not (unit and unit:isExist()) then
+        return {hasLBI = false, alq99Count = 0, alq249Count = 0, valid = false}
+    end
+
+    -- 统计各类武器数量
+    local aim9Count = countAmmoByNames(unit, LOADOUT_SIM.LBI.names)
+    local mk83Count = countAmmoByNames(unit, LOADOUT_SIM.ALQ99.names)
+    local mk84Count = countAmmoByNames(unit, LOADOUT_SIM.ALQ249.names)
+
+    -- 计算可用的吊舱数量
+    local state = {
+        hasLBI = aim9Count >= LOADOUT_SIM.LBI.required,
+        alq99Count = math.floor(mk83Count / LOADOUT_SIM.ALQ99.perPod),
+        alq249Count = math.floor(mk84Count / LOADOUT_SIM.ALQ249.perPod),
+        valid = true,
+        rawCounts = {aim9 = aim9Count, mk83 = mk83Count, mk84 = mk84Count}
+    }
+
+    return state
+end
+
+-- 尝试启用长基线干涉定位
+local function tryEnableLBI(jammerName)
+    local state = checkLoadoutState(jammerName)
+    if not state.valid then
+        trigger.action.outTextForGroup(jammerGroupIDs[jammerName], "无法检查载荷状态", 3)
+        return false
+    end
+
+    if state.hasLBI then
+        esmEnabled[jammerName] = true
+        trigger.action.outTextForGroup(jammerGroupIDs[jammerName],
+            string.format("长基线干涉定位已启用 (检测到%d枚AIM-9)", state.rawCounts.aim9), 5)
+        return true
+    else
+        trigger.action.outTextForGroup(jammerGroupIDs[jammerName],
+            string.format("需要2枚AIM-9L才能启用长基线定位 (当前:%d枚)", state.rawCounts.aim9), 5)
+        return false
+    end
+end
+
+-- 检查干扰吊舱预设是否可用
+local function checkJammerPreset(jammerName, requiredALQ99, requiredALQ249)
+    local state = checkLoadoutState(jammerName)
+    if not state.valid then return false, "无法检查载荷状态" end
+
+    local missingItems = {}
+
+    if state.alq99Count < requiredALQ99 then
+        local needed = requiredALQ99 - state.alq99Count
+        table.insert(missingItems, string.format("需要%d枚Mk-83 (ALQ-99模拟)", needed))
+    end
+
+    if state.alq249Count < requiredALQ249 then
+        local needed = requiredALQ249 - state.alq249Count
+        table.insert(missingItems, string.format("需要%d枚Mk-84 (ALQ-249模拟)", needed))
+    end
+
+    if #missingItems > 0 then
+        return false, table.concat(missingItems, ", ")
+    end
+
+    return true, "载荷验证通过"
+end
+
+-- 载荷状态监控循环
+local function loadoutMonitorLoop()
+    for _, jammerName in ipairs(jammerUnits) do
+        if jammerGroupIDs[jammerName] then
+            local currentState = checkLoadoutState(jammerName)
+            local previousState = loadoutState[jammerName] or {}
+
+            if currentState.valid then
+                -- 检查LBI状态变化
+                if esmEnabled[jammerName] and not currentState.hasLBI then
+                    esmEnabled[jammerName] = false
+                    trigger.action.outTextForGroup(jammerGroupIDs[jammerName],
+                        "警告: AIM-9L数量不足，长基线定位已禁用", 5)
+                end
+
+                -- 检查干扰吊舱状态变化
+                local currentPreset = jammerSettings[jammerName] and jammerSettings[jammerName].currentPreset
+                if currentPreset then
+                    local needALQ99 = currentPreset.alq99 or 0
+                    local needALQ249 = currentPreset.alq249 or 0
+
+                    if currentState.alq99Count < needALQ99 or currentState.alq249Count < needALQ249 then
+                        -- 载荷不足，禁用干扰功能
+                        jammerSettings[jammerName].offensive = false
+                        jammerSettings[jammerName].defensive = false
+                        jammerSettings[jammerName].offDir = nil
+                        jammerSettings[jammerName].defDir = nil
+                        maxEmitterCapacity[jammerName] = 0
+                        emitterCapacity[jammerName] = 0
+
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammerName],
+                            "警告: 干扰吊舱载荷不足，干扰功能已禁用", 5)
+                    end
+                end
+
+                loadoutState[jammerName] = currentState
+            end
+        end
+    end
+    return timer.getTime() + 5  -- 每5秒检查一次
+end
+
 local function restoreSAMs()
     for name, info in pairs(suppressedSAMs) do
         local sam = info.sam
@@ -381,61 +536,51 @@ end
         -- Spot jamming logic
         if jammerSettings[jammer].spotTarget and emitterCapacity[jammer] > 15 then
             local unit = Unit.getByName(jammer)
-            local targetGroup = Group.getByName(jammerSettings[jammer].spotTarget)
-            if unit and unit:isExist() and targetGroup then
+            local targetUnit = Unit.getByName(jammerSettings[jammer].spotTarget)
+            if unit and unit:isExist() and targetUnit and targetUnit:isExist() then
                 local jammerPos = unit:getPoint()
-                local targetUnits = targetGroup:getUnits()
-                local targetUnit = nil
-                for _, u in ipairs(targetUnits) do
-                    if u:isExist() then
-                        targetUnit = u
-                        break
+                local targetPos = targetUnit:getPoint()
+                local dist = get3DDist(jammerPos, targetPos)
+                local los = land.isVisible(targetPos, jammerPos)
+                local altitudeBoost = math.min(unit:getPoint().y / 10000, 0.2)
+                local maxCap = maxEmitterCapacity[jammer] or 0
+                local maxRange = maxCap >= 3000 and 148160 or 111120
+                local fullEffectDist = maxCap >= 3000 and 101860 or 64820
+
+                if dist <= maxRange and los then
+                    local probability = 0.2
+                    if dist <= fullEffectDist then
+                        probability = 1.0
+                    else
+                        probability = 0.2 + ((fullEffectDist / dist) * 0.8)
                     end
-                end
-                if targetUnit then
-                    local targetPos = targetUnit:getPoint()
-                    local dist = get3DDist(jammerPos, targetPos)
-                    local los = land.isVisible(targetPos, jammerPos)
-                    local altitudeBoost = math.min(unit:getPoint().y / 10000, 0.2)
-                    local maxCap = maxEmitterCapacity[jammer] or 0
-                    local maxRange = maxCap >= 3000 and 148160 or 111120
-                    local fullEffectDist = maxCap >= 3000 and 101860 or 64820
+                    probability = math.min(probability + altitudeBoost, 1.0)
 
-                    if dist <= maxRange and los then
-                        local probability = 0.2
-                        if dist <= fullEffectDist then
-                            probability = 1.0
-                        else
-                            probability = 0.2 + ((fullEffectDist / dist) * 0.8)
-                        end
-                        probability = math.min(probability + altitudeBoost, 1.0)
-
-                        if math.random() < probability then
+                    if math.random() < probability then
+                        local targetGroup = targetUnit:getGroup()
+                        if targetGroup then
                             local ctrl = targetGroup:getController()
                             ctrl:setOption(AI.Option.Ground.id.ROE, AI.Option.Ground.val.ROE.WEAPON_HOLD)
+                            local targetName = getNatoName(targetUnit)
                             suppressedSAMs[jammerSettings[jammer].spotTarget] = {
                                 sam = targetUnit,
                                 lastSuppressed = timer.getTime(),
                                 spot = true
                             }
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰成功: " .. jammerSettings[jammer].spotTarget, 3)
-end
-                        else
-if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰尝试失败: " .. jammerSettings[jammer].spotTarget, 3)
+    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰成功: " .. targetName, 3)
 end
                         end
                     else
-                        jammerSettings[jammer].spotTarget = nil
+                        local targetName = getNatoName(targetUnit)
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰取消: 目标超出范围或无直线视线", 3)
+    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰尝试失败: " .. targetName, 3)
 end
                     end
                 else
                     jammerSettings[jammer].spotTarget = nil
 if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰取消: 目标丢失或被摧毁", 3)
+    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰取消: 目标超出范围或无直线视线", 3)
 end
                 end
             else
@@ -526,7 +671,7 @@ local function defensiveLoop(jammer)
                             local bearing = getClockBearing(unit, mpos)
                             local debugMsg = string.format("导弹#%s判定%s | 距离:%.2f海里 | 速度:%dkm/h | 干扰值:%.1f | 成功率:%.2f%% | ",
                                 tostring(id), modeText, distNM, speedKmh, jamValue, probabilityPercent)
-                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "✓ 诱爆成功 (" .. bearing .. ")", 4)
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "诱爆成功 (" .. bearing .. ")", 4)
                         end
                         -- 非调试模式下静默处理 - 飞行员无法知道干扰是否成功
                         Object.destroy(m)
@@ -535,7 +680,7 @@ local function defensiveLoop(jammer)
                         if DEBUG_MODE then
                             local debugMsg = string.format("导弹#%s判定%s | 距离:%.2f海里 | 速度:%dkm/h | 干扰值:%.1f | 成功率:%.2f%% | ",
                                 tostring(id), modeText, distNM, speedKmh, jamValue, probabilityPercent)
-                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "✗ 诱爆失败", 3)
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], debugMsg .. "诱爆失败", 3)
                         end
                         -- 非调试模式下静默处理 - 飞行员无法知道干扰是否成功
                     end
@@ -641,7 +786,7 @@ local function esmLoop()
                 for _, jammer in ipairs(jammerUnits) do
                     if esmState[jammer] and esmState[jammer].targetUnitName and jammerGroupIDs[jammer] then
                         trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                            string.format("🔍 ESM循环状态检查\n计数: %d | 时间: %.1fs\n目标: %s",
+                            string.format("ESM循环状态检查\n计数: %d | 时间: %.1fs\n目标: %s",
                                 _ESM_LOOP_COUNT, now, esmState[jammer].targetUnitName), 3)
                         break  -- 只发送一次
                     end
@@ -661,7 +806,7 @@ local function esmLoop()
             local targetStatus = (st and st.targetUnitName) and st.targetUnitName or "无目标"
             local meStatus = (me and me:isExist()) and "存在" or "不存在"
             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                string.format("🐛 ESM状态[%d]: 干扰器=%s, st=%s, 目标=%s, me=%s",
+                string.format("ESM状态[%d]: 干扰器=%s, st=%s, 目标=%s, me=%s",
                     _ESM_LOOP_COUNT, jammer, stStatus, targetStatus, meStatus), 3)
         end
 
@@ -682,18 +827,42 @@ local function esmLoop()
             end
         end
         if st and st.targetUnitName and me and me:isExist() then
-            local targetUnit = Unit.getByName(st.targetUnitName)
-            if not (targetUnit and targetUnit:isExist()) then
+            -- 载荷模拟检查：在定位过程中检查载荷状态
+            local currentState = checkLoadoutState(jammer)
+            if not (currentState.valid and currentState.hasLBI) then
                 if jammerGroupIDs[jammer] then
                     if DEBUG_MODE then
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "ESM：目标单位丢失，停止监听 "..st.targetUnitName, 4)
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                            "ESM定位中断：AIM-9L数量不足 (当前:" .. (currentState.rawCounts and currentState.rawCounts.aim9 or 0) .. "枚)", 5)
                     else
-                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "目标雷达接触中断，定位中止", 4)
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "定位中断：载荷不足", 4)
                     end
+                end
+                -- 清除ESM状态，但保留已完成的定位标记
+                -- 只有当定位未完成时才移除标记（防止误删已完成的定位）
+                if st.markId and st.dwell < ESM_DWELL_SEC then
+                    trigger.action.removeMark(st.markId)
+                    st.markId = nil
                 end
                 st.targetUnitName = nil
                 st.dwell = 0
                 st.lastSeen = 0
+                st.lastProgressReport = 0
+                -- 注意：已完成的定位标记（markId且dwell >= ESM_DWELL_SEC）会被保留
+                esmEnabled[jammer] = false  -- 自动禁用ESM
+            else
+                local targetUnit = Unit.getByName(st.targetUnitName)
+                if not (targetUnit and targetUnit:isExist()) then
+                    if jammerGroupIDs[jammer] then
+                        if DEBUG_MODE then
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "ESM：目标单位丢失，停止监听 "..st.targetUnitName, 4)
+                        else
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "目标雷达接触中断，定位中止", 4)
+                        end
+                    end
+                    st.targetUnitName = nil
+                    st.dwell = 0
+                    st.lastSeen = 0
             else
                 -- 使用正确的 Unit.getRadar() 方法检查单个雷达单位的开机状态
                 local radarActive, detectionMethods, unitMethods, trackedObj = checkRadarUnitActive(targetUnit)
@@ -725,17 +894,17 @@ local function esmLoop()
                     if (now - st.lastGateReport) >= 30 and jammerGroupIDs[jammer] then
                         local unitName = getNatoName(targetUnit)
                         local gateResult = ""
-                        gateResult = gateResult .. string.format("🚪 门槛检查 [%s]\n", unitName)
-                        gateResult = gateResult .. string.format("1️⃣ 距离: %.1fnm/%dnm %s\n", distNM, math.floor(ESM_MAX_RANGE_M/1852), inRange and "✅" or "❌")
-                        gateResult = gateResult .. string.format("2️⃣ 地形: %s %s\n", losStr, losOK and "✅" or "❌")
-                        gateResult = gateResult .. string.format("3️⃣ 雷达: %s %s\n", statusStr, radarActive and "✅" or "❌")
+                        gateResult = gateResult .. string.format("门槛检查 [%s]\n", unitName)
+                        gateResult = gateResult .. string.format("1. 距离: %.1fnm/%dnm %s\n", distNM, math.floor(ESM_MAX_RANGE_M/1852), inRange and "通过" or "失败")
+                        gateResult = gateResult .. string.format("2. 地形: %s %s\n", losStr, losOK and "通过" or "失败")
+                        gateResult = gateResult .. string.format("3. 雷达: %s %s\n", statusStr, radarActive and "通过" or "失败")
                         if radarActive then
                             gateResult = gateResult .. string.format("   检测方法: %s\n", detectionStr)
                             if trackedObj then
                                 gateResult = gateResult .. string.format("   跟踪目标: %s\n", trackStr)
                             end
                         end
-                        gateResult = gateResult .. string.format("🎯 综合结果: %s", (inRange and losOK and radarActive) and "累积中✅" or "等待中⏳")
+                        gateResult = gateResult .. string.format("综合结果: %s", (inRange and losOK and radarActive) and "累积中" or "等待中")
 
                         trigger.action.outTextForGroup(jammerGroupIDs[jammer], gateResult, 8)
                         st.lastGateReport = now
@@ -768,7 +937,7 @@ local function esmLoop()
                             -- 格式化坐标信息
                             local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("🔍 ESM进度：%s\n📍 位置：%s (%dnm %s)\n⏱️  计时：%.1f/%.0fs (%d%%)\n📡 状态：%s %s %s",
+                                string.format("ESM进度：%s\n位置：%s (%dnm %s)\n计时：%.1f/%.0fs (%d%%)\n状态：%s %s %s",
                                     unitName, coordStr, distNM, losStr, st.dwell, ESM_DWELL_SEC, progressPercent, statusStr, detectionStr, trackStr), 8)
                         else
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
@@ -826,7 +995,7 @@ local function esmLoop()
                     if jammerGroupIDs[jammer] then
                         if DEBUG_MODE then
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("✅ ESM定位成功！\n🎯 目标：%s (%s)\n📍 坐标：%s\n🗺️  MGRS：%s\n📡 雷达：%s\n⏱️  用时：%.1fs\n🏷️  标记ID：%d\n📍 已在F10地图标注",
+                                string.format("ESM定位成功！\n目标：%s (%s)\n坐标：%s\nMGRS：%s\n雷达：%s\n用时：%.1fs\n标记ID：%d\n已在F10地图标注",
                                     targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId), 10)
                             env.info(string.format("[ESM成功调试] 成功消息已发送到群组 %d", jammerGroupIDs[jammer]))
                         else
@@ -847,6 +1016,7 @@ local function esmLoop()
                     st.dwell, st.lastSeen, st.lastProgressReport = 0, 0, 0
                 end
             end
+        end
         end
     end
     return now + ESM_TICK
@@ -955,16 +1125,59 @@ local function setupMenus()
                 }
                 for _, p in ipairs(presets) do
                     missionCommands.addCommandForGroup(gid, p.label, loadout, function()
-                        maxEmitterCapacity[jammer] = p.cap
-                        emitterCapacity[jammer] = math.min(emitterCapacity[jammer], p.cap)
-                        -- 保存负载配置
-                        jammerSettings[jammer].currentPreset = {alq99=p.alq99, alq249=p.alq249}
-                        local totalJam = (p.alq99 * ALQ99_JAM_VALUE) + (p.alq249 * ALQ249_JAM_VALUE)
-if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], jammer .. " 载荷设置: " .. p.label .. " (总干扰值: " .. totalJam .. ")", 4)
-end
+                        -- 载荷模拟：检查是否有足够的"钥匙"武器
+                        local canApply, message = checkJammerPreset(jammer, p.alq99, p.alq249)
+
+                        if canApply then
+                            maxEmitterCapacity[jammer] = p.cap
+                            emitterCapacity[jammer] = math.min(emitterCapacity[jammer], p.cap)
+                            -- 保存负载配置
+                            jammerSettings[jammer].currentPreset = {alq99=p.alq99, alq249=p.alq249}
+                            local totalJam = (p.alq99 * ALQ99_JAM_VALUE) + (p.alq249 * ALQ249_JAM_VALUE)
+                            if jammerGroupIDs[jammer] then
+                                trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                    jammer .. " 载荷设置: " .. p.label .. " (总干扰值: " .. totalJam .. ")", 4)
+                            end
+                        else
+                            if jammerGroupIDs[jammer] then
+                                trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                    "载荷配置失败: " .. message, 6)
+                            end
+                        end
                     end)
                 end
+
+                -- 载荷模拟菜单
+                local loadoutSimMenu = missionCommands.addSubMenuForGroup(gid, "载荷模拟", root)
+
+                -- 长基线干涉定位控制
+                missionCommands.addCommandForGroup(gid, "启用长基线定位", loadoutSimMenu, function()
+                    tryEnableLBI(jammer)
+                end)
+
+                missionCommands.addCommandForGroup(gid, "禁用长基线定位", loadoutSimMenu, function()
+                    esmEnabled[jammer] = false
+                    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "长基线干涉定位已禁用", 3)
+                end)
+
+                -- 载荷状态查询
+                missionCommands.addCommandForGroup(gid, "检查载荷状态", loadoutSimMenu, function()
+                    local state = checkLoadoutState(jammer)
+                    if state.valid then
+                        local statusMsg = string.format(
+                            "载荷状态报告:\n" ..
+                            "AIM-9L: %d枚 (长基线: %s)\n" ..
+                            "Mk-83: %d枚 (ALQ-99: %d个可用)\n" ..
+                            "Mk-84: %d枚 (ALQ-249: %d个可用)",
+                            state.rawCounts.aim9, state.hasLBI and "可用" or "不可用",
+                            state.rawCounts.mk83, state.alq99Count,
+                            state.rawCounts.mk84, state.alq249Count
+                        )
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], statusMsg, 8)
+                    else
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "无法获取载荷状态", 3)
+                    end
+                end)
 
                 -- Area Defensive
                 local dmenu = missionCommands.addSubMenuForGroup(gid, "防御区域干扰", root)
@@ -1023,51 +1236,88 @@ end
                 end)
 
                 -- Target Selection Submenu
-                local tsMenu = missionCommands.addSubMenuForGroup(gid, "目标选择", sjMenu)
-spotTargetMenus[jammer] = tsMenu
+                local tsMenu = missionCommands.addSubMenuForGroup(gid, "目标选择（≤80nm）", sjMenu)
+                spotTargetMenus[jammer] = tsMenu
 
-                -- Scan for targets within 80nm
-                local jammerUnit = Unit.getByName(jammer)
-                if jammerUnit and jammerUnit:isExist() then
-                    local jammerPos = jammerUnit:getPoint()
-                    local redGroups = coalition.getGroups(coalition.side.RED)
-                    for _, group in ipairs(redGroups) do
-                        local hasSAM = false
-                        local targetUnit = nil
-                        for _, unit in ipairs(group:getUnits()) do
-                            if unit:hasAttribute("SAM SR") or unit:hasAttribute("SAM TR") or unit:hasAttribute("SAM STR") then
-                                hasSAM = true
-                                targetUnit = unit
-                                break
-                            end
+                -- 初始化目标选择项数组
+                spotTargetCommands[jammer] = {}
+
+                -- 创建刷新函数
+                local function refreshSpotTargetList()
+                    -- 移除所有现有的目标选择项
+                    if spotTargetCommands[jammer] then
+                        for _, item in ipairs(spotTargetCommands[jammer]) do
+                            missionCommands.removeItemForGroup(gid, item)
                         end
-                        if not hasSAM then
-                            for _, unit in ipairs(group:getUnits()) do
-                                if unit:getCategory() == Object.Category.UNIT and unit:hasAttribute("Ships") then
-                                    hasSAM = true
-                                    targetUnit = unit
-                                    break
+                    end
+                    spotTargetCommands[jammer] = {}
+
+                    local jammerUnit = Unit.getByName(jammer)
+                    if not jammerUnit or not jammerUnit:isExist() then
+                        local noUnitItem = missionCommands.addCommandForGroup(gid, "（本机不存在）", tsMenu, function() end)
+                        table.insert(spotTargetCommands[jammer], noUnitItem)
+                        return
+                    end
+
+                    local jammerPos = jammerUnit:getPoint()
+                    local count = 0
+                    local redGroups = coalition.getGroups(coalition.side.RED)
+
+                    for _, group in ipairs(redGroups or {}) do
+                        for _, unit in ipairs(group:getUnits()) do
+                            if unit and unit:isExist() and isRadarishUnit(unit) then
+                                local tgtPos = unit:getPoint()
+                                local dist = get3DDist(jammerPos, tgtPos)
+                                if dist <= 148160 then -- 80nm in meters
+                                    -- 检查雷达开机状态
+                                    local radarActive, detectionMethods, unitMethods, trackedObj = checkRadarUnitActive(unit)
+
+                                    -- 检查地形可见性
+                                    local losOK = land.isVisible(jammerPos, tgtPos)
+
+                                    -- 只有开机且无地形阻挡的雷达才加入列表
+                                    if radarActive and losOK then
+                                        count = count + 1
+                                        local bearing = getBearing(jammerPos, tgtPos)
+                                        local distNM = math.floor(dist / 1852 + 0.5)
+                                        local name = getNatoName(unit)
+                                        local internalName = unit:getName()
+                                        local detectionStr = #detectionMethods > 0 and ("(" .. table.concat(detectionMethods, ",") .. ")") or ""
+                                        local label = string.format("%s | %d° %dnm [开机] %s [%s]", name, bearing, distNM, detectionStr, internalName)
+
+                                        -- 捕获雷达单元名称用于回调
+                                        local capturedUnitName = internalName
+                                        local capturedLabel = label
+
+                                        local targetItem = missionCommands.addCommandForGroup(gid, label, tsMenu, function()
+                                            jammerSettings[jammer].spotTarget = capturedUnitName
+                                            if jammerGroupIDs[jammer] then
+                                                trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰已开启: " .. capturedLabel, 4)
+                                            end
+                                        end)
+
+                                        table.insert(spotTargetCommands[jammer], targetItem)
+                                    end
                                 end
                             end
                         end
-                        if hasSAM and targetUnit and targetUnit:isExist() then
-                            local tgtPos = targetUnit:getPoint()
-                            local dist = get3DDist(jammerPos, tgtPos)
-                            if dist <= 148160 then -- 80nm in meters
-                                local bearing = getBearing(jammerPos, tgtPos)
-                                local distNM = math.floor(dist / 1852 + 0.5)
-                                local name = getNatoName(targetUnit)
-                                local label = name .. " | " .. bearing .. "° | " .. distNM .. "nm"
-                                missionCommands.addCommandForGroup(gid, label, tsMenu, function()
-                                    jammerSettings[jammer].spotTarget = group:getName()
-if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰已开启: " .. label, 4)
-end
-                                end)
-                            end
-                        end
                     end
+
+                    if count == 0 then
+                        local noTargetItem = missionCommands.addCommandForGroup(gid, "（当前无可用目标）", tsMenu, function() end)
+                        table.insert(spotTargetCommands[jammer], noTargetItem)
+                    end
+
+                    -- 添加手动刷新按钮
+                    local refreshButton = missionCommands.addCommandForGroup(gid, "手动刷新目标列表", tsMenu, function()
+                        refreshSpotTargetList()
+                        trigger.action.outTextForGroup(gid, "目标列表已刷新", 2)
+                    end)
+                    table.insert(spotTargetCommands[jammer], refreshButton)
                 end
+
+                -- 立即执行第一次刷新
+                refreshSpotTargetList()
 
                 for _, mode in ipairs({"攻击", "防御"}) do
                     local submenu = missionCommands.addSubMenuForGroup(gid, "定向" .. mode .. "干扰", root)
@@ -1091,8 +1341,22 @@ end
                 local esmRoot = missionCommands.addSubMenuForGroup(gid, "ESM / ELINT (RWR)", root)
                 esmMenus[jammer] = { root = esmRoot }
 
-                -- 创建动态刷新的雷达选择子菜单
+                -- 创建条件性雷达选择子菜单（需要载荷验证）
                 esmMenus[jammer].listRoot = missionCommands.addSubMenuForGroup(gid, "开机雷达选择（≤80nm）", esmRoot)
+
+                -- 添加载荷检查提示
+                missionCommands.addCommandForGroup(gid, "载荷要求：需2枚AIM-9L", esmRoot, function()
+                    local state = checkLoadoutState(jammer)
+                    if state.valid then
+                        local msg = string.format("载荷检查: AIM-9L数量 %d/2 (%s)",
+                            state.rawCounts.aim9,
+                            state.hasLBI and "满足要求" or "不满足要求"
+                        )
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], msg, 5)
+                    else
+                        trigger.action.outTextForGroup(jammerGroupIDs[jammer], "无法检查载荷状态", 3)
+                    end
+                end)
 
                 -- 简化为纯手动刷新机制
                 esmMenus[jammer].radarItems = {}
@@ -1191,6 +1455,20 @@ end
                                             local capturedLabel = label  -- 在创建时捕获标签
 
                                             local radarItem = missionCommands.addCommandForGroup(gid, label, esmMenus[jammer].listRoot, function()
+                                                -- 载荷模拟检查：验证是否启用了长基线定位
+                                                if not esmEnabled[jammer] then
+                                                    trigger.action.outTextForGroup(gid, "长基线定位未启用，请先在载荷模拟菜单中启用", 5)
+                                                    return
+                                                end
+
+                                                -- 二次载荷检查：确保当前仍然满足要求
+                                                local currentState = checkLoadoutState(jammer)
+                                                if not (currentState.valid and currentState.hasLBI) then
+                                                    trigger.action.outTextForGroup(gid, "载荷不足：需要2枚AIM-9L用于长基线定位", 5)
+                                                    esmEnabled[jammer] = false  -- 自动禁用
+                                                    return
+                                                end
+
                                                 -- 确保 esmState 表存在
                                                 if not esmState[jammer] then
                                                     esmState[jammer] = {}
@@ -1300,9 +1578,9 @@ end
                             trigger.action.removeMark(esmState[jammer].markId)
                             esmState[jammer].markId = nil
                         end
-                        trigger.action.outTextForGroup(gid, "❌ ESM目标已清除：" .. targetName, 4)
+                        trigger.action.outTextForGroup(gid, "ESM目标已清除：" .. targetName, 4)
                     else
-                        trigger.action.outTextForGroup(gid, "❌ 当前无ESM目标", 4)
+                        trigger.action.outTextForGroup(gid, "当前无ESM目标", 4)
                     end
                 end)
 
@@ -1321,66 +1599,75 @@ timer.scheduleFunction(SAFE("missileLoop", missileLoop), {}, timer.getTime() + 1
 timer.scheduleFunction(SAFE("esmLoop", esmLoop), {}, timer.getTime() + ESM_TICK)  -- ESM循环1秒间隔
 timer.scheduleFunction(SAFE("setupMenus", setupMenus), {}, timer.getTime() + 2)
 
-local function refreshSpotTargets()
-    for _, jammer in ipairs(jammerUnits) do
-        local gid = jammerGroupIDs[jammer]
-        local tsMenu = spotTargetMenus[jammer]
-        if gid and tsMenu then
-            if spotTargetCommands[jammer] then
-                for _, cmd in ipairs(spotTargetCommands[jammer]) do
-                    if cmd then
-                        missionCommands.removeItemForGroup(gid, cmd)
-                    end
-                end
-                spotTargetCommands[jammer] = {}
-            else
-                spotTargetCommands[jammer] = {}
-            end
+-- 原自动刷新功能已移除，改为手动刷新机制
 
-            local jammerUnit = Unit.getByName(jammer)
-            if jammerUnit and jammerUnit:isExist() then
-                local jammerPos = jammerUnit:getPoint()
-                local redGroups = coalition.getGroups(coalition.side.RED)
+-- === 载荷模拟系统启动 ===
 
-                for _, group in ipairs(redGroups) do
-                    local hasSAM = false
-                    local targetUnit = nil
-                    for _, unit in ipairs(group:getUnits()) do
-                        if unit:hasAttribute("SAM SR") or unit:hasAttribute("SAM TR") or unit:hasAttribute("SAM STR") then
-                            hasSAM = true
-                            targetUnit = unit
-                            break
-                        end
-                    end
-                    if not hasSAM then
-                        for _, unit in ipairs(group:getUnits()) do
-                            if unit:getCategory() == Object.Category.UNIT and unit:hasAttribute("Ships") then
-                                hasSAM = true
-                                targetUnit = unit
-                                break
+-- 启动载荷状态监控循环
+timer.scheduleFunction(SAFE("loadoutMonitorLoop", loadoutMonitorLoop), {}, timer.getTime() + 5)
+
+-- 事件监听器：快速响应武器投放/发射
+local loadoutEventHandler = {
+    onEvent = function(self, event)
+        if event.id == world.event.S_EVENT_SHOT or event.id == world.event.S_EVENT_WEAPON_ADD then
+            -- 武器发射/投放事件，立即检查载荷状态
+            if event.initiator and event.initiator.getName then
+                local unitName = event.initiator:getName()
+                -- 检查是否是干扰机
+                for _, jammerName in ipairs(jammerUnits) do
+                    if unitName == jammerName then
+                        -- 延迟1秒后检查载荷（让弹药更新完成）
+                        timer.scheduleFunction(function()
+                            local currentState = checkLoadoutState(jammerName)
+                            if currentState.valid then
+                                local previousState = loadoutState[jammerName] or {}
+
+                                -- 检查ESM状态变化
+                                if esmEnabled[jammerName] and not currentState.hasLBI then
+                                    esmEnabled[jammerName] = false
+                                    if jammerGroupIDs[jammerName] then
+                                        trigger.action.outTextForGroup(jammerGroupIDs[jammerName],
+                                            "警告: 武器发射导致AIM-9L不足，长基线定位已自动禁用", 5)
+                                    end
+                                end
+
+                                -- 检查干扰吊舱状态
+                                local currentPreset = jammerSettings[jammerName] and jammerSettings[jammerName].currentPreset
+                                if currentPreset then
+                                    local needALQ99 = currentPreset.alq99 or 0
+                                    local needALQ249 = currentPreset.alq249 or 0
+
+                                    if currentState.alq99Count < needALQ99 or currentState.alq249Count < needALQ249 then
+                                        -- 载荷不足，禁用干扰功能
+                                        jammerSettings[jammerName].offensive = false
+                                        jammerSettings[jammerName].defensive = false
+                                        jammerSettings[jammerName].offDir = nil
+                                        jammerSettings[jammerName].defDir = nil
+                                        maxEmitterCapacity[jammerName] = 0
+                                        emitterCapacity[jammerName] = 0
+
+                                        if jammerGroupIDs[jammerName] then
+                                            trigger.action.outTextForGroup(jammerGroupIDs[jammerName],
+                                                "警告: 武器投放导致载荷不足，干扰功能已自动禁用", 5)
+                                        end
+                                    end
+                                end
+
+                                loadoutState[jammerName] = currentState
                             end
-                        end
-                    end
-
-                    if hasSAM and targetUnit and targetUnit:isExist() then
-                        local tgtPos = targetUnit:getPoint()
-                        local dist = get3DDist(jammerPos, tgtPos)
-                        if dist <= 148160 then
-                            local bearing = getBearing(jammerPos, tgtPos)
-                            local distNM = math.floor(dist / 1852 + 0.5)
-                            local name = getNatoName(targetUnit)
-                            local label = name .. " | " .. bearing .. "° | " .. distNM .. "nm"
-                            local cmd = missionCommands.addCommandForGroup(gid, label, tsMenu, function()
-                                jammerSettings[jammer].spotTarget = group:getName()
-                                trigger.action.outTextForGroup(gid, "点目标干扰已开启: " .. label, 4)
-                            end)
-                            table.insert(spotTargetCommands[jammer], cmd)
-                        end
+                        end, nil, timer.getTime() + 1)
+                        break
                     end
                 end
             end
         end
     end
-    return timer.getTime() + 10
+}
+
+-- 注册事件监听器
+world.addEventHandler(loadoutEventHandler)
+
+-- 输出载荷模拟系统启动信息
+if DEBUG_MODE then
+    trigger.action.outTextForCoalition(coalition.side.BLUE, "载荷模拟系统已启动", 10)
 end
-timer.scheduleFunction(SAFE("refreshSpotTargets", refreshSpotTargets), {}, timer.getTime() + 10)
