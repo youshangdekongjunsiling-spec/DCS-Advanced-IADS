@@ -77,7 +77,7 @@ local MISSILE_THRESHOLD = 100  -- 导弹自爆阈值
 local REFERENCE_DISTANCE = 9260  -- 参考距离：5海里 = 9260米
 
 -- Debug 模式开关
-local DEBUG_MODE = true  -- 设为 true 启用详细调试信息
+local DEBUG_MODE = false  -- 设为 true 启用详细调试信息
 
 -- === 载荷模拟系统配置 ===
 local LOADOUT_SIM = {
@@ -130,14 +130,19 @@ local ESM_MAX_RANGE_M     = 80 * 1852    -- 80nm
 local ESM_REQUIRE_LOS     = true         -- 是否要求地形LOS
 -- ESM 标记常量已移动到文件开头
 
--- === 分层次定位精度配置 ===
-local ESM_TIERS = {
-    {t = 1,  r = 3000, color = {1, 0.4, 0, 0.95}, fill = {1, 0.4, 0, 0.10}, msg = "ELINT: 初始粗定位 (3 km)"},
-    {t = 5,  r = 1000, color = {1, 0.8, 0, 0.95}, fill = {1, 0.8, 0, 0.10}, msg = "ELINT: 提升精度 (1 km)"},
-    {t = 10, r = 500,  color = {0.2, 1, 0.2, 0.95}, fill = {0.2, 1, 0.2, 0.10}, msg = "ELINT: 高精度定位 (500 m)"}
-    -- 30秒为最终精确点，不画圈，直接打点标记
+-- === 基于视场角度的长基线定位物理配置 ===
+local ESM_ANGLE_TIERS = {
+    {angle = 0,   r = 10000, color = {1, 0.2, 0, 0.95}, fill = {1, 0.2, 0, 0.08}, msg = "ELINT: 初始定位 (10 km)"},
+    {angle = 1, r = 3000,  color = {1, 0.6, 0, 0.95}, fill = {1, 0.6, 0, 0.10}, msg = "ELINT: 角度积累 (2 km)"},
+    {angle = 3, r = 500,   color = {0.2, 1, 0.2, 0.95}, fill = {0.2, 1, 0.2, 0.10}, msg = "ELINT: 高精度 (500 m)"},
+    -- 5度为最终精确点
 }
-local ESM_FINAL_T = 30
+local ESM_FINAL_ANGLE = 10.0  -- 5度达到精确定位
+local ESM_MAX_ANGLE = 10.0    -- 最大角度需求
+
+-- 保留原时间配置作为备用
+local ESM_TIERS = ESM_ANGLE_TIERS  -- 使用角度配置
+local ESM_FINAL_T = 999  -- 不再使用时间限制
 local ESM_LINE_TYPE = 1      -- 圈线型
 local g_ringUid = 920000     -- 圈标记ID递增器
 
@@ -145,6 +150,32 @@ local g_ringUid = 920000     -- 圈标记ID递增器
 local function groundSnap(p)
     local gy = land.getHeight({x = p.x, z = p.z})
     return {x = p.x, y = gy + 2.0, z = p.z}
+end
+
+-- 角度计算辅助函数
+local function calculateAngleBetweenPoints(center, point1, point2)
+    -- 计算从center看point1到point2的角度
+    local vec1 = {x = point1.x - center.x, z = point1.z - center.z}
+    local vec2 = {x = point2.x - center.x, z = point2.z - center.z}
+
+    -- 计算向量长度
+    local len1 = math.sqrt(vec1.x * vec1.x + vec1.z * vec1.z)
+    local len2 = math.sqrt(vec2.x * vec2.x + vec2.z * vec2.z)
+
+    if len1 == 0 or len2 == 0 then return 0 end
+
+    -- 计算夹角余弦值
+    local cosAngle = (vec1.x * vec2.x + vec1.z * vec2.z) / (len1 * len2)
+    cosAngle = math.max(-1, math.min(1, cosAngle))  -- 防止浮点误差
+
+    -- 转换为度数
+    return math.deg(math.acos(cosAngle))
+end
+
+local function get2DDistance(pos1, pos2)
+    local dx = pos1.x - pos2.x
+    local dz = pos1.z - pos2.z
+    return math.sqrt(dx * dx + dz * dz)
 end
 
 -- ESM定位误差模拟算法 - 圆内均匀分布（DCS兼容版本）
@@ -205,7 +236,8 @@ local function removeMarkId(id)
     end
 end
 
-local esmState = {}       -- [jammerName] = { targetUnitName=..., dwell=0, lastSeen=0, markId=nil, ringId=nil, ringStage=0, lastProgressReport=0 }
+local esmState = {}       -- [jammerName] = { targetUnitName=..., dwell=0, lastSeen=0, markId=nil, ringId=nil, ringStage=0, lastProgressReport=0,
+                         --                    accumulatedAngle=0, lastPosition=nil, targetPosition=nil, startTime=0 }
 local esmMenus = {}       -- [jammerName] = {root=..., listRoot=...}
 -- g_esmMarkUid 已移动到文件开头
 
@@ -929,6 +961,10 @@ local function esmLoop()
                 st.lastSeen = 0
                 st.lastProgressReport = 0
                 st.ringStage = 0
+                st.accumulatedAngle = 0
+                st.lastPosition = nil
+                st.targetPosition = nil
+                st.startTime = 0
                 -- 注意：已完成的精确定位标记（markId且dwell >= ESM_FINAL_T）会被保留
                 -- 不自动禁用ESM，允许用户选择新目标重新开始
             else
@@ -993,19 +1029,34 @@ local function esmLoop()
                 end
 
                 if inRange and losOK and radarActive then
-                    -- 雷达开机且满足条件，累积时间
+                    -- 雷达开机且满足条件，累积角度
                     local oldDwell = st.dwell
-                    st.dwell = math.min(ESM_DWELL_SEC, st.dwell + ESM_TICK)
+                    st.dwell = st.dwell + ESM_TICK  -- 仍保持时间累积用于其他逻辑
                     st.lastSeen = now
 
-                    -- === 分层圈标记逻辑 ===
+                    -- === 基于视场角度的长基线定位逻辑 ===
                     st.ringStage = st.ringStage or 0
+                    st.accumulatedAngle = st.accumulatedAngle or 0
+                    st.lastPosition = st.lastPosition or me:getPoint()
+                    st.targetPosition = st.targetPosition or rp
+                    st.startTime = st.startTime or now
+
+                    -- 获取当前位置
+                    local currentPos = me:getPoint()
+
+                    -- 计算从目标看飞机的角度变化
+                    if st.lastPosition then
+                        local angleDelta = calculateAngleBetweenPoints(st.targetPosition, st.lastPosition, currentPos)
+                        st.accumulatedAngle = st.accumulatedAngle + angleDelta
+                        st.lastPosition = currentPos
+                    end
+
                     local stageBefore = st.ringStage
 
-                    -- 计算应该处于哪个阶段（1/5/10秒）
+                    -- 计算应该处于哪个阶段（基于累积角度）
                     local targetStage = 0
                     for i, tier in ipairs(ESM_TIERS) do
-                        if st.dwell >= tier.t then
+                        if st.accumulatedAngle >= tier.angle then
                             targetStage = i
                         end
                     end
@@ -1024,19 +1075,35 @@ local function esmLoop()
                             local unitName = getNatoName(targetUnit)
                             st.ringId = addESMRing(rp, tier.r, tier.color, tier.fill, tier.msg, targetStage, st.targetUnitName, jammer)
                             if jammerGroupIDs[jammer] then
-                                trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                    string.format("%s：已绘制半径 %.0f m 定位圈（累计 %.1fs）",
-                                        unitName, tier.r, st.dwell), 5)
+                                -- 精度达成提示
+                                local precisionDesc = ""
+                                if tier.r == 10000 then
+                                    precisionDesc = "初始定位精度"
+                                elseif tier.r == 2000 then
+                                    precisionDesc = "中等定位精度"
+                                elseif tier.r == 500 then
+                                    precisionDesc = "高精度定位"
+                                end
+
+                                if DEBUG_MODE then
+                                    trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                        string.format("%s：%s已达到 (%.0f m)（累计角度 %.2f°）",
+                                            unitName, precisionDesc, tier.r, st.accumulatedAngle), 5)
+                                else
+                                    trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                        string.format("定位精度已达到：%s (%.0f m)",
+                                            precisionDesc, tier.r), 4)
+                                end
                             end
                         end
 
                         st.ringStage = targetStage
                     end
 
-                    -- 每5秒或首次开始计时时报告进度
+                    -- 每5秒或首次开始定位时报告进度
                     local shouldReport = false
                     if st.dwell <= ESM_TICK then
-                        -- 刚开始计时
+                        -- 刚开始定位
                         shouldReport = true
                         st.lastProgressReport = now
                     elseif (now - st.lastProgressReport) >= ESM_PROGRESS_INTERVAL then
@@ -1046,18 +1113,18 @@ local function esmLoop()
                     end
 
                     if jammerGroupIDs[jammer] and shouldReport then
-                        local progressPercent = math.floor((st.dwell / ESM_DWELL_SEC) * 100)
+                        local anglePercent = math.floor((st.accumulatedAngle / ESM_FINAL_ANGLE) * 100)
                         local unitName = getNatoName(targetUnit)
 
                         if DEBUG_MODE then
                             -- 格式化坐标信息
                             local coordStr = string.format("%.0fm,%.0fm", rp.x, rp.z)
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("ESM进度：%s\n位置：%s (%dnm %s)\n计时：%.1f/%.0fs (%d%%)\n状态：%s %s %s",
-                                    unitName, coordStr, distNM, losStr, st.dwell, ESM_DWELL_SEC, progressPercent, statusStr, detectionStr, trackStr), 8)
+                                string.format("ESM进度：%s\n位置：%s (%dnm %s)\n角度：%.2f°/%.0f° (%d%%)\n状态：%s %s %s",
+                                    unitName, coordStr, distNM, losStr, st.accumulatedAngle, ESM_FINAL_ANGLE, anglePercent, statusStr, detectionStr, trackStr), 8)
                         else
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("已定位 %.0f/30秒", st.dwell), 2)
+                                string.format("已走过 %.1f/%.0f 度", st.accumulatedAngle, ESM_FINAL_ANGLE), 2)
                         end
                     end
                 else
@@ -1086,10 +1153,14 @@ local function esmLoop()
                     st.lastSeen = 0
                     st.lastProgressReport = 0
                     st.ringStage = 0
+                    st.accumulatedAngle = 0
+                    st.lastPosition = nil
+                    st.targetPosition = nil
+                    st.startTime = 0
                 end
 
-                -- 检查是否达到最终精确定位条件
-                if st.dwell >= ESM_FINAL_T then
+                -- 检查是否达到最终精确定位条件（基于角度）
+                if st.accumulatedAngle and st.accumulatedAngle >= ESM_FINAL_ANGLE then
                     -- 清理圈标记
                     if st.ringId then
                         removeMarkId(st.ringId)
@@ -1100,14 +1171,14 @@ local function esmLoop()
                     -- 创建精确点标记
                     local rp = targetUnit:getPoint()
                     local nato = getNatoName(targetUnit)
-                    local txt = string.format("ELINT FIX: %s (%s)\n持续开机≥%ds\n(精确坐标)", nato, targetUnit:getName(), ESM_FINAL_T)
+                    local txt = string.format("ELINT FIX: %s (%s)\n视场角度≥%.1f°\n(精确坐标)", nato, targetUnit:getName(), ESM_FINAL_ANGLE)
 
                     local ok, err = pcall(function()
                         st.markId = addCoalMark(txt, groundSnap(rp))
                     end)
 
                     if DEBUG_MODE then
-                        env.info(string.format("[ESM成功调试] 达到精确定位条件: dwell=%.1fs >= %ds", st.dwell, ESM_FINAL_T))
+                        env.info(string.format("[ESM成功调试] 达到精确定位条件: 累积角度=%.2f° >= %.1f°", st.accumulatedAngle, ESM_FINAL_ANGLE))
                         if ok then
                             env.info(string.format("[ESM成功调试] 精确点标记已创建: ID=%d", st.markId))
                         else
@@ -1132,14 +1203,14 @@ local function esmLoop()
                     if jammerGroupIDs[jammer] then
                         if DEBUG_MODE then
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("ESM精确定位完成！\n目标：%s (%s)\n坐标：%s\nMGRS：%s\n雷达：%s\n用时：%.1fs\n精确点ID：%d\n已在F10地图标注",
-                                    targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId or 0), 10)
+                                string.format("ESM精确定位完成！\n目标：%s (%s)\n坐标：%s\nMGRS：%s\n雷达：%s\n累积角度：%.2f°\n精确点ID：%d\n已在F10地图标注",
+                                    targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.accumulatedAngle, st.markId or 0), 10)
                         else
                             -- 简化输出：只显示目标名称、坐标和性质
                             local lat, lon = coord.LOtoLL(rp)
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("精确定位完成：%s (%s)\n经纬度：%.6f, %.6f\nMGRS：%s",
-                                    nato, targetUnit:getName(), lat, lon, mgrsStr), 6)
+                                string.format("精确定位完成：%s (%s)\n经纬度：%.6f, %.6f\nMGRS：%s\n已走过 %.1f 度",
+                                    nato, targetUnit:getName(), lat, lon, mgrsStr, st.accumulatedAngle), 6)
                         end
 
                         if ok then
@@ -1155,6 +1226,10 @@ local function esmLoop()
                     st.lastSeen = 0
                     st.lastProgressReport = 0
                     st.ringStage = 0
+                    st.accumulatedAngle = 0
+                    st.lastPosition = nil
+                    st.targetPosition = nil
+                    st.startTime = 0
                     -- 注意：保留st.markId，这是已完成的精确定位标记
                 end
             end
@@ -1671,6 +1746,10 @@ end
                                                 esmState[jammer].lastProgressReport = 0
                                                 esmState[jammer].lastDebugReport = 0
                                                 esmState[jammer].ringStage = 0
+                                                esmState[jammer].accumulatedAngle = 0
+                                                esmState[jammer].lastPosition = nil
+                                                esmState[jammer].targetPosition = nil
+                                                esmState[jammer].startTime = 0
 
 
                                                 -- 目标选择确认信息
@@ -1734,6 +1813,10 @@ end
                         esmState[jammer].lastSeen = 0
                         esmState[jammer].lastProgressReport = 0
                         esmState[jammer].ringStage = 0
+                        esmState[jammer].accumulatedAngle = 0
+                        esmState[jammer].lastPosition = nil
+                        esmState[jammer].targetPosition = nil
+                        esmState[jammer].startTime = 0
                         trigger.action.outTextForGroup(gid, "ESM目标已清除：" .. targetName, 4)
                     else
                         trigger.action.outTextForGroup(gid, "当前无ESM目标", 4)
