@@ -77,7 +77,7 @@ local MISSILE_THRESHOLD = 100  -- 导弹自爆阈值
 local REFERENCE_DISTANCE = 9260  -- 参考距离：5海里 = 9260米
 
 -- Debug 模式开关
-local DEBUG_MODE = false  -- 设为 true 启用详细调试信息
+local DEBUG_MODE = true  -- 设为 true 启用详细调试信息
 
 -- === 载荷模拟系统配置 ===
 local LOADOUT_SIM = {
@@ -130,7 +130,82 @@ local ESM_MAX_RANGE_M     = 80 * 1852    -- 80nm
 local ESM_REQUIRE_LOS     = true         -- 是否要求地形LOS
 -- ESM 标记常量已移动到文件开头
 
-local esmState = {}       -- [jammerName] = { targetUnitName=..., dwell=0, lastSeen=0, markId=nil, lastProgressReport=0 }
+-- === 分层次定位精度配置 ===
+local ESM_TIERS = {
+    {t = 1,  r = 3000, color = {1, 0.4, 0, 0.95}, fill = {1, 0.4, 0, 0.10}, msg = "ELINT: 初始粗定位 (3 km)"},
+    {t = 5,  r = 1000, color = {1, 0.8, 0, 0.95}, fill = {1, 0.8, 0, 0.10}, msg = "ELINT: 提升精度 (1 km)"},
+    {t = 10, r = 500,  color = {0.2, 1, 0.2, 0.95}, fill = {0.2, 1, 0.2, 0.10}, msg = "ELINT: 高精度定位 (500 m)"}
+    -- 30秒为最终精确点，不画圈，直接打点标记
+}
+local ESM_FINAL_T = 30
+local ESM_LINE_TYPE = 1      -- 圈线型
+local g_ringUid = 920000     -- 圈标记ID递增器
+
+-- 圈标记管理辅助函数
+local function groundSnap(p)
+    local gy = land.getHeight({x = p.x, z = p.z})
+    return {x = p.x, y = gy + 2.0, z = p.z}
+end
+
+-- ESM定位误差模拟算法 - 圆内均匀分布（DCS兼容版本）
+local function calculateESMOffset(realPos, currentStage, targetUnitName, jammerName, radius)
+    -- 为每个目标-干扰机对生成一致的伪随机数
+    local seedStr = targetUnitName .. "_" .. jammerName .. "_" .. tostring(currentStage)
+    local seed = 0
+    for i = 1, #seedStr do
+        seed = seed + string.byte(seedStr, i)
+    end
+
+    -- 简单的线性同余发生器（LCG）实现伪随机数
+    local function pseudoRandom(s)
+        s = (s * 1103515245 + 12345) % (2^31)
+        return s / (2^31), s
+    end
+
+    -- 生成第一个伪随机数用于X坐标
+    local rand1, newSeed1 = pseudoRandom(seed)
+    -- 生成第二个伪随机数用于X的符号
+    local rand2, newSeed2 = pseudoRandom(newSeed1)
+    -- 生成第三个伪随机数用于Y坐标
+    local rand3, newSeed3 = pseudoRandom(newSeed2)
+    -- 生成第四个伪随机数用于Y的符号
+    local rand4, newSeed4 = pseudoRandom(newSeed3)
+
+    -- 按用户建议的算法：圆内均匀分布
+    -- 1. 在0到r范围内取x坐标偏移（正负随机）
+    local offsetX = (rand1 * radius) * (rand2 > 0.5 and 1 or -1)
+
+    -- 2. 根据x计算y的最大偏移：sqrt(r² - x²)
+    local maxY = math.sqrt(radius * radius - offsetX * offsetX)
+
+    -- 3. 在正负范围内取y的实际偏移
+    local offsetZ = (rand3 * maxY) * (rand4 > 0.5 and 1 or -1)
+
+    return {
+        x = realPos.x + offsetX,
+        y = realPos.y,
+        z = realPos.z + offsetZ
+    }
+end
+
+local function addESMRing(realCenter, radius, color, fill, message, stage, targetName, jammerName)
+    g_ringUid = g_ringUid + 1
+
+    -- 计算带误差的圆心位置（目标在圆内随机位置）
+    local offsetCenter = calculateESMOffset(realCenter, stage, targetName, jammerName, radius)
+    local c = groundSnap(offsetCenter)
+
+    trigger.action.circleToAll(ESM_MARK_COAL, g_ringUid, c, radius, color, fill, ESM_LINE_TYPE, ESM_MARK_READONLY, message)
+    return g_ringUid
+end
+
+local function removeMarkId(id)
+    if id then
+        pcall(trigger.action.removeMark, id)
+    end
+end
+
+local esmState = {}       -- [jammerName] = { targetUnitName=..., dwell=0, lastSeen=0, markId=nil, ringId=nil, ringStage=0, lastProgressReport=0 }
 local esmMenus = {}       -- [jammerName] = {root=..., listRoot=...}
 -- g_esmMarkUid 已移动到文件开头
 
@@ -838,9 +913,14 @@ local function esmLoop()
                         trigger.action.outTextForGroup(jammerGroupIDs[jammer], "定位中断：载荷不足", 4)
                     end
                 end
-                -- 清除ESM状态，但保留已完成的定位标记
-                -- 只有当定位未完成时才移除标记（防止误删已完成的定位）
-                if st.markId and st.dwell < ESM_DWELL_SEC then
+                -- 清除ESM状态，但保留已完成的精确定位标记
+                -- 清理圈标记（进行中的定位）
+                if st.ringId then
+                    removeMarkId(st.ringId)
+                    st.ringId = nil
+                end
+                -- 只有当定位未完成时才移除精确点标记（防止误删已完成的定位）
+                if st.markId and st.dwell < ESM_FINAL_T then
                     trigger.action.removeMark(st.markId)
                     st.markId = nil
                 end
@@ -848,8 +928,9 @@ local function esmLoop()
                 st.dwell = 0
                 st.lastSeen = 0
                 st.lastProgressReport = 0
-                -- 注意：已完成的定位标记（markId且dwell >= ESM_DWELL_SEC）会被保留
-                esmEnabled[jammer] = false  -- 自动禁用ESM
+                st.ringStage = 0
+                -- 注意：已完成的精确定位标记（markId且dwell >= ESM_FINAL_T）会被保留
+                -- 不自动禁用ESM，允许用户选择新目标重新开始
             else
                 local targetUnit = Unit.getByName(st.targetUnitName)
                 if not (targetUnit and targetUnit:isExist()) then
@@ -917,6 +998,41 @@ local function esmLoop()
                     st.dwell = math.min(ESM_DWELL_SEC, st.dwell + ESM_TICK)
                     st.lastSeen = now
 
+                    -- === 分层圈标记逻辑 ===
+                    st.ringStage = st.ringStage or 0
+                    local stageBefore = st.ringStage
+
+                    -- 计算应该处于哪个阶段（1/5/10秒）
+                    local targetStage = 0
+                    for i, tier in ipairs(ESM_TIERS) do
+                        if st.dwell >= tier.t then
+                            targetStage = i
+                        end
+                    end
+
+                    -- 阶段变化：删旧圈、画新圈
+                    if targetStage ~= stageBefore then
+                        -- 移除旧圈
+                        if st.ringId then
+                            removeMarkId(st.ringId)
+                            st.ringId = nil
+                        end
+
+                        -- 画新圈（若目标阶段>0）
+                        if targetStage > 0 then
+                            local tier = ESM_TIERS[targetStage]
+                            local unitName = getNatoName(targetUnit)
+                            st.ringId = addESMRing(rp, tier.r, tier.color, tier.fill, tier.msg, targetStage, st.targetUnitName, jammer)
+                            if jammerGroupIDs[jammer] then
+                                trigger.action.outTextForGroup(jammerGroupIDs[jammer],
+                                    string.format("%s：已绘制半径 %.0f m 定位圈（累计 %.1fs）",
+                                        unitName, tier.r, st.dwell), 5)
+                            end
+                        end
+
+                        st.ringStage = targetStage
+                    end
+
                     -- 每5秒或首次开始计时时报告进度
                     local shouldReport = false
                     if st.dwell <= ESM_TICK then
@@ -961,21 +1077,42 @@ local function esmLoop()
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer], "目标雷达接触中断，定位中止", 4)
                         end
                     end
+                    -- 清理圈标记
+                    if st.ringId then
+                        removeMarkId(st.ringId)
+                        st.ringId = nil
+                    end
                     st.dwell = 0
                     st.lastSeen = 0
                     st.lastProgressReport = 0
+                    st.ringStage = 0
                 end
 
-                -- 检查是否达到定位条件
-                if st.dwell >= ESM_DWELL_SEC then
-                    if DEBUG_MODE then
-                        env.info(string.format("[ESM成功调试] 达到定位条件: dwell=%.1fs >= %ds", st.dwell, ESM_DWELL_SEC))
+                -- 检查是否达到最终精确定位条件
+                if st.dwell >= ESM_FINAL_T then
+                    -- 清理圈标记
+                    if st.ringId then
+                        removeMarkId(st.ringId)
+                        st.ringId = nil
                     end
+                    st.ringStage = 0
+
+                    -- 创建精确点标记
+                    local rp = targetUnit:getPoint()
                     local nato = getNatoName(targetUnit)
-                    local txt = string.format("ELINT FIX: %s (%s)\n持续开机≥%ds", targetUnit:getName(), nato, ESM_DWELL_SEC)
-                    st.markId = addCoalMark(txt, rp)
+                    local txt = string.format("ELINT FIX: %s (%s)\n持续开机≥%ds\n(精确坐标)", nato, targetUnit:getName(), ESM_FINAL_T)
+
+                    local ok, err = pcall(function()
+                        st.markId = addCoalMark(txt, groundSnap(rp))
+                    end)
+
                     if DEBUG_MODE then
-                        env.info(string.format("[ESM成功调试] 标记已创建: ID=%d", st.markId))
+                        env.info(string.format("[ESM成功调试] 达到精确定位条件: dwell=%.1fs >= %ds", st.dwell, ESM_FINAL_T))
+                        if ok then
+                            env.info(string.format("[ESM成功调试] 精确点标记已创建: ID=%d", st.markId))
+                        else
+                            env.info(string.format("[ESM成功调试] 精确点标记创建失败: %s", tostring(err)))
+                        end
                     end
 
                     -- 格式化详细的成功报告
@@ -995,25 +1132,30 @@ local function esmLoop()
                     if jammerGroupIDs[jammer] then
                         if DEBUG_MODE then
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("ESM定位成功！\n目标：%s (%s)\n坐标：%s\nMGRS：%s\n雷达：%s\n用时：%.1fs\n标记ID：%d\n已在F10地图标注",
-                                    targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId), 10)
-                            env.info(string.format("[ESM成功调试] 成功消息已发送到群组 %d", jammerGroupIDs[jammer]))
+                                string.format("ESM精确定位完成！\n目标：%s (%s)\n坐标：%s\nMGRS：%s\n雷达：%s\n用时：%.1fs\n精确点ID：%d\n已在F10地图标注",
+                                    targetUnit:getName(), nato, coordStr, mgrsStr, nato, st.dwell, st.markId or 0), 10)
                         else
                             -- 简化输出：只显示目标名称、坐标和性质
                             local lat, lon = coord.LOtoLL(rp)
                             trigger.action.outTextForGroup(jammerGroupIDs[jammer],
-                                string.format("定位完成：%s (%s)\n经纬度：%.6f, %.6f\nMGRS：%s",
+                                string.format("精确定位完成：%s (%s)\n经纬度：%.6f, %.6f\nMGRS：%s",
                                     nato, targetUnit:getName(), lat, lon, mgrsStr), 6)
                         end
-                    else
-                        if DEBUG_MODE then
-                            env.info("[ESM成功调试] 警告: jammerGroupIDs[jammer] 为 nil，无法发送成功消息")
+
+                        if ok then
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "已完成精确定位并在F10标注: " .. nato, 5)
+                        else
+                            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "定位达成但打点失败: " .. tostring(err), 5)
                         end
                     end
 
-                    -- 定位完成后自动退出
+                    -- 定位完成后自动退出，重置所有状态
                     st.targetUnitName = nil
-                    st.dwell, st.lastSeen, st.lastProgressReport = 0, 0, 0
+                    st.dwell = 0
+                    st.lastSeen = 0
+                    st.lastProgressReport = 0
+                    st.ringStage = 0
+                    -- 注意：保留st.markId，这是已完成的精确定位标记
                 end
             end
         end
@@ -1511,8 +1653,14 @@ end
                                                             extractedUnitName, actualUnitName, currentDistance), 6)
                                                 end
 
-                                                -- 只有当重新选择同一个目标时才移除旧标记
-                                                if esmState[jammer].targetUnitName == extractedUnitName and esmState[jammer].markId then
+                                                -- 清理进行中的定位标记，但保留已完成的精确标记
+                                                -- 清理圈标记（总是清理，因为要重新开始）
+                                                if esmState[jammer].ringId then
+                                                    removeMarkId(esmState[jammer].ringId)
+                                                    esmState[jammer].ringId = nil
+                                                end
+                                                -- 只有在重新选择同一目标时才清理精确标记，否则保留已完成的定位
+                                                if esmState[jammer].markId and esmState[jammer].targetUnitName == extractedUnitName then
                                                     trigger.action.removeMark(esmState[jammer].markId)
                                                     esmState[jammer].markId = nil
                                                 end
@@ -1522,6 +1670,7 @@ end
                                                 esmState[jammer].lastSeen = 0
                                                 esmState[jammer].lastProgressReport = 0
                                                 esmState[jammer].lastDebugReport = 0
+                                                esmState[jammer].ringStage = 0
 
 
                                                 -- 目标选择确认信息
@@ -1570,14 +1719,21 @@ end
                 missionCommands.addCommandForGroup(gid, "取消当前 ESM 目标", esmRoot, function()
                     if esmState[jammer] and esmState[jammer].targetUnitName then
                         local targetName = esmState[jammer].targetUnitName
-                        esmState[jammer].targetUnitName = nil
-                        esmState[jammer].dwell = 0
-                        esmState[jammer].lastSeen = 0
-                        esmState[jammer].lastProgressReport = 0
+                        -- 清理圈标记
+                        if esmState[jammer].ringId then
+                            removeMarkId(esmState[jammer].ringId)
+                            esmState[jammer].ringId = nil
+                        end
+                        -- 清理精确点标记（如果有）
                         if esmState[jammer].markId then
                             trigger.action.removeMark(esmState[jammer].markId)
                             esmState[jammer].markId = nil
                         end
+                        esmState[jammer].targetUnitName = nil
+                        esmState[jammer].dwell = 0
+                        esmState[jammer].lastSeen = 0
+                        esmState[jammer].lastProgressReport = 0
+                        esmState[jammer].ringStage = 0
                         trigger.action.outTextForGroup(gid, "ESM目标已清除：" .. targetName, 4)
                     else
                         trigger.action.outTextForGroup(gid, "当前无ESM目标", 4)
