@@ -600,6 +600,150 @@ local function loadoutMonitorLoop()
     return timer.getTime() + 5  -- 每5秒检查一次
 end
 
+local function isManagedEA18GJammer(jammerName)
+    for _, configuredName in ipairs(jammerUnits) do
+        if configuredName == jammerName then
+            return true
+        end
+    end
+    return false
+end
+
+local function getSkynetSamRadarUnits(samSite)
+    local radarUnits = {}
+    if not samSite or not samSite.getRadars then
+        return radarUnits
+    end
+
+    local radars = samSite:getRadars() or {}
+    for _, radar in ipairs(radars) do
+        local radarUnit = radar.getDCSRepresentation and radar:getDCSRepresentation() or nil
+        if radarUnit and radarUnit.isExist and radarUnit:isExist() then
+            table.insert(radarUnits, radarUnit)
+        end
+    end
+
+    return radarUnits
+end
+
+local function isSpotTargetMatchingSkynetSam(jammerName, samSite)
+    local settings = jammerSettings[jammerName] or {}
+    local spotTarget = settings.spotTarget
+    if not spotTarget then
+        return false
+    end
+
+    if samSite and samSite.getDCSName and samSite:getDCSName() == spotTarget then
+        return true
+    end
+
+    local radarUnits = getSkynetSamRadarUnits(samSite)
+    for _, radarUnit in ipairs(radarUnits) do
+        if radarUnit:getName() == spotTarget then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function isCurrentPresetAvailableForJammer(jammerName)
+    local settings = jammerSettings[jammerName] or {}
+    local preset = settings.currentPreset
+    if not preset then
+        return false
+    end
+
+    local state = checkLoadoutState(jammerName)
+    if not state.valid then
+        return false
+    end
+
+    return state.alq99Count >= (preset.alq99 or 0) and state.alq249Count >= (preset.alq249 or 0)
+end
+
+local function computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUnit)
+    local jammerPos = emitterUnit:getPoint()
+    local targetPos = radarUnit:getPoint()
+    local dist = get3DDist(jammerPos, targetPos)
+    local los = land.isVisible(targetPos, jammerPos)
+    local altitudeBoost = math.min(jammerPos.y / 10000, 0.2)
+    local maxCap = maxEmitterCapacity[jammerName] or 0
+    local maxRange = maxCap >= 3000 and 148160 or 111120
+    local fullEffectDist = maxCap >= 3000 and 101860 or 64820
+
+    if (not los) or dist > maxRange then
+        return nil
+    end
+
+    local probability = 0.2
+    if dist <= fullEffectDist then
+        probability = 1.0
+    else
+        probability = 0.2 + ((fullEffectDist / dist) * 0.8)
+    end
+
+    probability = math.min(probability + altitudeBoost, 1.0)
+    return probability * 100
+end
+
+EA18GSkynetJammerBridge = EA18GSkynetJammerBridge or {}
+
+function EA18GSkynetJammerBridge.getSuccessProbability(emitterUnit, samSite)
+    if not emitterUnit or not emitterUnit.isExist or not emitterUnit:isExist() then
+        return false, nil
+    end
+
+    local jammerName = emitterUnit:getName()
+    if not jammerName or not isManagedEA18GJammer(jammerName) then
+        return false, nil
+    end
+
+    if not isCurrentPresetAvailableForJammer(jammerName) then
+        return true, nil
+    end
+
+    local settings = jammerSettings[jammerName] or {}
+    local currentCapacity = emitterCapacity[jammerName] or 0
+    local radarUnits = getSkynetSamRadarUnits(samSite)
+    if #radarUnits == 0 then
+        return true, nil
+    end
+
+    local bestProbability = nil
+    local jammerPos = emitterUnit:getPoint()
+
+    if settings.spotTarget and currentCapacity > 15 and isSpotTargetMatchingSkynetSam(jammerName, samSite) then
+        for _, radarUnit in ipairs(radarUnits) do
+            local spotProbability = computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUnit)
+            if spotProbability and (bestProbability == nil or spotProbability > bestProbability) then
+                bestProbability = spotProbability
+            end
+        end
+    end
+
+    local offensiveDrain = nil
+    if settings.offensive then
+        offensiveDrain = drainRateArea
+    elseif settings.offDir then
+        offensiveDrain = drainRateDirectional
+    end
+
+    if offensiveDrain and currentCapacity >= offensiveDrain then
+        for _, radarUnit in ipairs(radarUnits) do
+            local radarPos = radarUnit:getPoint()
+            local allowed = settings.offensive or
+                (settings.offDir and isInSector(emitterUnit, radarPos, settings.offDir))
+            if allowed and get3DDist(jammerPos, radarPos) < 50000 and land.isVisible(radarPos, jammerPos) then
+                bestProbability = math.max(bestProbability or 0, 100)
+                break
+            end
+        end
+    end
+
+    return true, bestProbability
+end
+
 local function restoreSAMs()
     for name, info in pairs(suppressedSAMs) do
         local sam = info.sam
