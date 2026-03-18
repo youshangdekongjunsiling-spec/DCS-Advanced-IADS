@@ -1,0 +1,578 @@
+{
+  "templates": {
+    "omni_search": {
+      "key": "omni_search",
+      "display_name": "Omni Search Radar",
+      "description": "搜索/预警模板。主瓣宽、全向易吃到干扰，但可通过更高基础功率避免远距致盲。",
+      "default_power_coeff_db": 8.0,
+      "hpbw_deg": 24.0,
+      "floor_db": -3.0,
+      "sidelobes": [
+        {
+          "angle_deg": 15,
+          "amplitude_db": -1.0,
+          "width_deg": 18.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 30,
+          "amplitude_db": -2.0,
+          "width_deg": 20.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 45,
+          "amplitude_db": -3.0,
+          "width_deg": 22.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 60,
+          "amplitude_db": -4.0,
+          "width_deg": 24.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 75,
+          "amplitude_db": -5.0,
+          "width_deg": 26.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 90,
+          "amplitude_db": -6.0,
+          "width_deg": 28.0,
+          "symmetric": true
+        }
+      ]
+    },
+    "legacy_fcr_wide": {
+      "key": "legacy_fcr_wide",
+      "display_name": "Legacy Fire Control Radar",
+      "description": "老式火控模板。主瓣明显但较宽，旁瓣也较大，正半球范围内仍常有较高干扰成功率。",
+      "default_power_coeff_db": 9.0,
+      "hpbw_deg": 10.0,
+      "floor_db": -18.0,
+      "sidelobes": [
+        {
+          "angle_deg": 12,
+          "amplitude_db": -5.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 24,
+          "amplitude_db": -8.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 36,
+          "amplitude_db": -11.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 48,
+          "amplitude_db": -14.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 60,
+          "amplitude_db": -17.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 72,
+          "amplitude_db": -20.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 84,
+          "amplitude_db": -23.0,
+          "width_deg": 8.0,
+          "symmetric": true
+        }
+      ]
+    },
+    "mid_fcr_compact": {
+      "key": "mid_fcr_compact",
+      "display_name": "Mid-Generation Fire Control Radar",
+      "description": "中先进火控模板。主瓣更窄，旁瓣收缩，偏离主瓣约30度后成功率显著下降。",
+      "default_power_coeff_db": 16.0,
+      "hpbw_deg": 3.2,
+      "floor_db": -36.0,
+      "sidelobes": [
+        {
+          "angle_deg": 6,
+          "amplitude_db": -9.0,
+          "width_deg": 3.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 12,
+          "amplitude_db": -14.0,
+          "width_deg": 3.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 18,
+          "amplitude_db": -19.0,
+          "width_deg": 3.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 24,
+          "amplitude_db": -24.0,
+          "width_deg": 3.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 30,
+          "amplitude_db": -30.0,
+          "width_deg": 3.2,
+          "symmetric": true
+        }
+      ]
+    },
+    "aesa_fcr_narrow": {
+      "key": "aesa_fcr_narrow",
+      "display_name": "AESA Fire Control Radar",
+      "description": "最先进火控模板。主瓣极窄，旁瓣极低，通常只有与锁定目标近共线时才容易干扰成功。",
+      "default_power_coeff_db": 25.0,
+      "hpbw_deg": 1.2,
+      "floor_db": -50.0,
+      "sidelobes": [
+        {
+          "angle_deg": 2.5,
+          "amplitude_db": -18.0,
+          "width_deg": 1.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 5.0,
+          "amplitude_db": -28.0,
+          "width_deg": 1.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 8.0,
+          "amplitude_db": -38.0,
+          "width_deg": 1.2,
+          "symmetric": true
+        },
+        {
+          "angle_deg": 12.0,
+          "amplitude_db": -46.0,
+          "width_deg": 1.2,
+          "symmetric": true
+        }
+      ]
+    }
+  },
+  "mapping_candidates": [
+    {
+      "dcs_type_name": "1L13 EWR",
+      "display_name": "1L13 Nebo",
+      "radar_role": "early warning radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 0.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "老式 VHF 预警雷达，整体易受扰。"
+    },
+    {
+      "dcs_type_name": "P-19 st",
+      "display_name": "P-19 Flat Face",
+      "radar_role": "search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 3.0,
+      "confidence": "high",
+      "source_family": "research",
+      "notes": "老式搜索雷达，略强于 1L13。"
+    },
+    {
+      "dcs_type_name": "p-19 s-125 sr",
+      "display_name": "P-19 / S-125 SR",
+      "radar_role": "search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 4.0,
+      "confidence": "high",
+      "source_family": "skynet",
+      "notes": "SA-2/SA-3 配套的老式搜索雷达。"
+    },
+    {
+      "dcs_type_name": "EWR P-37 BAR LOCK",
+      "display_name": "P-37 Bar Lock",
+      "radar_role": "early warning radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 7.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "老式远程 EWR，但整体功率应高于 1L13/P-19。"
+    },
+    {
+      "dcs_type_name": "55G6 EWR",
+      "display_name": "55G6 Tall Rack",
+      "radar_role": "modern early warning radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 18.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "现代搜索雷达；仍吃全向干扰，但远距更难致盲。"
+    },
+    {
+      "dcs_type_name": "FPS-117 Dome",
+      "display_name": "FPS-117 Dome",
+      "radar_role": "modern search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 22.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "现代固定阵列搜索雷达，建议用高基础功率。"
+    },
+    {
+      "dcs_type_name": "FPS-117",
+      "display_name": "FPS-117",
+      "radar_role": "modern search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 22.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "与 Dome 版本同档处理。"
+    },
+    {
+      "dcs_type_name": "NASAMS_Radar_MPQ64F1",
+      "display_name": "AN/MPQ-64 Sentinel F1",
+      "radar_role": "modern search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 18.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "现代机动 3D 搜索雷达，易受全向干扰但整体较硬。"
+    },
+    {
+      "dcs_type_name": "Dog Ear radar",
+      "display_name": "9S80M1 Dog Ear",
+      "radar_role": "target acquisition radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 14.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "短程现代搜索/获取雷达，可先归搜索模板。"
+    },
+    {
+      "dcs_type_name": "Hawk sr",
+      "display_name": "Hawk Search Radar",
+      "radar_role": "search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 8.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "老式搜索雷达，不应视为先进火控。"
+    },
+    {
+      "dcs_type_name": "S-300PS 64H6E sr",
+      "display_name": "64N6 Big Bird",
+      "radar_role": "modern long-range search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 20.0,
+      "confidence": "medium",
+      "source_family": "research+skynet",
+      "notes": "现代高性能搜索雷达；用搜索模板但给更大基础功率。"
+    },
+    {
+      "dcs_type_name": "S-300PS 40B6MD sr",
+      "display_name": "5N66/76N6 Clam Shell",
+      "radar_role": "search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 16.0,
+      "confidence": "medium",
+      "source_family": "research+skynet",
+      "notes": "现代搜索/低空补盲类雷达，比 Big Bird 略弱。"
+    },
+    {
+      "dcs_type_name": "S-300PS 40B6MD sr_19J6",
+      "display_name": "Tin Shield / 19J6",
+      "radar_role": "search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 14.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "搜索类补充雷达，可先按中等搜索功率处理。"
+    },
+    {
+      "dcs_type_name": "SNR_75V",
+      "display_name": "Fan Song",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 7.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "老式火控雷达，主瓣宽且旁瓣明显。"
+    },
+    {
+      "dcs_type_name": "snr s-125 tr",
+      "display_name": "Low Blow / S-125 TR",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 8.0,
+      "confidence": "high",
+      "source_family": "skynet",
+      "notes": "与 SA-2 同代，略强。"
+    },
+    {
+      "dcs_type_name": "Kub STR",
+      "display_name": "Straight Flush",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 9.0,
+      "confidence": "high",
+      "source_family": "research",
+      "notes": "你明确指定的老式火控模板代表。"
+    },
+    {
+      "dcs_type_name": "Kub 1S91 str",
+      "display_name": "1S91 Straight Flush",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 9.0,
+      "confidence": "high",
+      "source_family": "skynet",
+      "notes": "与 Kub STR 视为同档。"
+    },
+    {
+      "dcs_type_name": "Hawk tr",
+      "display_name": "Hawk HPIR",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 10.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "老式跟踪/照射雷达，主瓣明确但不算窄。"
+    },
+    {
+      "dcs_type_name": "Osa 9A33 ln",
+      "display_name": "Osa / SA-8",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 11.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "一体化短程系统，但抗干扰能力仍有限。"
+    },
+    {
+      "dcs_type_name": "ZSU-23-4 Shilka",
+      "display_name": "Shilka",
+      "radar_role": "legacy tracking radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 8.0,
+      "confidence": "medium",
+      "source_family": "research+skynet",
+      "notes": "老式炮瞄跟踪雷达。"
+    },
+    {
+      "dcs_type_name": "rapier_fsa_blindfire_radar",
+      "display_name": "Rapier Blindfire",
+      "radar_role": "legacy fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 11.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "老式短程火控雷达，先按宽主瓣火控处理。"
+    },
+    {
+      "dcs_type_name": "SA-11 Buk LN 9A310M1",
+      "display_name": "Buk Fire Dome",
+      "radar_role": "mid-generation fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 17.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "中先进火控模板的代表样本。"
+    },
+    {
+      "dcs_type_name": "SA-17 Buk M1-2 LN",
+      "display_name": "Buk M1-2",
+      "radar_role": "mid-generation fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 19.0,
+      "confidence": "high",
+      "source_family": "research",
+      "notes": "比 SA-11 更强一档。"
+    },
+    {
+      "dcs_type_name": "SA-11 Buk SR 9S18M1",
+      "display_name": "Snow Drift",
+      "radar_role": "mid-generation search radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "搜索雷达，但方向性已明显收束。"
+    },
+    {
+      "dcs_type_name": "Buk SR 9S18M1",
+      "display_name": "Snow Drift",
+      "radar_role": "mid-generation search radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0,
+      "confidence": "medium",
+      "source_family": "research",
+      "notes": "与 Skynet 同名异写法别名。"
+    },
+    {
+      "dcs_type_name": "Tor 9A331",
+      "display_name": "Tor",
+      "radar_role": "modern short-range fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 19.0,
+      "confidence": "medium",
+      "source_family": "research+skynet",
+      "notes": "先进短程火控，但仍不建议归到相控阵火控档。"
+    },
+    {
+      "dcs_type_name": "Roland ADS",
+      "display_name": "Roland ADS",
+      "radar_role": "short-range tracking/fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 14.0,
+      "confidence": "medium",
+      "source_family": "research",
+      "notes": "代际新于 Hawk/SA-6，但不属高端阵列火控。"
+    },
+    {
+      "dcs_type_name": "Roland Radar",
+      "display_name": "Roland Radar",
+      "radar_role": "short-range search radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 14.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "和 Roland ADS 同档处理。"
+    },
+    {
+      "dcs_type_name": "2S6 Tunguska",
+      "display_name": "Tunguska",
+      "radar_role": "short-range tracking/fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "现代近程系统，指向性和抗干扰强于老式火控。"
+    },
+    {
+      "dcs_type_name": "Tunguska_2S6",
+      "display_name": "Tunguska",
+      "radar_role": "short-range tracking/fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0,
+      "confidence": "medium",
+      "source_family": "research",
+      "notes": "研究层别名。"
+    },
+    {
+      "dcs_type_name": "Gepard",
+      "display_name": "Gepard",
+      "radar_role": "short-range tracking radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 13.0,
+      "confidence": "medium",
+      "source_family": "research+skynet",
+      "notes": "比 Shilka 更现代，但仍不应过强。"
+    },
+    {
+      "dcs_type_name": "HQ-7_STR_SP",
+      "display_name": "HQ-7 STR",
+      "radar_role": "short-range fire control radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0,
+      "confidence": "low",
+      "source_family": "skynet",
+      "notes": "缺少足够本地研究，暂放中先进短程档。"
+    },
+    {
+      "dcs_type_name": "HEMTT_C-RAM_Phalanx",
+      "display_name": "C-RAM Phalanx",
+      "radar_role": "close-in tracking radar",
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 14.0,
+      "confidence": "low",
+      "source_family": "skynet",
+      "notes": "先按中先进近程跟踪雷达处理。"
+    },
+    {
+      "dcs_type_name": "S-300PS 40B6M tr",
+      "display_name": "30N6 Flap Lid",
+      "radar_role": "aesa-like fire control radar",
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 26.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "你定义的最先进火控模板代表。"
+    },
+    {
+      "dcs_type_name": "S-300PS 5H63C 30H6_tr",
+      "display_name": "30H6 TR",
+      "radar_role": "aesa-like fire control radar",
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 26.0,
+      "confidence": "high",
+      "source_family": "skynet",
+      "notes": "与 30N6 同档。"
+    },
+    {
+      "dcs_type_name": "Patriot str",
+      "display_name": "AN/MPQ-53/65",
+      "radar_role": "aesa-like fire control radar",
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 25.0,
+      "confidence": "high",
+      "source_family": "research+skynet",
+      "notes": "现代相控阵火控雷达代表。"
+    },
+    {
+      "dcs_type_name": "Strela-10M3",
+      "display_name": "Strela-10M3",
+      "radar_role": "short-range acquisition/tracking",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 6.0,
+      "confidence": "low",
+      "source_family": "skynet",
+      "notes": "低优先级占位。"
+    },
+    {
+      "dcs_type_name": "Strela-1 9P31",
+      "display_name": "Strela-1",
+      "radar_role": "short-range acquisition/tracking",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 5.0,
+      "confidence": "low",
+      "source_family": "skynet",
+      "notes": "低优先级占位。"
+    },
+    {
+      "dcs_type_name": "RLS_19J6",
+      "display_name": "Tin Shield",
+      "radar_role": "search radar",
+      "template_key": "omni_search",
+      "power_coeff_db": 10.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "搜索/警戒雷达，先按搜索模板处理。"
+    },
+    {
+      "dcs_type_name": "RPC_5N62V",
+      "display_name": "Square Pair / 5N62V",
+      "radar_role": "long-range fire control radar",
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 12.0,
+      "confidence": "medium",
+      "source_family": "skynet",
+      "notes": "SA-5 火控雷达，长程但仍属老式火控体制。"
+    }
+  ]
+}

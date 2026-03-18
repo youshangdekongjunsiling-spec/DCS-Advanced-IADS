@@ -1,0 +1,174 @@
+{
+  "omni_search": {
+    "key": "omni_search",
+    "display_name": "Omni Search Radar",
+    "description": "搜索/预警模板。主瓣宽、全向易吃到干扰，但可通过更高基础功率避免远距致盲。",
+    "default_power_coeff_db": 8.0,
+    "hpbw_deg": 24.0,
+    "floor_db": -3.0,
+    "sidelobes": [
+      {
+        "angle_deg": 15,
+        "amplitude_db": -1.0,
+        "width_deg": 18.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 30,
+        "amplitude_db": -2.0,
+        "width_deg": 20.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 45,
+        "amplitude_db": -3.0,
+        "width_deg": 22.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 60,
+        "amplitude_db": -4.0,
+        "width_deg": 24.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 75,
+        "amplitude_db": -5.0,
+        "width_deg": 26.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 90,
+        "amplitude_db": -6.0,
+        "width_deg": 28.0,
+        "symmetric": true
+      }
+    ]
+  },
+  "legacy_fcr_wide": {
+    "key": "legacy_fcr_wide",
+    "display_name": "Legacy Fire Control Radar",
+    "description": "老式火控模板。主瓣明显但较宽，旁瓣也较大，正半球范围内仍常有较高干扰成功率。",
+    "default_power_coeff_db": 9.0,
+    "hpbw_deg": 10.0,
+    "floor_db": -18.0,
+    "sidelobes": [
+      {
+        "angle_deg": 12,
+        "amplitude_db": -5.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 24,
+        "amplitude_db": -8.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 36,
+        "amplitude_db": -11.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 48,
+        "amplitude_db": -14.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 60,
+        "amplitude_db": -17.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 72,
+        "amplitude_db": -20.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 84,
+        "amplitude_db": -23.0,
+        "width_deg": 8.0,
+        "symmetric": true
+      }
+    ]
+  },
+  "mid_fcr_compact": {
+    "key": "mid_fcr_compact",
+    "display_name": "Mid-Generation Fire Control Radar",
+    "description": "中先进火控模板。主瓣更窄，旁瓣收缩，偏离主瓣约30度后成功率显著下降。",
+    "default_power_coeff_db": 16.0,
+    "hpbw_deg": 3.2,
+    "floor_db": -36.0,
+    "sidelobes": [
+      {
+        "angle_deg": 6,
+        "amplitude_db": -9.0,
+        "width_deg": 3.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 12,
+        "amplitude_db": -14.0,
+        "width_deg": 3.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 18,
+        "amplitude_db": -19.0,
+        "width_deg": 3.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 24,
+        "amplitude_db": -24.0,
+        "width_deg": 3.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 30,
+        "amplitude_db": -30.0,
+        "width_deg": 3.2,
+        "symmetric": true
+      }
+    ]
+  },
+  "aesa_fcr_narrow": {
+    "key": "aesa_fcr_narrow",
+    "display_name": "AESA Fire Control Radar",
+    "description": "最先进火控模板。主瓣极窄，旁瓣极低，通常只有与锁定目标近共线时才容易干扰成功。",
+    "default_power_coeff_db": 25.0,
+    "hpbw_deg": 1.2,
+    "floor_db": -50.0,
+    "sidelobes": [
+      {
+        "angle_deg": 2.5,
+        "amplitude_db": -18.0,
+        "width_deg": 1.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 5.0,
+        "amplitude_db": -28.0,
+        "width_deg": 1.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 8.0,
+        "amplitude_db": -38.0,
+        "width_deg": 1.2,
+        "symmetric": true
+      },
+      {
+        "angle_deg": 12.0,
+        "amplitude_db": -46.0,
+        "width_deg": 1.2,
+        "symmetric": true
+      }
+    ]
+  }
+}
