@@ -180,9 +180,10 @@ function SkynetIADSLogger:printSAMSiteStatus()
 		local engageHARMS = samSite:getCanEngageHARM()
 		
 		local hasAmmo = samSite:hasRemainingAmmo()
+		local isJammed = samSite:isJammed()
 		
 		self:printOutputToLog("GROUP: "..samSite:getDCSName().." | TYPE: "..samSite:getNatoName())
-		self:printOutputToLog("ACTIVE: "..tostring(isActive).." | AUTONOMOUS: "..tostring(isAutonomous).." | IS ACTING AS EW: "..tostring(samSite:getActAsEW()).." | CAN ENGAGE AIR WEAPONS : "..tostring(engageAirWeapons).." | CAN ENGAGE HARMS : "..tostring(engageHARMS).." | HAS AMMO: "..tostring(hasAmmo).." | DETECTED TARGETS: "..#detectedTargets.." | DEFENDING HARM: "..tostring(samSite:isDefendingHARM()).." | MISSILES IN FLIGHT: "..tostring(samSite:getNumberOfMissilesInFlight()))
+		self:printOutputToLog("ACTIVE: "..tostring(isActive).." | JAMMED: "..tostring(isJammed).." | AUTONOMOUS: "..tostring(isAutonomous).." | IS ACTING AS EW: "..tostring(samSite:getActAsEW()).." | CAN ENGAGE AIR WEAPONS : "..tostring(engageAirWeapons).." | CAN ENGAGE HARMS : "..tostring(engageHARMS).." | HAS AMMO: "..tostring(hasAmmo).." | DETECTED TARGETS: "..#detectedTargets.." | DEFENDING HARM: "..tostring(samSite:isDefendingHARM()).." | MISSILES IN FLIGHT: "..tostring(samSite:getNumberOfMissilesInFlight()))
 		
 		if numConnectionNodes > 0 then
 			self:printOutputToLog("CONNECTION NODES: "..numConnectionNodes.." | DAMAGED: "..numDamagedConnectionNodes.." | INTACT: "..intactConnectionNodes)
@@ -303,6 +304,7 @@ function SkynetIADSLogger:printSystemStatus()
 		local samSitesOutOfAmmo = 0
 		local samSiteAutonomous = 0
 		local samSiteRadarDestroyed = 0
+		local samSitesJammed = 0
 		for i = 1, #samSites do
 			local samSite = samSites[i]
 			if samSite:hasWorkingPowerSource() == false then
@@ -320,13 +322,16 @@ function SkynetIADSLogger:printSystemStatus()
 			if samSite:getAutonomousState() == true then
 				samSiteAutonomous = samSiteAutonomous + 1
 			end
+			if samSite:isJammed() then
+				samSitesJammed = samSitesJammed + 1
+			end
 			if samSite:hasWorkingRadar() == false then
 				samSiteRadarDestroyed = samSiteRadarDestroyed + 1
 			end
 		end
 		
 		samSitesInactive = samSitesTotal - samSitesActive
-		self:printOutput("SAM: "..samSitesTotal.." | On: "..samSitesActive.." | Off: "..samSitesInactive.." | Autonm: "..samSiteAutonomous.." | Raddest: "..samSiteRadarDestroyed.." | NoPowr: "..samSitesNoPower.." | NoCon: "..samSitesNoConnectionNode.." | NoAmmo: "..samSitesOutOfAmmo)
+		self:printOutput("SAM: "..samSitesTotal.." | On: "..samSitesActive.." | Off: "..samSitesInactive.." | Jammed: "..samSitesJammed.." | Autonm: "..samSiteAutonomous.." | Raddest: "..samSiteRadarDestroyed.." | NoPowr: "..samSitesNoPower.." | NoCon: "..samSitesNoConnectionNode.." | NoAmmo: "..samSitesOutOfAmmo)
 	end
 	
 	if self:getDebugSettings().contacts then

@@ -536,6 +536,17 @@ function SkynetIADSAbstractRadarElement:getEngagementZone()
 	return self.goLiveRange
 end
 
+local function setControllerROE(controller, weaponHold)
+	local groundValue = weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.WEAPON_FREE
+	local airValue = weaponHold and AI.Option.Air.val.ROE.WEAPON_HOLD or AI.Option.Air.val.ROE.WEAPON_FREE
+	pcall(function()
+		controller:setOption(AI.Option.Ground.id.ROE, groundValue)
+	end)
+	pcall(function()
+		controller:setOption(AI.Option.Air.id.ROE, airValue)
+	end)
+end
+
 function SkynetIADSAbstractRadarElement:goLive()
 	if ( self.aiState == false and self:hasWorkingPowerSource() and self.harmSilenceID == nil) 
 	and (self:hasRemainingAmmo() == true  )
@@ -544,7 +555,7 @@ function SkynetIADSAbstractRadarElement:goLive()
 			local  cont = self:getController()
 			cont:setOnOff(true)
 			cont:setOption(AI.Option.Ground.id.ALARM_STATE, AI.Option.Ground.val.ALARM_STATE.RED)	
-			cont:setOption(AI.Option.Air.id.ROE, AI.Option.Air.val.ROE.WEAPON_FREE)
+			setControllerROE(cont, false)
 			self:getDCSRepresentation():enableEmission(true)
 			self.goLiveTime = timer.getTime()
 			self.aiState = true
@@ -606,6 +617,10 @@ end
 
 function SkynetIADSAbstractRadarElement:isActive()
 	return self.aiState
+end
+
+function SkynetIADSAbstractRadarElement:isJammed()
+	return self.lastJammerUpdate > 0 and (timer.getTime() - self.lastJammerUpdate) <= 10
 end
 
 function SkynetIADSAbstractRadarElement:isTargetInRange(target)
@@ -690,12 +705,12 @@ function SkynetIADSAbstractRadarElement:jam(successProbability)
 				self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": Probability: "..successProbability)
 			end
 			if successProbability > probability then
-				controller:setOption(AI.Option.Air.id.ROE, AI.Option.Air.val.ROE.WEAPON_HOLD)
+				setControllerROE(controller, true)
 				if self.iads:getDebugSettings().jammerProbability then
 					self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": jammed, setting to weapon hold")
 				end
 			else
-				controller:setOption(AI.Option.Air.id.ROE, AI.Option.Air.val.ROE.WEAPON_FREE)
+				setControllerROE(controller, false)
 				if self.iads:getDebugSettings().jammerProbability then
 					self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": jammed, setting to weapon free")
 				end

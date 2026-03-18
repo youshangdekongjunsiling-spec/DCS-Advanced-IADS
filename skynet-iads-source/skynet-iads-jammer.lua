@@ -47,7 +47,7 @@ end
 
 function SkynetIADSJammer:masterArmOn()
 	self:masterArmSafe()
-	self.jammerTaskID = mist.scheduleFunction(SkynetIADSJammer.runCycle, {self}, 1, 10)
+	self.jammerTaskID = mist.scheduleFunction(SkynetIADSJammer.runCycle, {self}, 1, 2)
 end
 
 function SkynetIADSJammer:addFunction(natoName, jammerFunction)
@@ -92,6 +92,19 @@ function SkynetIADSJammer:getDistanceNMToRadarUnit(radarUnit)
 	return mist.utils.metersToNM(mist.utils.get3DDist(self.emitter:getPosition().p, radarUnit:getPosition().p))
 end
 
+function SkynetIADSJammer:applyEA18GBridge(iads, samSite)
+	if EA18GSkynetJammerBridge and EA18GSkynetJammerBridge.getSuccessProbability then
+		local handled, successProbability = EA18GSkynetJammerBridge.getSuccessProbability(self.emitter, samSite, iads, self)
+		if handled then
+			if successProbability ~= nil then
+				samSite:jam(successProbability)
+			end
+			return true
+		end
+	end
+	return false
+end
+
 function SkynetIADSJammer.runCycle(self)
 
 	if self.emitter:isExist() == false then
@@ -104,19 +117,21 @@ function SkynetIADSJammer.runCycle(self)
 		local samSites = iads:getActiveSAMSites()	
 		for j = 1, #samSites do
 			local samSite = samSites[j]
-			local radars = samSite:getRadars()
-			local hasLOS = false
-			local distance = 0
-			local natoName = samSite:getNatoName()
-			for l = 1, #radars do
-				local radar = radars[l]
-				distance = self:getDistanceNMToRadarUnit(radar)
-				-- I try to emulate the system as it would work in real life, so a jammer can only jam a SAM site if has line of sight to at least one radar in the group
-				if self:isKnownRadarEmitter(natoName) and self:hasLineOfSightToRadar(radar) and distance <= self.maximumEffectiveDistanceNM then
-					if iads:getDebugSettings().jammerProbability then
-						iads:printOutput("JAMMER: Distance: "..distance)
+			local handledByEA18G = self:applyEA18GBridge(iads, samSite)
+			if handledByEA18G == false then
+				local radars = samSite:getRadars()
+				local distance = 0
+				local natoName = samSite:getNatoName()
+				for l = 1, #radars do
+					local radar = radars[l]
+					distance = self:getDistanceNMToRadarUnit(radar)
+					-- I try to emulate the system as it would work in real life, so a jammer can only jam a SAM site if has line of sight to at least one radar in the group
+					if self:isKnownRadarEmitter(natoName) and self:hasLineOfSightToRadar(radar) and distance <= self.maximumEffectiveDistanceNM then
+						if iads:getDebugSettings().jammerProbability then
+							iads:printOutput("JAMMER: Distance: "..distance)
+						end
+						samSite:jam(self:getSuccessProbability(distance, natoName))
 					end
-					samSite:jam(self:getSuccessProbability(distance, natoName))
 				end
 			end
 		end
