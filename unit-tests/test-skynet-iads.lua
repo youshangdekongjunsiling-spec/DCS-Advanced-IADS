@@ -1,23 +1,49 @@
 do
+-- ============================================================================
+-- Skynet IADS 单元测试套件
+-- 此文件包含对 IADS 系统各个组件的单元测试
+-- 使用 LuaUnit 测试框架进行测试
+-- ============================================================================
+
+-- 定义测试类
 TestSkynetIADS = {}
 
+-- ============================================================================
+-- 测试设置函数
+-- 在每个测试用例运行前调用，用于初始化测试环境
+-- 功能: 创建测试用的 IADS 实例并添加测试用的雷达和 SAM 站点
+-- ============================================================================
 function TestSkynetIADS:setUp()
+	-- 设置测试常量
 	self.numSAMSites = SKYNET_UNIT_TESTS_NUM_SAM_SITES_RED 
 	self.numEWSites = SKYNET_UNIT_TESTS_NUM_EW_SITES_RED
+	
+	-- 创建测试用的 IADS 实例
 	self.testIADS = SkynetIADS:create()
+	
+	-- 添加测试用的雷达和 SAM 站点
 	self.testIADS:addEarlyWarningRadarsByPrefix('EW')
 	self.testIADS:addSAMSitesByPrefix('SAM')
 end
 
+-- ============================================================================
+-- 测试清理函数
+-- 在每个测试用例运行后调用，用于清理测试环境
+-- 功能: 停用并清理测试用的 IADS 实例
+-- ============================================================================
 function TestSkynetIADS:tearDown()
 	if	self.testIADS then
+		-- 停用 IADS 系统
 		self.testIADS:deactivate()
 	end
+	-- 清理引用
 	self.testIADS = nil
 end
 
 -- this function checks constants in DCS that the IADS relies on. A change to them might indicate that functionallity is broken.
 -- In the code constants are refereed to with their constant name calue, not the values the represent.
+-- 此函数检查IADS依赖的DCS常量。对它们的更改可能表明功能已损坏。
+-- 在代码中，常量以其常量名称值引用，而不是它们表示的值。
 function TestSkynetIADS:testDCSContstantsHaveNotChanged()
 	lu.assertEquals(Weapon.Category.MISSILE, 1)
 	lu.assertEquals(Weapon.Category.SHELL, 0)
@@ -88,6 +114,7 @@ function TestSkynetIADS:testEvaluateContacts1EWAnd1SAMSiteWithContactInRange()
 	lu.assertEquals(samSite:isActive(), true)
 	
 	-- we remove the target to test if the sam site will now go dark, was added for the performance optimised code
+	-- 我们移除目标以测试SAM站点现在是否会关闭，这是为性能优化代码添加的
 	function ewRadar:getDetectedTargets()
 		return {}
 	end
@@ -121,6 +148,7 @@ function TestSkynetIADS:testAWACSHasMovedAndThereforeRebuildAutonomousStatesOfSA
 	lu.assertEquals(updateCalls, 0)
 	
 	--test distance calculation by giving the awacs a different position:
+	--通过给AWACS一个不同的位置来测试距离计算：
 	local firstPos = Unit.getByName('EW-AWACS-KJ-2000'):getPosition().p
 	awacs.lastUpdatePosition = firstPos
 	
@@ -128,11 +156,14 @@ function TestSkynetIADS:testAWACSHasMovedAndThereforeRebuildAutonomousStatesOfSA
 	lu.assertEquals(awacs:isUpdateOfAutonomousStateOfSAMSitesRequired(), true)
 	
 	-- a second imediate call shall result in false
+	-- 第二次立即调用应导致false
 	lu.assertEquals(awacs:getDistanceTraveledSinceLastUpdate(), 0)
 	lu.assertEquals(awacs:isUpdateOfAutonomousStateOfSAMSitesRequired(), false)
 	
 	--we reset lastUpdatePosition to firstPos to test call in the IADS code
 	-- TODO: when refactoring move this test to te AWACS Radar and use mock objects for integration tests in the IADS
+	--我们重置lastUpdatePosition为firstPos以测试IADS代码中的调用
+	-- TODO: 重构时将此测试移动到AWACS雷达，并在IADS的集成测试中使用模拟对象
 	awacs.lastUpdatePosition = firstPos
 	iads:evaluateContacts()
 	lu.assertEquals(updateCalls, 1)
@@ -147,6 +178,7 @@ function TestSkynetIADS:testSAMSiteLoosesPower()
 	lu.assertEquals(samSite:isActive(), true)
 	trigger.action.explosion(powerSource:getPosition().p, 100)
 	--we simulate a call to the event, since in game will be triggered to late to for later checks in this unit test
+	--我们模拟对事件的调用，因为在游戏中触发得太晚，无法在此单元测试中进行后续检查
 	samSite:onEvent(createDeadEvent())
 	lu.assertEquals(#self.testIADS:getUsableSAMSites(), self.numSAMSites-1)
 	lu.assertEquals(samSite:isActive(), false)
@@ -181,6 +213,7 @@ function TestSkynetIADS:testAddRadarsToCommandCenter()
 		called = true
 	end
 	--as long as IADS is not active addCommandCenter will not trigger addRadarsToCommandCenters when called:
+	--只要IADS不活跃，addCommandCenter在调用时不会触发addRadarsToCommandCenters：
 	self.testIADS:addRadarsToCommandCenters()
 	lu.assertEquals(called, true)
 	lu.assertEquals(#comC:getChildRadars(), (self.numEWSites + self.numSAMSites))
@@ -219,6 +252,7 @@ function TestSkynetIADS:testOneCommandCenterHasNoConnectionNode()
 
 	trigger.action.explosion(commandCenter2ConnectionNode:getPosition().p, 500)
 	--we simulate a call to the event, since in game will be triggered to late to for later checks in this unit test
+	--我们模拟对事件的调用，因为在游戏中触发得太晚，无法在此单元测试中进行后续检查
 	comCenter:onEvent(createDeadEvent())
 	lu.assertEquals(self.testIADS:isCommandCenterUsable(), false)
 

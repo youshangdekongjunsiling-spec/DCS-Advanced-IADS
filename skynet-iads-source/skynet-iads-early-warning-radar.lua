@@ -18,6 +18,7 @@ function SkynetIADSEWRadar:setupElements()
 		for entry, unitData in pairs(dataType) do
 			if entry == 'searchRadar' then
 				--buildSingleUnit checks to make sure the EW radar is defined in the Skynet database. If it is not, self.searchRadars will be 0 so no ew radar will be added
+				--buildSingleUnit检查确保EW雷达在Skynet数据库中定义。如果没有，self.searchRadars将为0，因此不会添加ew雷达
 				self:buildSingleUnit(unit, SkynetIADSSAMSearchRadar, self.searchRadars, unitData)
 				if #self.searchRadars > 0 then
 					local harmDetection = dataType['harm_detection_chance']
@@ -34,6 +35,7 @@ function SkynetIADSEWRadar:setupElements()
 end
 
 --an Early Warning Radar has simplified check to determine if its autonomous or not
+--早期预警雷达有简化的检查来确定它是否是自主的
 function SkynetIADSEWRadar:setToCorrectAutonomousState()
 	if self:hasActiveConnectionNode() and self:hasWorkingPowerSource() and self.iads:isCommandCenterUsable() then
 		self:resetAutonomousState()

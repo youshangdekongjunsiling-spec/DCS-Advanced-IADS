@@ -24,6 +24,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		local contact = self.contacts[i]	
 		local groundSpeed  = contact:getGroundSpeedInKnots(0)
 		--if a contact has only been hit by a radar once it's speed is 0
+		--如果接触只被雷达击中一次，其速度为0
 		if groundSpeed == 0 then
 			return
 		end
@@ -31,9 +32,12 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
 		--self.iads:printOutputToLog(contact:getName().." new Radars to evaluate: "..#newRadarsToEvaluate)
 		--self.iads:printOutputToLog(contact:getName().." ground speed: "..groundSpeed)
+		--self.iads:printOutputToLog(contact:getName().." 要评估的新雷达："..#newRadarsToEvaluate)
+		--self.iads:printOutputToLog(contact:getName().." 地面速度："..groundSpeed)
 		if ( #newRadarsToEvaluate > 0 and contact:isIdentifiedAsHARM() == false and ( groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS and #simpleAltitudeProfile <= 2 ) ) then
 			local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
 			--self.iads:printOutputToLog("DETECTION PROB: "..detectionProbability)
+			--self.iads:printOutputToLog("检测概率："..detectionProbability)
 			if ( self:shallReactToHARM(detectionProbability) ) then
 				contact:setHARMState(SkynetIADSContact.HARM)
 				if (self.iads:getDebugSettings().harmDefence ) then

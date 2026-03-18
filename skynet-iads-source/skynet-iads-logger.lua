@@ -53,6 +53,7 @@ function SkynetIADSLogger:printEarlyWarningRadarStatus()
 		local radars = ewRadar:getRadars()
 		
 		--get the first existing radar to prevent issues in calculating the distance later on:
+		--获取第一个现有雷达以防止稍后计算距离时出现问题：
 		for i = 1, #radars do
 			if radars[i]:isExist() then
 				firstRadar = radars[i]

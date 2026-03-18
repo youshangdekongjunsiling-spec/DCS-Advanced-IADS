@@ -50,11 +50,13 @@ function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	instance.canEngageHARM = false
 	instance.dataBaseSupportedTypesCanEngageHARM = false
 	-- 5 seconds seems to be a good value for the sam site to find the target with its organic radar
+	-- 5秒似乎是SAM站点用其有机雷达找到目标的好值
 	instance.noCacheActiveForSecondsAfterGoLive = 5
 	return instance
 end
 
 --TODO: this method could be updated to only return Radar weapons fired, this way a SAM firing an IR weapon could go dark faster in the goDark() method
+--TODO: 此方法可以更新为只返回雷达武器发射，这样发射红外武器的SAM可以在goDark()方法中更快地关闭
 function SkynetIADSAbstractRadarElement:weaponFired(event)
 	if event.id == world.event.S_EVENT_SHOT then
 		local weapon = event.weapon
@@ -80,6 +82,7 @@ function SkynetIADSAbstractRadarElement:cleanUp()
 	mist.removeFunction(self.harmScanID)
 	mist.removeFunction(self.harmSilenceID)
 	--call method from super class
+	--调用父类方法
 	self:removeEventHandlers()
 end
 
@@ -133,6 +136,7 @@ function SkynetIADSAbstractRadarElement:clearChildRadars()
 end
 
 --TODO: unit test this method
+--TODO: 单元测试此方法
 function SkynetIADSAbstractRadarElement:getUsableChildRadars()
 	local usableRadars = {}
 	for i = 1, #self.childRadars do
@@ -160,6 +164,8 @@ function SkynetIADSAbstractRadarElement:setToCorrectAutonomousState()
 		local parent = parents[i]
 		--of one parent exists that still is connected to the IADS, the SAM site does not have to go autonomous
 		--instead of isDestroyed() write method, hasWorkingSearchRadars()
+		--如果存在一个仍然连接到IADS的父级，SAM站点不必变为自主
+		--而不是isDestroyed()写方法，hasWorkingSearchRadars()
 		if self:hasActiveConnectionNode() and self.iads:isCommandCenterUsable() and parent:hasWorkingPowerSource() and parent:hasActiveConnectionNode() and parent:getActAsEW() == true and parent:isDestroyed() == false then
 			self:resetAutonomousState()
 			return
@@ -221,6 +227,7 @@ function SkynetIADSAbstractRadarElement:hasRemainingAmmoToEngageMissiles(minNumb
 end
 
 -- this method needs to be refactored so that it works for ew radars that don't have launchers, or that it is only called by sam sites
+-- 此方法需要重构，以便它适用于没有发射器的EW雷达，或者仅由SAM站点调用
 function SkynetIADSAbstractRadarElement:hasEnoughLaunchersToEngageMissiles(minNumberOfLaunchers)
 	local launchers = self:getLaunchers()
 	if(launchers ~= nil) then
@@ -254,6 +261,7 @@ function SkynetIADSAbstractRadarElement:getNumberOfMissilesInFlight()
 end
 
 -- DCS does not send an event, when a missile is destroyed, so this method needs to be polled so that the missiles in flight are current, polling is done in the HARM Search call: evaluateIfTargetsContainHARMs
+-- DCS在导弹被摧毁时不发送事件，因此需要轮询此方法以使飞行中的导弹保持最新，轮询在HARM搜索调用中完成：evaluateIfTargetsContainHARMs
 function SkynetIADSAbstractRadarElement:updateMissilesInFlight()
 	local missilesInFlight = {}
 	for i = 1, #self.missilesInFlight do
@@ -342,6 +350,7 @@ end
 
 function SkynetIADSAbstractRadarElement:hasRemainingAmmo()
 	--the launcher check is due to ew radars they have no launcher and no ammo and therefore are never out of ammo
+	--发射器检查是由于EW雷达没有发射器和弹药，因此永远不会用完弹药
 	return ( #self.launchers == 0 ) or ((self:getRemainingNumberOfMissiles() > 0 ) or ( self:getRemainingNumberOfShells() > 0 ) )
 end
 
@@ -381,6 +390,7 @@ function SkynetIADSAbstractRadarElement:setupElements()
 		end
 		
 		--this check ensures a unit or group has all required elements for the specific sam or ew type:
+		--此检查确保单位或组具有特定SAM或EW类型所需的所有元素：
 		if (hasLauncher and hasSearchRadar and hasTrackingRadar and #self.launchers > 0 and #self.searchRadars > 0  and #self.trackingRadars > 0 ) 
 			or (hasSearchRadar and hasLauncher and #self.searchRadars > 0 and #self.launchers > 0) then
 			self:setHARMDetectionChance(dataType['harm_detection_chance'])
@@ -413,8 +423,10 @@ function SkynetIADSAbstractRadarElement:setCanEngageAirWeapons(engageAirWeapons)
 		if ( engageAirWeapons == true ) then
 			controller:setOption(AI.Option.Ground.id.ENGAGE_AIR_WEAPONS, true)
 			--its important that we set var to true here, to prevent recursion in setCanEngageHARM
+			--在这里将变量设置为true很重要，以防止setCanEngageHARM中的递归
 			self.engageAirWeapons = true
 			--we set the original value we got when loading info about the SAM site
+			--我们设置加载SAM站点信息时获得的原始值
 			self:setCanEngageHARM(self.dataBaseSupportedTypesCanEngageHARM)
 		else
 			controller:setOption(AI.Option.Ground.id.ENGAGE_AIR_WEAPONS, false)
@@ -431,6 +443,7 @@ end
 
 function SkynetIADSAbstractRadarElement:buildNatoName(natoName)
 	--we shorten the SA-XX names and don't return their code names eg goa, gainful..
+	--我们缩短SA-XX名称，不返回其代号，如goa、gainful等
 	local pos = natoName:find(" ")
 	local prefix = natoName:sub(1, 2)
 	if string.lower(prefix) == 'sa' and pos ~= nil then
@@ -560,10 +573,12 @@ function SkynetIADSAbstractRadarElement:goDark()
 			self:getDCSRepresentation():enableEmission(false)
 		end
 		-- point defence will only go live if the Radar Emitting site it is protecting goes dark and this is due to a it defending against a HARM
+		-- 点防御只有在它保护的雷达发射站点关闭时才会上线，这是由于它防御HARM
 		if (self.harmSilenceID ~= nil) then
 			self:pointDefencesGoLive()
 			if self:isDestroyed() == false then
 				--if site goes dark due to HARM we turn off AI, this is due to a bug in DCS multiplayer where the harm will find its way to the radar emitter if just setEmissions is set to false
+				--如果站点因HARM而关闭，我们关闭AI，这是由于DCS多人游戏中的一个错误，如果只设置setEmissions为false，HARM会找到雷达发射器
 				local controller = self:getController()
 				controller:setOnOff(false)
 			end
@@ -752,6 +767,7 @@ function SkynetIADSAbstractRadarElement:getDetectedTargets()
 			for i = 1, #targets do
 				local target = targets[i]
 				-- there are cases when a destroyed object is still visible as a target to the radar, don't add it, will cause errors everywhere the dcs object is accessed
+				-- 有时被摧毁的对象仍然对雷达可见作为目标，不要添加它，在访问DCS对象的地方会导致错误
 				if target.object then
 					local iadsTarget = SkynetIADSContact:create(target, self)
 					iadsTarget:refresh()
@@ -790,6 +806,7 @@ end
 
 function SkynetIADSAbstractRadarElement:calculateImpactPoint(target, distanceInMeters)
 	-- distance needs to be incremented by a certain value for ip calculation to work, check why presumably due to rounding errors in the previous distance calculation
+	-- 距离需要增加某个值才能使ip计算工作，检查为什么可能是由于先前距离计算中的舍入错误
 	return land.getIP(target:getPosition().p, target:getPosition().x, distanceInMeters + 50)
 end
 
@@ -798,6 +815,7 @@ function SkynetIADSAbstractRadarElement:shallReactToHARM()
 end
 
 -- will only check for missiles, if DCS ads AAA than can engage HARMs then this code must be updated:
+-- 只会检查导弹，如果DCS添加可以攻击HARMs的AAA，则必须更新此代码：
 function SkynetIADSAbstractRadarElement:shallIgnoreHARMShutdown()
 	local numOfHarms = self:getNumberOfObjectsItentifiedAsHARMS()
 	--[[
@@ -821,12 +839,15 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 				local secondsToImpact = self:getSecondsToImpact(distanceNM, speedKT)
 				--TODO: use tti instead of distanceNM?
 				-- when iterating through the radars, store shortest tti and work with that value??
+				--TODO: 使用tti而不是distanceNM？
+				-- 在遍历雷达时，存储最短tti并使用该值？？
 				if ( harmToSAMAspect < SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT and distanceNM < SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM ) then
 					self:addObjectIdentifiedAsHARM(harmContact)
 					if ( #self:getPointDefences() > 0 and self:pointDefencesGoLive() == true and self.iads:getDebugSettings().harmDefence ) then
 							self.iads:printOutputToLog("POINT DEFENCES GOING LIVE FOR: "..self:getDCSName().." | TTI: "..secondsToImpact)
 					end
 					--self.iads:printOutputToLog("Ignore HARM shutdown: "..tostring(self:shallIgnoreHARMShutdown()))
+					--self.iads:printOutputToLog("忽略HARM关闭："..tostring(self:shallIgnoreHARMShutdown()))
 					if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 						self:goSilentToEvadeHARM(secondsToImpact)
 						break
@@ -866,6 +887,9 @@ function SkynetIADSAbstractRadarElement:cleanUpOldObjectsIdentifiedAsHARMS()
 	--stop point defences acting as ew (always on), will occur if activated via evaluateIfTargetsContainHARMs()
 	--if in this iteration all harms where cleared we turn of the point defence. But in any other cases we dont turn of point defences, that interferes with other parts of the iads
 	-- when setting up the iads (letting pds go to read state)
+	--停止点防御作为EW（始终开启），如果通过evaluateIfTargetsContainHARMs()激活会发生
+	--如果在此迭代中所有HARMs被清除，我们关闭点防御。但在任何其他情况下，我们不关闭点防御，这会干扰IADS的其他部分
+	-- 设置IADS时（让pds进入读取状态）
 	if (#newHARMS == 0 and self:getNumberOfObjectsItentifiedAsHARMS() > 0 ) then
 		self:pointDefencesStopActingAsEW()
 	end
@@ -876,12 +900,14 @@ end
 function SkynetIADSAbstractRadarElement.evaluateIfTargetsContainHARMs(self)
 
 	--if an emitter dies the SAM site being jammed will revert back to normal operation:
+	--如果发射器死亡，被干扰的SAM站点将恢复到正常操作：
 	if self.lastJammerUpdate > 0 and ( timer:getTime() - self.lastJammerUpdate ) > 10 then
 		self:jam(0)
 		self.lastJammerUpdate = 0
 	end
 	
-	--we use the regular interval of this method to update to other states: 
+	--we use the regular interval of this method to update to other states:
+	--我们使用此方法的常规间隔来更新到其他状态： 
 	self:updateMissilesInFlight()	
 	self:cleanUpOldObjectsIdentifiedAsHARMS()
 end

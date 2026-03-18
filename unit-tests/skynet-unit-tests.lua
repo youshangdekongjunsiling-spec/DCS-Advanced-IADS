@@ -1,10 +1,12 @@
 do
 
 ---IADS Unit Tests
+---IADS单元测试
 SKYNET_UNIT_TESTS_NUM_EW_SITES_RED = 17
 SKYNET_UNIT_TESTS_NUM_SAM_SITES_RED = 17
 
 --factory method used in multiple unit tests
+--在多个单元测试中使用的工厂方法
 function IADSContactFactory(unitName)
 	local contact = Unit.getByName(unitName)
 	local radarContact = {}
@@ -24,6 +26,7 @@ end
 lu.LuaUnit.run()
 
 --clean mist left over scheduled tasks form unit tests, check there are no left over tasks in the IADS
+--清理单元测试中剩余的mist调度任务，检查IADS中没有剩余任务
 local i = 0
 while i < 10000 do
 	local id =  mist.removeFunction(i)
