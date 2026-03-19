@@ -662,7 +662,33 @@ local function isCurrentPresetAvailableForJammer(jammerName)
     return state.alq99Count >= (preset.alq99 or 0) and state.alq249Count >= (preset.alq249 or 0)
 end
 
-local function computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUnit)
+local advancedJammerModuleMissingWarned = false
+
+local function getCurrentPresetCounts(jammerName)
+    local preset = jammerSettings[jammerName] and jammerSettings[jammerName].currentPreset or {}
+    return preset.alq99 or 0, preset.alq249 or 0
+end
+
+local function evaluateAdvancedJammerForRadar(jammerName, emitterUnit, radarUnit, jammerMode)
+    if not AdvancedJammerSimulation or not AdvancedJammerSimulation.evaluateUnits then
+        if not advancedJammerModuleMissingWarned then
+            advancedJammerModuleMissingWarned = true
+            env.info("[EA18G] AdvancedJammerSimulation not loaded, falling back to legacy jammer logic", false)
+        end
+        return nil
+    end
+
+    local alq99Count, alq249Count = getCurrentPresetCounts(jammerName)
+    return AdvancedJammerSimulation.evaluateUnits({
+        jammerUnit = emitterUnit,
+        radarUnit = radarUnit,
+        jammerMode = jammerMode,
+        alq99Count = alq99Count,
+        alq249Count = alq249Count
+    })
+end
+
+local function computeLegacySpotJamProbabilityPercent(jammerName, emitterUnit, radarUnit)
     local jammerPos = emitterUnit:getPoint()
     local targetPos = radarUnit:getPoint()
     local dist = get3DDist(jammerPos, targetPos)
@@ -685,6 +711,58 @@ local function computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUni
 
     probability = math.min(probability + altitudeBoost, 1.0)
     return probability * 100
+end
+
+local function computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUnit)
+    local advancedResult = evaluateAdvancedJammerForRadar(jammerName, emitterUnit, radarUnit, "spot")
+    if advancedResult then
+        return advancedResult.probabilityPercent, advancedResult
+    end
+    return computeLegacySpotJamProbabilityPercent(jammerName, emitterUnit, radarUnit), nil
+end
+
+local function computeOffensiveJamProbability(jammerName, emitterUnit, radarUnit)
+    local settings = jammerSettings[jammerName] or {}
+    local jammerMode = settings.offDir and "sector" or "broadcast"
+    local advancedResult = evaluateAdvancedJammerForRadar(jammerName, emitterUnit, radarUnit, jammerMode)
+    if advancedResult then
+        return advancedResult.probabilityPercent, advancedResult
+    end
+
+    local radarPos = radarUnit:getPoint()
+    local jammerPos = emitterUnit:getPoint()
+    if get3DDist(jammerPos, radarPos) < 50000 and land.isVisible(radarPos, jammerPos) then
+        return 100, nil
+    end
+    return nil, nil
+end
+
+offensiveLoop = function(jammer)
+    local unit = Unit.getByName(jammer)
+    if not unit or not unit:isExist() then return end
+    for _, name in ipairs(mist.makeUnitTable({'[red][vehicle]', '[red][ship]'})) do
+        local sam = Unit.getByName(name)
+        if sam and sam:isExist() and sam:hasAttribute("SAM TR") then
+            local samPos = sam:getPoint()
+            local allowed = jammerSettings[jammer].offensive or
+                (jammerSettings[jammer].offDir and isInSector(unit, samPos, jammerSettings[jammer].offDir))
+            if allowed then
+                local successProbability = computeOffensiveJamProbability(jammer, unit, sam)
+                local drain = jammerSettings[jammer].offensive and drainRateArea or drainRateDirectional
+                if successProbability and emitterCapacity[jammer] >= drain then
+                    emitterCapacity[jammer] = emitterCapacity[jammer] - drain
+                    if math.random(0, 100) <= successProbability then
+                        local ctrl = sam:getGroup():getController()
+                        ctrl:setOption(AI.Option.Ground.id.ROE, AI.Option.Ground.val.ROE.WEAPON_HOLD)
+                        suppressedSAMs[name] = {sam = sam, lastSuppressed = timer.getTime()}
+if jammerGroupIDs[jammer] then
+    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "SAM宸茶" .. jammer .. "鍘嬪埗: " .. name, 3)
+end
+                    end
+                end
+            end
+        end
+    end
 end
 
 EA18GSkynetJammerBridge = EA18GSkynetJammerBridge or {}
@@ -734,9 +812,11 @@ function EA18GSkynetJammerBridge.getSuccessProbability(emitterUnit, samSite)
             local radarPos = radarUnit:getPoint()
             local allowed = settings.offensive or
                 (settings.offDir and isInSector(emitterUnit, radarPos, settings.offDir))
-            if allowed and get3DDist(jammerPos, radarPos) < 50000 and land.isVisible(radarPos, jammerPos) then
-                bestProbability = math.max(bestProbability or 0, 100)
-                break
+            if allowed then
+                local offensiveProbability = computeOffensiveJamProbability(jammerName, emitterUnit, radarUnit)
+                if offensiveProbability and (bestProbability == nil or offensiveProbability > bestProbability) then
+                    bestProbability = offensiveProbability
+                end
             end
         end
     end
@@ -866,19 +946,9 @@ end
                 local targetPos = targetUnit:getPoint()
                 local dist = get3DDist(jammerPos, targetPos)
                 local los = land.isVisible(targetPos, jammerPos)
-                local altitudeBoost = math.min(unit:getPoint().y / 10000, 0.2)
-                local maxCap = maxEmitterCapacity[jammer] or 0
-                local maxRange = maxCap >= 3000 and 148160 or 111120
-                local fullEffectDist = maxCap >= 3000 and 101860 or 64820
-
-                if dist <= maxRange and los then
-                    local probability = 0.2
-                    if dist <= fullEffectDist then
-                        probability = 1.0
-                    else
-                        probability = 0.2 + ((fullEffectDist / dist) * 0.8)
-                    end
-                    probability = math.min(probability + altitudeBoost, 1.0)
+                local probabilityPercent, advancedResult = computeSkynetSpotJamProbability(jammer, unit, targetUnit)
+                if probabilityPercent and los then
+                    local probability = math.min(math.max(probabilityPercent / 100, 0), 1)
 
                     if math.random() < probability then
                         local targetGroup = targetUnit:getGroup()
