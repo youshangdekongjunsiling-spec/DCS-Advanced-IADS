@@ -16,11 +16,11 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
+from jammer_research_config import load_config
 
 ROOT_DIR = Path(__file__).resolve().parent
 BACKEND_PATH = ROOT_DIR / "Jammer parameters" / "Rader_polar_plot_lua_sync.py"
@@ -39,16 +39,50 @@ def load_backend():
 BACKEND = load_backend()
 
 
+def _apply_backend_overrides(config):
+    backend_overrides = config.get("backend_overrides", {})
+    if not isinstance(backend_overrides, dict):
+        return
+
+    sigmoid_k = backend_overrides.get("sigmoid_k")
+    if sigmoid_k is not None:
+        BACKEND.JAMMING_CONFIG["SIGMOID_K"] = float(sigmoid_k)
+
+    jammer_modes = backend_overrides.get("jammer_modes")
+    if isinstance(jammer_modes, dict):
+        for mode_name, mode_power in jammer_modes.items():
+            BACKEND.JAMMING_CONFIG["JAMMER_MODES"][mode_name] = float(mode_power)
+
+
+def _load_runtime_config():
+    config = load_config()
+    _apply_backend_overrides(config)
+    return config
+
+
+def get_default_altitude_bonus_per_10km_db() -> float:
+    engine_settings = _load_runtime_config().get("engine", {})
+    if isinstance(engine_settings, dict):
+        return float(engine_settings.get("default_altitude_bonus_per_10km_db", 10.0))
+    return 10.0
+
+
+def get_sigmoid_k() -> float:
+    _load_runtime_config()
+    return float(BACKEND.JAMMING_CONFIG["SIGMOID_K"])
+
+
 @dataclass
 class ScenarioInput:
     radar_name: str
     jammer_mode: str = "spot"
     theta_deg: float = 10.0
     range_jammer_radar_km: float = 55.0
+    # For EW/search radars without a tracked target, use the nearest visible enemy aircraft range.
     range_radar_target_km: float = 37.0
     jammer_altitude_m: float = 8000.0
     jammer_extra_gain_db: float = 0.0
-    altitude_bonus_per_10km_db: float = 0.0
+    altitude_bonus_per_10km_db: Optional[float] = None
     altitude_bonus_cap_db: float = 0.0
     los_ok: bool = True
     sigmoid_k: Optional[float] = None
@@ -73,11 +107,13 @@ class ScenarioResult:
 
 
 def get_available_radars() -> List[str]:
+    _load_runtime_config()
     patterns = BACKEND.builtin_patterns_lua_sync()
     return sorted(patterns.keys())
 
 
 def get_available_modes() -> List[str]:
+    _load_runtime_config()
     return sorted(BACKEND.JAMMING_CONFIG["JAMMER_MODES"].keys())
 
 
@@ -116,9 +152,14 @@ def simulate_jamming_probability(scenario: ScenarioInput) -> ScenarioResult:
     radar_direction_gain_db = float(BACKEND.lin_to_db(radar_direction_gain_linear))
 
     jammer_mode_power_db = float(BACKEND.JAMMING_CONFIG["JAMMER_MODES"][scenario.jammer_mode])
+    altitude_bonus_per_10km_db = (
+        get_default_altitude_bonus_per_10km_db()
+        if scenario.altitude_bonus_per_10km_db is None
+        else float(scenario.altitude_bonus_per_10km_db)
+    )
     altitude_bonus_db = compute_altitude_bonus_db(
         scenario.jammer_altitude_m,
-        scenario.altitude_bonus_per_10km_db,
+        altitude_bonus_per_10km_db,
         scenario.altitude_bonus_cap_db,
     )
     effective_jammer_power_db = jammer_mode_power_db + scenario.jammer_extra_gain_db + altitude_bonus_db
@@ -134,7 +175,7 @@ def simulate_jamming_probability(scenario: ScenarioInput) -> ScenarioResult:
     )
 
     if scenario.los_ok:
-        jam_probability = float(BACKEND.jamming_probability_sigmoid(jsr_db, scenario.sigmoid_k))
+        jam_probability = float(BACKEND.jamming_probability_sigmoid(jsr_db, scenario.sigmoid_k if scenario.sigmoid_k is not None else get_sigmoid_k()))
     else:
         jam_probability = 0.0
 
@@ -200,10 +241,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--jammer-mode", type=str, default="spot")
     parser.add_argument("--theta-deg", type=float, default=10.0)
     parser.add_argument("--jammer-range-km", type=float, default=55.0)
-    parser.add_argument("--target-range-km", type=float, default=37.0)
+    parser.add_argument(
+        "--target-range-km",
+        type=float,
+        default=37.0,
+        help="Tracked target range, or nearest visible enemy range for EW/search radars without a track.",
+    )
     parser.add_argument("--jammer-altitude-m", type=float, default=8000.0)
     parser.add_argument("--jammer-extra-gain-db", type=float, default=0.0)
-    parser.add_argument("--altitude-bonus-per-10km-db", type=float, default=0.0)
+    parser.add_argument("--altitude-bonus-per-10km-db", type=float, default=None)
     parser.add_argument("--altitude-bonus-cap-db", type=float, default=0.0)
     parser.add_argument("--sigmoid-k", type=float, default=None)
 
@@ -219,7 +265,7 @@ def print_result_text(result: ScenarioResult) -> None:
     print(f"Mode: {result.jammer_mode}")
     print(f"Off-boresight Angle: {result.theta_deg:.2f} deg")
     print(f"Jammer -> Radar Range: {result.range_jammer_radar_km:.2f} km")
-    print(f"Radar -> Target Range: {result.range_radar_target_km:.2f} km")
+    print(f"Nearest Visible Enemy / Tracked Range: {result.range_radar_target_km:.2f} km")
     print(f"Jammer Altitude: {result.jammer_altitude_m:.0f} m")
     print(f"LOS: {'yes' if result.los_ok else 'no'}")
     print(f"Mode Power: {result.jammer_mode_power_db:.2f} dB")

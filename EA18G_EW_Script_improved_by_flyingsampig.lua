@@ -2134,10 +2134,9 @@ local function setupMenus()
                     {label = "1x ALQ-99", cap = 1000, alq99=1, alq249=0},
                     {label = "2x ALQ-99", cap = 2000, alq99=2, alq249=0},
                     {label = "3x ALQ-99", cap = 3000, alq99=3, alq249=0},
-                    {label = "1x ALQ-249", cap = 1500, alq99=0, alq249=1},
-                    {label = "2x ALQ-249", cap = 3000, alq99=0, alq249=2},
-                    {label = "1x ALQ-249 + 1x ALQ-99", cap = 2500, alq99=1, alq249=1},
-                    {label = "2x ALQ-249 + 1x ALQ-99", cap = 4000, alq99=1, alq249=2}
+                    {label = "1x ALQ-249", cap = 3000, alq99=0, alq249=1},
+                    {label = "2x ALQ-249", cap = 4000, alq99=0, alq249=2},
+                    {label = "2x ALQ-249 + 1x ALQ-99", cap = 4500, alq99=1, alq249=2}
                 }
                 for _, p in ipairs(presets) do
                     missionCommands.addCommandForGroup(gid, p.label, loadout, function()

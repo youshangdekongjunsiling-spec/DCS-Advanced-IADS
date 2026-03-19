@@ -1,0 +1,229 @@
+{
+  "backend_overrides": {
+    "sigmoid_k": 0.5,
+    "jammer_modes": {
+      "broadcast": 23.0,
+      "sector": 27.0,
+      "spot": 45.0
+    }
+  },
+  "template_overrides": {},
+  "engine": {
+    "default_altitude_bonus_per_10km_db": 10.0,
+    "channel_model": {
+      "alq99_channel_count": 1.0,
+      "alq99_channel_power": 2.0,
+      "alq249_channel_count": 2.0,
+      "alq249_channel_power": 5.0
+    },
+    "loadout_presets": [
+      {
+        "label": "无干扰吊舱",
+        "alq99": 0,
+        "alq249": 0,
+        "cap": 0
+      },
+      {
+        "label": "1x ALQ-99",
+        "alq99": 1,
+        "alq249": 0,
+        "cap": 1000
+      },
+      {
+        "label": "2x ALQ-99",
+        "alq99": 2,
+        "alq249": 0,
+        "cap": 2000
+      },
+      {
+        "label": "3x ALQ-99",
+        "alq99": 3,
+        "alq249": 0,
+        "cap": 3000
+      },
+      {
+        "label": "1x ALQ-249",
+        "alq99": 0,
+        "alq249": 1,
+        "cap": 3000
+      },
+      {
+        "label": "2x ALQ-249",
+        "alq99": 0,
+        "alq249": 2,
+        "cap": 4000
+      },
+      {
+        "label": "2x ALQ-249 + 1x ALQ-99",
+        "alq99": 1,
+        "alq249": 2,
+        "cap": 4500
+      }
+    ],
+    "default_jammer_profile": "2x ALQ-249 + 1x ALQ-99"
+  },
+  "radar_overrides": {
+    "1L13 EWR": {
+      "template_key": "omni_search",
+      "power_coeff_db": 5.0
+    },
+    "Kub 1S91 str": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 15.0
+    },
+    "S-300PS 5H63C 30H6_tr": {
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 45.0
+    },
+    "S-300PS 40B6M tr": {
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 45.0
+    },
+    "55G6 EWR": {
+      "template_key": "omni_search",
+      "power_coeff_db": 10.0
+    },
+    "S-300PS 40B6MD sr": {
+      "template_key": "omni_search",
+      "power_coeff_db": 30.0
+    },
+    "S-300PS 64H6E sr": {
+      "template_key": "omni_search",
+      "power_coeff_db": 35.0
+    },
+    "Dog Ear radar": {
+      "template_key": "omni_search",
+      "power_coeff_db": 20.0
+    },
+    "Patriot str": {
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 50.0
+    },
+    "NASAMS_Radar_MPQ64F1": {
+      "template_key": "omni_search",
+      "power_coeff_db": 20.0
+    },
+    "SA-11 Buk LN 9A310M1": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 35.0
+    },
+    "SA-17 Buk M1-2 LN": {
+      "template_key": "aesa_fcr_narrow",
+      "power_coeff_db": 39.0
+    },
+    "HEMTT_C-RAM_Phalanx": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 3.0
+    },
+    "SNR_75V": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 10.0
+    },
+    "FPS-117": {
+      "template_key": "omni_search",
+      "power_coeff_db": 40.0
+    },
+    "FPS-117 Dome": {
+      "template_key": "omni_search",
+      "power_coeff_db": 35.0
+    },
+    "Gepard": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 13.0
+    },
+    "Hawk tr": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 10.0
+    },
+    "Hawk sr": {
+      "template_key": "omni_search",
+      "power_coeff_db": 8.0
+    },
+    "HQ-7_STR_SP": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0
+    },
+    "snr s-125 tr": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 8.0
+    },
+    "Osa 9A33 ln": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 11.0
+    },
+    "p-19 s-125 sr": {
+      "template_key": "omni_search",
+      "power_coeff_db": 4.0
+    },
+    "P-19 st": {
+      "template_key": "omni_search",
+      "power_coeff_db": 3.0
+    },
+    "EWR P-37 BAR LOCK": {
+      "template_key": "omni_search",
+      "power_coeff_db": 15.0
+    },
+    "rapier_fsa_blindfire_radar": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 15.0
+    },
+    "Roland Radar": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 14.0
+    },
+    "SA-11 Buk SR 9S18M1": {
+      "template_key": "omni_search",
+      "power_coeff_db": 30.0
+    },
+    "Buk SR 9S18M1": {
+      "template_key": "omni_search",
+      "power_coeff_db": 30.0
+    },
+    "RPC_5N62V": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 20.0
+    },
+    "Kub STR": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 20.0
+    },
+    "Strela-1 9P31": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 5.0
+    },
+    "Strela-10M3": {
+      "template_key": "legacy_fcr_wide",
+      "power_coeff_db": 6.0
+    },
+    "RLS_19J6": {
+      "template_key": "omni_search",
+      "power_coeff_db": 35.0
+    },
+    "Tor 9A331": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 19.0
+    },
+    "2S6 Tunguska": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0
+    },
+    "Tunguska_2S6": {
+      "template_key": "mid_fcr_compact",
+      "power_coeff_db": 15.0
+    }
+  },
+  "ui_state": {
+    "selected_radar_label": "Tunguska | Tunguska_2S6",
+    "selected_template_key": "mid_fcr_compact",
+    "selected_jammer_profile": "2x ALQ-249 + 1x ALQ-99",
+    "selected_jammer_mode": "broadcast",
+    "los_ok": true,
+    "angle_deg": 0.0,
+    "jammer_range_nm": 38.0,
+    "target_range_nm": 10.0,
+    "jammer_altitude_ft": 26600.0,
+    "extra_gain_db": 0.0,
+    "power_coeff_db": 15.0,
+    "sigmoid_k": 0.5
+  }
+}

@@ -116,7 +116,7 @@ def build_radar_mapping_candidates() -> List[RadarMappingCandidate]:
         RadarMappingCandidate("NASAMS_Radar_MPQ64F1", "AN/MPQ-64 Sentinel F1", "modern search radar", "omni_search", 18.0, "medium", "skynet", "现代机动 3D 搜索雷达，易受全向干扰但整体较硬。"),
         RadarMappingCandidate("Dog Ear radar", "9S80M1 Dog Ear", "target acquisition radar", "omni_search", 14.0, "medium", "skynet", "短程现代搜索/获取雷达，可先归搜索模板。"),
         RadarMappingCandidate("Hawk sr", "Hawk Search Radar", "search radar", "omni_search", 8.0, "high", "research+skynet", "老式搜索雷达，不应视为先进火控。"),
-        RadarMappingCandidate("S-300PS 64H6E sr", "64N6 Big Bird", "modern long-range search radar", "omni_search", 20.0, "medium", "research+skynet", "现代高性能搜索雷达；用搜索模板但给更大基础功率。"),
+        RadarMappingCandidate("S-300PS 64H6E sr", "64N6 Big Bird", "modern long-range search radar", "omni_search", 26.0, "medium", "research+skynet", "现代高性能搜索雷达；用搜索模板但给更大基础功率。"),
         RadarMappingCandidate("S-300PS 40B6MD sr", "5N66/76N6 Clam Shell", "search radar", "omni_search", 16.0, "medium", "research+skynet", "现代搜索/低空补盲类雷达，比 Big Bird 略弱。"),
         RadarMappingCandidate("S-300PS 40B6MD sr_19J6", "Tin Shield / 19J6", "search radar", "omni_search", 14.0, "medium", "skynet", "搜索类补充雷达，可先按中等搜索功率处理。"),
 
