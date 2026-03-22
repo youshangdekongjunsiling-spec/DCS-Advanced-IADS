@@ -4,6 +4,21 @@
 -- 修改：使用新的干扰值计算和1秒循环频率
 -- Requires MIST to be loaded before this script
 trigger.action.outText("EA-18G 电子战脚本已加载 (Flyingsampig版)", 10)
+if AdvancedJammerSimulation and AdvancedJammerSimulation.evaluateUnits then
+    if env and env.info then
+        env.info("[EA18G] Advanced Jammer Simulation detected during EA-18G script load", false)
+    end
+    if trigger and trigger.action and trigger.action.outText then
+        trigger.action.outText("EA-18G detected Advanced Jammer Simulation", 10)
+    end
+else
+    if env and env.info then
+        env.info("[EA18G] Advanced Jammer Simulation NOT detected during EA-18G script load", false)
+    end
+    if trigger and trigger.action and trigger.action.outText then
+        trigger.action.outText("EA-18G did NOT detect Advanced Jammer Simulation", 10)
+    end
+end
 
 -- === SAFE wrapper: prevent silent loop crashes ===
 local function SAFE(name, fn)
@@ -103,6 +118,15 @@ local LOADOUT_SIM = {
         perPod = 1,
         description = "ALQ-249下一代干扰吊舱"
     }
+}
+
+local LOADOUT_PRESETS = {
+    {key = "alq99x1", label = "1x ALQ-99", cap = 1000, alq99 = 1, alq249 = 0},
+    {key = "alq99x2", label = "2x ALQ-99", cap = 2000, alq99 = 2, alq249 = 0},
+    {key = "alq99x3", label = "3x ALQ-99", cap = 3000, alq99 = 3, alq249 = 0},
+    {key = "alq249x1", label = "1x ALQ-249", cap = 3000, alq99 = 0, alq249 = 1},
+    {key = "alq249x2", label = "2x ALQ-249", cap = 4000, alq99 = 0, alq249 = 2},
+    {key = "alq249x2_alq99x1", label = "2x ALQ-249 + 1x ALQ-99", cap = 4500, alq99 = 1, alq249 = 2}
 }
 
 -- 载荷模拟状态跟踪
@@ -559,11 +583,109 @@ local function checkJammerPreset(jammerName, requiredALQ99, requiredALQ249)
 end
 
 -- 载荷状态监控循环
+local function getPresetTotalJamValue(preset)
+    if not preset then
+        return 0
+    end
+    return ((preset.alq99 or 0) * ALQ99_JAM_VALUE) + ((preset.alq249 or 0) * ALQ249_JAM_VALUE)
+end
+
+local function applyJammerPreset(jammerName, preset, refillCapacity)
+    jammerSettings[jammerName] = jammerSettings[jammerName] or {}
+
+    if not preset then
+        jammerSettings[jammerName].currentPreset = nil
+        jammerSettings[jammerName].currentPresetKey = nil
+        maxEmitterCapacity[jammerName] = 0
+        emitterCapacity[jammerName] = 0
+        return
+    end
+
+    jammerSettings[jammerName].currentPreset = {
+        key = preset.key,
+        label = preset.label,
+        cap = preset.cap,
+        alq99 = preset.alq99,
+        alq249 = preset.alq249
+    }
+    jammerSettings[jammerName].currentPresetKey = preset.key
+    maxEmitterCapacity[jammerName] = preset.cap
+
+    if refillCapacity or emitterCapacity[jammerName] == nil then
+        emitterCapacity[jammerName] = preset.cap
+    else
+        emitterCapacity[jammerName] = math.min(emitterCapacity[jammerName], preset.cap)
+    end
+end
+
+local function findBestLoadoutPresetForState(state)
+    if not state or not state.valid then
+        return nil
+    end
+
+    local bestPreset = nil
+    local bestJamValue = -1
+
+    for _, preset in ipairs(LOADOUT_PRESETS) do
+        if state.alq99Count >= (preset.alq99 or 0) and state.alq249Count >= (preset.alq249 or 0) then
+            local jamValue = getPresetTotalJamValue(preset)
+            if (not bestPreset)
+                or preset.cap > bestPreset.cap
+                or (preset.cap == bestPreset.cap and jamValue > bestJamValue) then
+                bestPreset = preset
+                bestJamValue = jamValue
+            end
+        end
+    end
+
+    return bestPreset
+end
+
+local function autoRegisterLoadoutForJammer(jammerName, announce)
+    jammerSettings[jammerName] = jammerSettings[jammerName] or {}
+
+    local state = checkLoadoutState(jammerName)
+    if not state.valid then
+        return nil, state, false
+    end
+
+    local signature = string.format("%d:%d:%d", state.alq99Count or 0, state.alq249Count or 0, state.hasLBI and 1 or 0)
+    local signatureChanged = jammerSettings[jammerName].autoLoadoutSignature ~= signature
+    local currentPresetMissing = jammerSettings[jammerName].currentPreset == nil
+    local bestPreset = findBestLoadoutPresetForState(state)
+
+    if signatureChanged or currentPresetMissing then
+        applyJammerPreset(jammerName, bestPreset, true)
+        jammerSettings[jammerName].autoLoadoutSignature = signature
+
+        if announce and jammerGroupIDs[jammerName] then
+            if bestPreset then
+                local lbiSuffix = state.hasLBI and (" | " .. LOADOUT_SIM.LBI.label .. " 可用") or ""
+                trigger.action.outTextForGroup(
+                    jammerGroupIDs[jammerName],
+                    "自动识别载荷: " .. bestPreset.label .. lbiSuffix,
+                    5
+                )
+            else
+                local lbiSuffix = state.hasLBI and (" | " .. LOADOUT_SIM.LBI.label .. " 可用") or ""
+                trigger.action.outTextForGroup(
+                    jammerGroupIDs[jammerName],
+                    "自动识别载荷: 未检测到干扰吊舱" .. lbiSuffix,
+                    5
+                )
+            end
+        end
+
+        return bestPreset, state, true
+    end
+
+    return bestPreset, state, false
+end
+
 local function loadoutMonitorLoop()
     for _, jammerName in ipairs(jammerUnits) do
         if jammerGroupIDs[jammerName] then
-            local currentState = checkLoadoutState(jammerName)
-            local previousState = loadoutState[jammerName] or {}
+            local _, currentState = autoRegisterLoadoutForJammer(jammerName, false)
 
             if currentState.valid then
                 -- 检查LBI状态变化
@@ -663,6 +785,7 @@ local function isCurrentPresetAvailableForJammer(jammerName)
 end
 
 local advancedJammerModuleMissingWarned = false
+local advancedJammerModuleActiveAnnounced = false
 
 local function getCurrentPresetCounts(jammerName)
     local preset = jammerSettings[jammerName] and jammerSettings[jammerName].currentPreset or {}
@@ -679,13 +802,23 @@ local function evaluateAdvancedJammerForRadar(jammerName, emitterUnit, radarUnit
     end
 
     local alq99Count, alq249Count = getCurrentPresetCounts(jammerName)
-    return AdvancedJammerSimulation.evaluateUnits({
+    local result = AdvancedJammerSimulation.evaluateUnits({
         jammerUnit = emitterUnit,
         radarUnit = radarUnit,
         jammerMode = jammerMode,
         alq99Count = alq99Count,
         alq249Count = alq249Count
     })
+    if result and not advancedJammerModuleActiveAnnounced then
+        advancedJammerModuleActiveAnnounced = true
+        if env and env.info then
+            env.info("[EA18G] Advanced Jammer Simulation is active and being used for jammer evaluation", false)
+        end
+        if trigger and trigger.action and trigger.action.outText then
+            trigger.action.outText("EA-18G is using Advanced Jammer Simulation", 10)
+        end
+    end
+    return result
 end
 
 local function computeLegacySpotJamProbabilityPercent(jammerName, emitterUnit, radarUnit)
@@ -1721,6 +1854,86 @@ local function formatRadarSlotLine(index, entry)
     return string.format("%d. %s | %dnm", index, entry.natoName, roughNM)
 end
 
+local function getRadarEntryJammingDisplay(jammer, entry)
+    entry.isBeingJammed = false
+    entry.jamProbabilityPercent = nil
+
+    if not entry or entry.status ~= "active" then
+        return false, nil
+    end
+
+    if not isCurrentPresetAvailableForJammer(jammer) then
+        return false, nil
+    end
+
+    local jammerUnit = Unit.getByName(jammer)
+    local radarUnit = Unit.getByName(entry.unitName)
+    if not jammerUnit or not jammerUnit:isExist() or not radarUnit or not radarUnit:isExist() then
+        return false, nil
+    end
+
+    local settings = jammerSettings[jammer] or {}
+    local currentCapacity = emitterCapacity[jammer] or 0
+    local bestProbability = nil
+
+    if settings.spotTarget == entry.unitName and currentCapacity > 15 then
+        local spotProbability = computeSkynetSpotJamProbability(jammer, jammerUnit, radarUnit)
+        if spotProbability then
+            bestProbability = spotProbability
+        end
+    end
+
+    local offensiveAllowed = false
+    local offensiveDrain = nil
+    if settings.offensive then
+        offensiveAllowed = true
+        offensiveDrain = drainRateArea
+    elseif settings.offDir then
+        offensiveAllowed = isInSector(jammerUnit, radarUnit:getPoint(), settings.offDir)
+        offensiveDrain = drainRateDirectional
+    end
+
+    if offensiveAllowed and offensiveDrain and currentCapacity >= offensiveDrain then
+        local offensiveProbability = computeOffensiveJamProbability(jammer, jammerUnit, radarUnit)
+        if offensiveProbability and (not bestProbability or offensiveProbability > bestProbability) then
+            bestProbability = offensiveProbability
+        end
+    end
+
+    if bestProbability then
+        entry.isBeingJammed = true
+        entry.jamProbabilityPercent = math.max(0, math.min(100, math.floor(bestProbability + 0.5)))
+        return true, entry.jamProbabilityPercent
+    end
+
+    return false, nil
+end
+
+local function formatRadarSlotLineDisplay(jammer, index, entry)
+    local bearing = entry.lastBearing or 0
+    local distNM = entry.lastDistanceNM or 0
+    local isJammed, jamProbability = getRadarEntryJammingDisplay(jammer, entry)
+
+    if DEBUG_MODE then
+        if entry.status == "active" then
+            if isJammed then
+                return string.format("%d. %s | %03d° | %dnm | 开机 | 干扰中 %d%%", index, entry.natoName, bearing, distNM, jamProbability or 0)
+            end
+            return string.format("%d. %s | %03d° | %dnm | 开机 | LOS通", index, entry.natoName, bearing, distNM)
+        end
+        return string.format("%d. %s | %03d° | %dnm | 无信号", index, entry.natoName, bearing, distNM)
+    end
+
+    local roughNM = roughDistanceNM(distNM)
+    if entry.status ~= "active" then
+        return string.format("%d. %s | %dnm | 无信号", index, entry.natoName, roughNM)
+    end
+    if isJammed then
+        return string.format("%d. %s | %dnm | 干扰中 %d%%", index, entry.natoName, roughNM, jamProbability or 0)
+    end
+    return string.format("%d. %s | %dnm", index, entry.natoName, roughNM)
+end
+
 local function buildRadarMemoryEntries(jammer)
     local state = ensureRadarListState(jammer)
     local entries = {}
@@ -1765,7 +1978,7 @@ local function announceRadarMemory(jammer, title)
     else
         local limit = math.min(#entries, RADAR_LIST_MAX_SLOTS)
         for i = 1, limit do
-            table.insert(lines, formatRadarSlotLine(i, entries[i]))
+            table.insert(lines, formatRadarSlotLineDisplay(jammer, i, entries[i]))
         end
         if #entries > limit then
             table.insert(lines, string.format("... 另有%d个历史目标", #entries - limit))
@@ -1799,7 +2012,7 @@ local function announceRadarSlots(jammer, title, force)
         local entry = state.slots[i]
         if entry then
             hasEntries = true
-            table.insert(lines, formatRadarSlotLine(i, entry))
+            table.insert(lines, formatRadarSlotLineDisplay(jammer, i, entry))
         end
     end
 
@@ -1829,7 +2042,27 @@ local function applyRadarSlots(jammer, candidates, title, force)
     announceRadarSlots(jammer, title, force)
 end
 
-local function buildRadarCandidates(jammer)
+local buildRadarCandidates
+
+local function refreshRadarSlotsNow(jammer, title, force)
+    if not isRadarListActivated(jammer) then
+        notifyRadarListNotActivated(jammer, "请先在载荷配置中注册干扰机载荷")
+        return false
+    end
+    local jammerUnit = Unit.getByName(jammer)
+    if not jammerUnit or not jammerUnit:isExist() then
+        local gid = jammerGroupIDs[jammer]
+        if gid then
+            trigger.action.outTextForGroup(gid, "未检测到干扰机实体，无法刷新雷达列表", 4)
+        end
+        return false
+    end
+    local candidates = buildRadarCandidates(jammer)
+    applyRadarSlots(jammer, candidates, title, force)
+    return true
+end
+
+buildRadarCandidates = function(jammer)
     if not isRadarListActivated(jammer) then
         return {}
     end
@@ -1990,13 +2223,13 @@ local function resolveRadarSlotTarget(jammer, slotIndex, actionText)
     end
 
     if entry.status == "inactive" then
-        return nil, entry, string.format("雷达%d当前已关机，无法%s", slotIndex, actionText)
+        return nil, entry, string.format("雷达%d当前无信号，无法%s", slotIndex, actionText)
     end
     if entry.status == "destroyed" then
-        return nil, entry, string.format("雷达%d当前已关机，无法%s", slotIndex, actionText)
+        return nil, entry, string.format("雷达%d当前无信号，无法%s", slotIndex, actionText)
     end
     if entry.status == "blocked" then
-        return nil, entry, string.format("雷达%d当前已关机，无法%s", slotIndex, actionText)
+        return nil, entry, string.format("雷达%d当前无信号，无法%s", slotIndex, actionText)
     end
 
     local jammerUnit = Unit.getByName(jammer)
@@ -2007,19 +2240,19 @@ local function resolveRadarSlotTarget(jammer, slotIndex, actionText)
     local targetUnit = Unit.getByName(entry.unitName)
     if not targetUnit or not targetUnit:isExist() then
         entry.status = "destroyed"
-        return nil, entry, string.format("雷达%d当前已关机，无法%s", slotIndex, actionText)
+        return nil, entry, string.format("雷达%d当前无信号，无法%s", slotIndex, actionText)
     end
 
     local radarActive = checkRadarUnitActive(targetUnit)
     if not radarActive then
         entry.status = "inactive"
-        return nil, entry, string.format("雷达%d当前已关机，无法%s", slotIndex, actionText)
+        return nil, entry, string.format("雷达%d当前无信号，无法%s", slotIndex, actionText)
     end
 
     local losOK = land.isVisible(jammerUnit:getPoint(), targetUnit:getPoint())
     if not losOK then
         entry.status = "blocked"
-        return nil, entry, string.format("雷达%d当前已关机，无法%s", slotIndex, actionText)
+        return nil, entry, string.format("雷达%d当前无信号，无法%s", slotIndex, actionText)
     end
 
     entry.status = "active"
@@ -2032,6 +2265,7 @@ local function selectSpotTargetSlot(jammer, slotIndex)
         notifyRadarListNotActivated(jammer, "请先在载荷配置中注册干扰机载荷")
         return
     end
+    refreshRadarSlotsNow(jammer, "点目标干扰候选", false)
     local targetUnit, entry, err = resolveRadarSlotTarget(jammer, slotIndex, "执行点目标干扰")
     if err then
         if gid then
@@ -2044,16 +2278,73 @@ local function selectSpotTargetSlot(jammer, slotIndex)
     if gid then
         local jammerUnit = Unit.getByName(jammer)
         local distNM = 0
+        local probabilityPercent = nil
         if jammerUnit and jammerUnit:isExist() then
             distNM = math.floor(get3DDist(jammerUnit:getPoint(), targetUnit:getPoint()) / 1852 + 0.5)
+            probabilityPercent = computeSkynetSpotJamProbability(jammer, jammerUnit, targetUnit)
         end
+        local probabilityText = probabilityPercent and string.format(" | 当前成功率 %d%%", math.floor(probabilityPercent + 0.5)) or ""
         if DEBUG_MODE then
             trigger.action.outTextForGroup(gid,
-                string.format("点目标干扰已开启: 雷达%d -> %s | %03d° | %dnm",
-                    slotIndex, entry.natoName, entry.lastBearing or 0, distNM), 5)
+                string.format("点目标干扰已开启: 雷达%d -> %s | %03d° | %dnm%s",
+                    slotIndex, entry.natoName, entry.lastBearing or 0, distNM, probabilityText), 5)
         else
             trigger.action.outTextForGroup(gid,
-                string.format("点目标干扰已开启: 雷达%d -> %s", slotIndex, entry.natoName), 4)
+                string.format("点目标干扰已开启: 雷达%d -> %s%s", slotIndex, entry.natoName, probabilityText), 4)
+        end
+    end
+    refreshRadarSlotsNow(jammer, "点目标干扰候选", true)
+end
+
+local function spotMenuCloseHandler(args)
+    local jammer = args and args.jammer
+    if not jammer then return end
+    local ok, err = xpcall(function()
+        jammerSettings[jammer] = jammerSettings[jammer] or {}
+        jammerSettings[jammer].spotTarget = nil
+        if jammerGroupIDs[jammer] then
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰已关闭", 4)
+        end
+    end, debug.traceback)
+    if not ok then
+        env.error("[EW:spotMenuCloseHandler] " .. tostring(err), false)
+        if jammerGroupIDs[jammer] then
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰菜单执行异常，请查看 dcs.log", 4)
+        end
+    end
+end
+
+local function spotMenuRefreshHandler(args)
+    local jammer = args and args.jammer
+    if not jammer then return end
+    local ok, err = xpcall(function()
+        if jammerGroupIDs[jammer] then
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰菜单：正在刷新雷达候选", 2)
+        end
+        refreshRadarSlotsNow(jammer, "点目标干扰候选", true)
+    end, debug.traceback)
+    if not ok then
+        env.error("[EW:spotMenuRefreshHandler] " .. tostring(err), false)
+        if jammerGroupIDs[jammer] then
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰刷新异常，请查看 dcs.log", 4)
+        end
+    end
+end
+
+local function spotMenuSelectHandler(args)
+    local jammer = args and args.jammer
+    local slotIndex = args and args.slotIndex
+    if not jammer or not slotIndex then return end
+    local ok, err = xpcall(function()
+        if jammerGroupIDs[jammer] then
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰菜单：正在选择雷达" .. tostring(slotIndex), 2)
+        end
+        selectSpotTargetSlot(jammer, slotIndex)
+    end, debug.traceback)
+    if not ok then
+        env.error("[EW:spotMenuSelectHandler] " .. tostring(err), false)
+        if jammerGroupIDs[jammer] then
+            trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰选择异常，请查看 dcs.log", 4)
         end
     end
 end
@@ -2078,6 +2369,7 @@ local function selectEsmTargetSlot(jammer, slotIndex)
         return
     end
 
+    refreshRadarSlotsNow(jammer, "ESM雷达候选", false)
     local targetUnit, entry, err = resolveRadarSlotTarget(jammer, slotIndex, "执行定位")
     if err then
         if gid then
@@ -2174,6 +2466,7 @@ local function setupMenus()
                 if jammerSettings[jammer].radarListAutoEnabled == nil then
                     jammerSettings[jammer].radarListAutoEnabled = true
                 end
+                autoRegisterLoadoutForJammer(jammer, true)
 
                 local radarListMenu = missionCommands.addSubMenuForGroup(gid, "雷达列表", root)
                 missionCommands.addCommandForGroup(gid, "开启自动播报", radarListMenu, function()
@@ -2181,7 +2474,7 @@ local function setupMenus()
                     if jammerGroupIDs[jammer] then
                         trigger.action.outTextForGroup(jammerGroupIDs[jammer], "雷达列表自动播报已开启", 4)
                     end
-                    announceRadarSlots(jammer, "雷达候选", true)
+                    refreshRadarSlotsNow(jammer, "雷达候选", true)
                 end)
                 missionCommands.addCommandForGroup(gid, "关闭自动播报", radarListMenu, function()
                     jammerSettings[jammer].radarListAutoEnabled = false
@@ -2190,7 +2483,7 @@ local function setupMenus()
                     end
                 end)
                 missionCommands.addCommandForGroup(gid, "立即显示当前列表", radarListMenu, function()
-                    announceRadarSlots(jammer, "雷达候选", true)
+                    refreshRadarSlotsNow(jammer, "雷达候选", true)
                 end)
                 missionCommands.addCommandForGroup(gid, "显示历史记忆", radarListMenu, function()
                     buildRadarCandidates(jammer)
@@ -2201,12 +2494,12 @@ local function setupMenus()
                 local loadout = missionCommands.addSubMenuForGroup(gid, "载荷配置", root)
                 local presets = {
                     {label = "无干扰吊舱", cap = 0, alq99=0, alq249=0},
-                    {label = "1x ALQ-99", cap = 1000, alq99=1, alq249=0},
-                    {label = "2x ALQ-99", cap = 2000, alq99=2, alq249=0},
-                    {label = "3x ALQ-99", cap = 3000, alq99=3, alq249=0},
-                    {label = "1x ALQ-249", cap = 3000, alq99=0, alq249=1},
-                    {label = "2x ALQ-249", cap = 4000, alq99=0, alq249=2},
-                    {label = "2x ALQ-249 + 1x ALQ-99", cap = 4500, alq99=1, alq249=2}
+                    {key = "alq99x1", label = "1x ALQ-99", cap = 1000, alq99=1, alq249=0},
+                    {key = "alq99x2", label = "2x ALQ-99", cap = 2000, alq99=2, alq249=0},
+                    {key = "alq99x3", label = "3x ALQ-99", cap = 3000, alq99=3, alq249=0},
+                    {key = "alq249x1", label = "1x ALQ-249", cap = 3000, alq99=0, alq249=1},
+                    {key = "alq249x2", label = "2x ALQ-249", cap = 4000, alq99=0, alq249=2},
+                    {key = "alq249x2_alq99x1", label = "2x ALQ-249 + 1x ALQ-99", cap = 4500, alq99=1, alq249=2}
                 }
                 for _, p in ipairs(presets) do
                     missionCommands.addCommandForGroup(gid, p.label, loadout, function()
@@ -2217,8 +2510,10 @@ local function setupMenus()
                             maxEmitterCapacity[jammer] = p.cap
                             emitterCapacity[jammer] = math.min(emitterCapacity[jammer], p.cap)
                             -- 保存负载配置
-                            jammerSettings[jammer].currentPreset = {alq99=p.alq99, alq249=p.alq249}
-                            local totalJam = (p.alq99 * ALQ99_JAM_VALUE) + (p.alq249 * ALQ249_JAM_VALUE)
+                            jammerSettings[jammer].currentPreset = {key = p.key, label = p.label, cap = p.cap, alq99 = p.alq99, alq249 = p.alq249}
+                            jammerSettings[jammer].currentPresetKey = p.key
+                            applyJammerPreset(jammer, p.cap > 0 and p or nil, true)
+                            local totalJam = getPresetTotalJamValue(p)
                             if jammerGroupIDs[jammer] then
                                 trigger.action.outTextForGroup(jammerGroupIDs[jammer],
                                     jammer .. " 载荷设置: " .. p.label .. " (总干扰值: " .. totalJam .. ")", 4)
@@ -2319,25 +2614,18 @@ end
 
                 -- Directional menus (offensive/defensive)
                 -- Spot Jamming
-                local sjMenu = missionCommands.addSubMenuForGroup(gid, "点目标干扰", root)
-                missionCommands.addCommandForGroup(gid, "关闭", sjMenu, function()
-                    jammerSettings[jammer].spotTarget = nil
-if jammerGroupIDs[jammer] then
-    trigger.action.outTextForGroup(jammerGroupIDs[jammer], "点目标干扰已关闭", 4)
-end
-                end)
+                do
+                    local sjMenu = missionCommands.addSubMenuForGroup(gid, "点目标干扰（选择后自动刷新一次雷达列表）", root)
+                    spotTargetMenus[jammer] = sjMenu
 
-                local spotSlotMenu = missionCommands.addSubMenuForGroup(gid, "目标槽位（1-10）", sjMenu)
-                spotTargetMenus[jammer] = spotSlotMenu
-                for slotIndex = 1, RADAR_LIST_MAX_SLOTS do
-                    missionCommands.addCommandForGroup(gid, "雷达" .. slotIndex, spotSlotMenu, function()
-                        selectSpotTargetSlot(jammer, slotIndex)
-                    end)
+                    missionCommands.addCommandForGroup(gid, "关闭", sjMenu, spotMenuCloseHandler, { jammer = jammer })
+
+                    missionCommands.addCommandForGroup(gid, "立即刷新", sjMenu, spotMenuRefreshHandler, { jammer = jammer })
+
+                    for slotIndex = 1, RADAR_LIST_MAX_SLOTS do
+                        missionCommands.addCommandForGroup(gid, "雷达" .. slotIndex, sjMenu, spotMenuSelectHandler, { jammer = jammer, slotIndex = slotIndex })
+                    end
                 end
-                missionCommands.addCommandForGroup(gid, "显示当前列表", sjMenu, function()
-                    announceRadarSlots(jammer, "点目标干扰候选", true)
-                end)
-
                 for _, mode in ipairs({"攻击", "防御"}) do
                     local submenu = missionCommands.addSubMenuForGroup(gid, "定向" .. mode .. "干扰", root)
                     for _, dir in ipairs({"前方", "左侧", "右侧", "后方"}) do
@@ -2385,7 +2673,7 @@ end
                     end)
                 end
                 missionCommands.addCommandForGroup(gid, "显示当前列表", esmRoot, function()
-                    announceRadarSlots(jammer, "ESM雷达候选", true)
+                    refreshRadarSlotsNow(jammer, "ESM雷达候选", true)
                 end)
                 missionCommands.addCommandForGroup(gid, "清理历史雷达记忆", root, function()
                     if clearInactiveRadarMemory(jammer) then
@@ -2460,10 +2748,8 @@ local loadoutEventHandler = {
                     if unitName == jammerName then
                         -- 延迟1秒后检查载荷（让弹药更新完成）
                         timer.scheduleFunction(function()
-                            local currentState = checkLoadoutState(jammerName)
+                            local _, currentState = autoRegisterLoadoutForJammer(jammerName, true)
                             if currentState.valid then
-                                local previousState = loadoutState[jammerName] or {}
-
                                 -- 检查ESM状态变化
                                 if esmEnabled[jammerName] and not currentState.hasLBI then
                                     esmEnabled[jammerName] = false

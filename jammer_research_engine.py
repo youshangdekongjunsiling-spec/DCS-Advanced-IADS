@@ -67,6 +67,10 @@ def get_default_altitude_bonus_per_10km_db() -> float:
     return float(_get_engine_settings().get("default_altitude_bonus_per_10km_db", 10.0))
 
 
+def get_default_radar_echo_base_db() -> float:
+    return float(_get_engine_settings().get("default_radar_echo_base_db", 30.0))
+
+
 def _get_channel_model() -> Dict[str, float]:
     channel_model = _get_engine_settings().get("channel_model", {})
     if not isinstance(channel_model, dict):
@@ -313,10 +317,11 @@ def simulate(input_data: SimulationInput) -> SimulationResult:
 
     target_loss_db = float(BACKEND.compute_range_loss_db(nm_to_km(input_data.target_range_nm), is_radar=True))
     jammer_loss_db = float(BACKEND.compute_range_loss_db(nm_to_km(input_data.jammer_range_nm), is_radar=False))
+    radar_echo_base_db = get_default_radar_echo_base_db()
 
     jsr_db = (
         (effective_jammer_power_db + radar_direction_gain_db - jammer_loss_db)
-        - (input_data.power_coeff_db + 0.0 - target_loss_db)
+        - (input_data.power_coeff_db + radar_echo_base_db - target_loss_db)
     )
 
     sigmoid_k = get_sigmoid_k() if input_data.sigmoid_k is None else float(input_data.sigmoid_k)

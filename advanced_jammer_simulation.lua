@@ -409,4 +409,31 @@ do
         result.targetSource = targetSource
         return result
     end
+
+    sim.VERSION = "2026-03-19"
+    if not sim._loadMessageSent then
+        sim._loadMessageSent = true
+        if env and env.info then
+            env.info(string.format(
+                "[AJS] Advanced Jammer Simulation loaded | version=%s | k=%.2f | modes=%.0f/%.0f/%.0f",
+                sim.VERSION,
+                sim.CONFIG.sigmoidK,
+                sim.CONFIG.jammerModes.broadcast,
+                sim.CONFIG.jammerModes.sector,
+                sim.CONFIG.jammerModes.spot
+            ), false)
+        end
+        if trigger and trigger.action and trigger.action.outText then
+            trigger.action.outText(
+                string.format(
+                    "Advanced Jammer Simulation loaded | k=%.2f | mode power B%.0f / S%.0f / P%.0f",
+                    sim.CONFIG.sigmoidK,
+                    sim.CONFIG.jammerModes.broadcast,
+                    sim.CONFIG.jammerModes.sector,
+                    sim.CONFIG.jammerModes.spot
+                ),
+                10
+            )
+        end
+    end
 end

@@ -10,6 +10,7 @@
   "template_overrides": {},
   "engine": {
     "default_altitude_bonus_per_10km_db": 10.0,
+    "default_radar_echo_base_db": 30.0,
     "channel_model": {
       "alq99_channel_count": 1.0,
       "alq99_channel_power": 2.0,
