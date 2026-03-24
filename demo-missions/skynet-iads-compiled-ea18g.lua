@@ -3107,11 +3107,7 @@ function SkynetIADSAbstractRadarElement.finishHarmDefence(self)
 	self.harmRelocationDeadline = 0
 	self.harmRelocationPlannedDistanceMeters = 0
 
-	self:goLive()
-
-	if ( self.aiState == false and self:getAutonomousState() == true ) then
-		self:goAutonomous()
-	end	
+	self:setToCorrectAutonomousState()
 end
 
 function SkynetIADSAbstractRadarElement:getDetectedTargets()
