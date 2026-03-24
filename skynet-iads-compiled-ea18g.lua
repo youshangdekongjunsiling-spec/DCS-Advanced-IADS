@@ -995,9 +995,10 @@ function SkynetIADSLogger:printSAMSiteStatus()
 		local engageHARMS = samSite:getCanEngageHARM()
 		
 		local hasAmmo = samSite:hasRemainingAmmo()
+		local isJammed = samSite:isJammed()
 		
 		self:printOutputToLog("GROUP: "..samSite:getDCSName().." | TYPE: "..samSite:getNatoName())
-		self:printOutputToLog("ACTIVE: "..tostring(isActive).." | AUTONOMOUS: "..tostring(isAutonomous).." | IS ACTING AS EW: "..tostring(samSite:getActAsEW()).." | CAN ENGAGE AIR WEAPONS : "..tostring(engageAirWeapons).." | CAN ENGAGE HARMS : "..tostring(engageHARMS).." | HAS AMMO: "..tostring(hasAmmo).." | DETECTED TARGETS: "..#detectedTargets.." | DEFENDING HARM: "..tostring(samSite:isDefendingHARM()).." | MISSILES IN FLIGHT: "..tostring(samSite:getNumberOfMissilesInFlight()))
+		self:printOutputToLog("ACTIVE: "..tostring(isActive).." | JAMMED: "..tostring(isJammed).." | AUTONOMOUS: "..tostring(isAutonomous).." | IS ACTING AS EW: "..tostring(samSite:getActAsEW()).." | CAN ENGAGE AIR WEAPONS : "..tostring(engageAirWeapons).." | CAN ENGAGE HARMS : "..tostring(engageHARMS).." | HAS AMMO: "..tostring(hasAmmo).." | DETECTED TARGETS: "..#detectedTargets.." | DEFENDING HARM: "..tostring(samSite:isDefendingHARM()).." | MISSILES IN FLIGHT: "..tostring(samSite:getNumberOfMissilesInFlight()))
 		
 		if numConnectionNodes > 0 then
 			self:printOutputToLog("CONNECTION NODES: "..numConnectionNodes.." | DAMAGED: "..numDamagedConnectionNodes.." | INTACT: "..intactConnectionNodes)
@@ -1118,6 +1119,7 @@ function SkynetIADSLogger:printSystemStatus()
 		local samSitesOutOfAmmo = 0
 		local samSiteAutonomous = 0
 		local samSiteRadarDestroyed = 0
+		local samSitesJammed = 0
 		for i = 1, #samSites do
 			local samSite = samSites[i]
 			if samSite:hasWorkingPowerSource() == false then
@@ -1135,13 +1137,16 @@ function SkynetIADSLogger:printSystemStatus()
 			if samSite:getAutonomousState() == true then
 				samSiteAutonomous = samSiteAutonomous + 1
 			end
+			if samSite:isJammed() then
+				samSitesJammed = samSitesJammed + 1
+			end
 			if samSite:hasWorkingRadar() == false then
 				samSiteRadarDestroyed = samSiteRadarDestroyed + 1
 			end
 		end
 		
 		samSitesInactive = samSitesTotal - samSitesActive
-		self:printOutput("SAM: "..samSitesTotal.." | On: "..samSitesActive.." | Off: "..samSitesInactive.." | Autonm: "..samSiteAutonomous.." | Raddest: "..samSiteRadarDestroyed.." | NoPowr: "..samSitesNoPower.." | NoCon: "..samSitesNoConnectionNode.." | NoAmmo: "..samSitesOutOfAmmo)
+		self:printOutput("SAM: "..samSitesTotal.." | On: "..samSitesActive.." | Off: "..samSitesInactive.." | Jammed: "..samSitesJammed.." | Autonm: "..samSiteAutonomous.." | Raddest: "..samSiteRadarDestroyed.." | NoPowr: "..samSitesNoPower.." | NoCon: "..samSitesNoConnectionNode.." | NoAmmo: "..samSitesOutOfAmmo)
 	end
 	
 	if self:getDebugSettings().contacts then
@@ -2662,6 +2667,17 @@ function SkynetIADSAbstractRadarElement:getEngagementZone()
 	return self.goLiveRange
 end
 
+local function setControllerROE(controller, weaponHold)
+	local groundValue = weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.WEAPON_FREE
+	local airValue = weaponHold and AI.Option.Air.val.ROE.WEAPON_HOLD or AI.Option.Air.val.ROE.WEAPON_FREE
+	pcall(function()
+		controller:setOption(AI.Option.Ground.id.ROE, groundValue)
+	end)
+	pcall(function()
+		controller:setOption(AI.Option.Air.id.ROE, airValue)
+	end)
+end
+
 function SkynetIADSAbstractRadarElement:goLive()
 	if ( self.aiState == false and self:hasWorkingPowerSource() and self.harmSilenceID == nil) 
 	and (self:hasRemainingAmmo() == true  )
@@ -2670,7 +2686,7 @@ function SkynetIADSAbstractRadarElement:goLive()
 			local  cont = self:getController()
 			cont:setOnOff(true)
 			cont:setOption(AI.Option.Ground.id.ALARM_STATE, AI.Option.Ground.val.ALARM_STATE.RED)	
-			cont:setOption(AI.Option.Air.id.ROE, AI.Option.Air.val.ROE.WEAPON_FREE)
+			setControllerROE(cont, false)
 			self:getDCSRepresentation():enableEmission(true)
 			self.goLiveTime = timer.getTime()
 			self.aiState = true
@@ -2730,6 +2746,10 @@ end
 
 function SkynetIADSAbstractRadarElement:isActive()
 	return self.aiState
+end
+
+function SkynetIADSAbstractRadarElement:isJammed()
+	return self.lastJammerUpdate > 0 and (timer.getTime() - self.lastJammerUpdate) <= 10
 end
 
 function SkynetIADSAbstractRadarElement:isTargetInRange(target)
@@ -2813,16 +2833,20 @@ function SkynetIADSAbstractRadarElement:jam(successProbability)
 			if self.iads:getDebugSettings().jammerProbability then
 				self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": Probability: "..successProbability)
 			end
-			if successProbability > probability then
-				controller:setOption(AI.Option.Air.id.ROE, AI.Option.Air.val.ROE.WEAPON_HOLD)
+			local jamSucceeded = successProbability > probability
+			if jamSucceeded then
+				setControllerROE(controller, true)
 				if self.iads:getDebugSettings().jammerProbability then
 					self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": jammed, setting to weapon hold")
 				end
 			else
-				controller:setOption(AI.Option.Air.id.ROE, AI.Option.Air.val.ROE.WEAPON_FREE)
+				setControllerROE(controller, false)
 				if self.iads:getDebugSettings().jammerProbability then
 					self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": jammed, setting to weapon free")
 				end
+			end
+			if EA18GSkynetJammerBridge and EA18GSkynetJammerBridge.onJamResult then
+				pcall(EA18GSkynetJammerBridge.onJamResult, self, successProbability, jamSucceeded)
 			end
 			self.lastJammerUpdate = timer:getTime()
 		end
@@ -3351,7 +3375,7 @@ end
 
 function SkynetIADSJammer:masterArmOn()
 	self:masterArmSafe()
-	self.jammerTaskID = mist.scheduleFunction(SkynetIADSJammer.runCycle, {self}, 1, 10)
+	self.jammerTaskID = mist.scheduleFunction(SkynetIADSJammer.runCycle, {self}, 1, 2)
 end
 
 function SkynetIADSJammer:addFunction(natoName, jammerFunction)

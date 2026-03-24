@@ -10,7 +10,6 @@
   "template_overrides": {},
   "engine": {
     "default_altitude_bonus_per_10km_db": 10.0,
-    "default_radar_echo_base_db": 30.0,
     "channel_model": {
       "alq99_channel_count": 1.0,
       "alq99_channel_power": 2.0,
@@ -214,17 +213,17 @@
     }
   },
   "ui_state": {
-    "selected_radar_label": "Tunguska | Tunguska_2S6",
-    "selected_template_key": "mid_fcr_compact",
+    "selected_radar_label": "30H6 TR | S-300PS 5H63C 30H6_tr",
+    "selected_template_key": "aesa_fcr_narrow",
     "selected_jammer_profile": "2x ALQ-249 + 1x ALQ-99",
-    "selected_jammer_mode": "broadcast",
+    "selected_jammer_mode": "spot",
     "los_ok": true,
     "angle_deg": 0.0,
-    "jammer_range_nm": 38.0,
-    "target_range_nm": 10.0,
-    "jammer_altitude_ft": 26600.0,
+    "jammer_range_nm": 14.0,
+    "target_range_nm": 14.0,
+    "jammer_altitude_ft": 9000.0,
     "extra_gain_db": 0.0,
-    "power_coeff_db": 15.0,
+    "power_coeff_db": 45.0,
     "sigmoid_k": 0.5
   }
 }

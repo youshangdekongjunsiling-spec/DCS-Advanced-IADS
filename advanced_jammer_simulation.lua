@@ -70,7 +70,7 @@ do
 
     sim.CONFIG = {
         sigmoidK = 0.5,
-        referenceRangeKm = 1.0,
+        referenceRangeKm = 100.0,
         nmToKm = 1.852,
         jammerModes = {
             broadcast = 23.0,
@@ -415,9 +415,10 @@ do
         sim._loadMessageSent = true
         if env and env.info then
             env.info(string.format(
-                "[AJS] Advanced Jammer Simulation loaded | version=%s | k=%.2f | modes=%.0f/%.0f/%.0f",
+                "[AJS] Advanced Jammer Simulation loaded | version=%s | k=%.2f | ref=%.0fkm | modes=%.0f/%.0f/%.0f",
                 sim.VERSION,
                 sim.CONFIG.sigmoidK,
+                sim.CONFIG.referenceRangeKm,
                 sim.CONFIG.jammerModes.broadcast,
                 sim.CONFIG.jammerModes.sector,
                 sim.CONFIG.jammerModes.spot
@@ -426,8 +427,9 @@ do
         if trigger and trigger.action and trigger.action.outText then
             trigger.action.outText(
                 string.format(
-                    "Advanced Jammer Simulation loaded | k=%.2f | mode power B%.0f / S%.0f / P%.0f",
+                    "Advanced Jammer Simulation loaded | k=%.2f | ref %.0fkm | mode power B%.0f / S%.0f / P%.0f",
                     sim.CONFIG.sigmoidK,
+                    sim.CONFIG.referenceRangeKm,
                     sim.CONFIG.jammerModes.broadcast,
                     sim.CONFIG.jammerModes.sector,
                     sim.CONFIG.jammerModes.spot

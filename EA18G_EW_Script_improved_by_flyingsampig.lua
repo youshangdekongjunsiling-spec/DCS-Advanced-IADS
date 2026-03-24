@@ -152,11 +152,13 @@ local lastReportTime = {}
 local trackedMissiles = {}
 local missileUID = 1
 local suppressedSAMs = {}
+local liveJamEffectState = {} -- [unitName] = {jammerName, probabilityPercent, isSuppressed, mode, lastUpdate}
 local RADAR_LIST_MAX_SLOTS = 10
 local RADAR_LIST_SCAN_INTERVAL = 2
 local RADAR_LIST_REPORT_INTERVAL = 15
 local RADAR_LIST_REORDER_HOLD_SEC = 4
 local RADAR_LIST_ROUGH_DISTANCE_NM = 5
+local LIVE_JAM_EFFECT_TTL_SEC = 6
 
 -- === ESM / ELINT（基于 RWR） ===
 local ESM_TICK            = 1.0          -- 判定周期（秒）
@@ -854,6 +856,108 @@ local function computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUni
     return computeLegacySpotJamProbabilityPercent(jammerName, emitterUnit, radarUnit), nil
 end
 
+local function getAdvancedTargetSourceLabel(targetSource)
+    if targetSource == "tracked" then
+        return "跟踪目标"
+    elseif targetSource == "nearest_visible_enemy" then
+        return "最近可视敌机"
+    elseif targetSource == "fallback_self" then
+        return "回退参考"
+    end
+    return "未知参考"
+end
+
+local function formatAdvancedSpotJamSummary(jammerName, advancedResult)
+    if not advancedResult then
+        return nil
+    end
+
+    local presetLabel = (jammerSettings[jammerName] and jammerSettings[jammerName].currentPreset and jammerSettings[jammerName].currentPreset.label) or "未注册"
+    local jammerRangeNm = math.floor(((advancedResult.jammerRangeM or 0) / 1852) + 0.5)
+    local targetRangeNm = math.floor(((advancedResult.targetRangeM or 0) / 1852) + 0.5)
+    local angleDeg = math.floor((advancedResult.angleDeg or 0) + 0.5)
+    local jsrDb = advancedResult.jsrDb or 0
+    local sourceLabel = getAdvancedTargetSourceLabel(advancedResult.targetSource)
+    local targetName = advancedResult.targetObjectName or "无"
+
+    return string.format(
+        "预设=%s | Rj=%dnm | Rt=%dnm | 偏角=%d° | JSR=%.1fdB | 参考=%s(%s)",
+        presetLabel,
+        jammerRangeNm,
+        targetRangeNm,
+        angleDeg,
+        jsrDb,
+        sourceLabel,
+        targetName
+    )
+end
+
+local function setControllerWeaponHold(controller, weaponHold)
+    if not controller then
+        return
+    end
+    local groundValue = weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.OPEN_FIRE
+    local airValue = weaponHold and AI.Option.Air.val.ROE.WEAPON_HOLD or AI.Option.Air.val.ROE.OPEN_FIRE
+    pcall(function()
+        controller:setOption(AI.Option.Ground.id.ROE, groundValue)
+    end)
+    pcall(function()
+        controller:setOption(AI.Option.Air.id.ROE, airValue)
+    end)
+end
+
+local function setLiveJamEffectState(unitName, jammerName, probabilityPercent, isSuppressed, mode)
+    if not unitName or not jammerName then
+        return
+    end
+    liveJamEffectState[unitName] = {
+        jammerName = jammerName,
+        probabilityPercent = math.max(0, math.min(100, math.floor((probabilityPercent or 0) + 0.5))),
+        isSuppressed = isSuppressed == true,
+        mode = mode or "unknown",
+        lastUpdate = timer.getTime()
+    }
+end
+
+local function clearLiveJamEffectState(unitName, jammerName)
+    if not unitName then
+        return
+    end
+    local state = liveJamEffectState[unitName]
+    if state and (jammerName == nil or state.jammerName == jammerName) then
+        liveJamEffectState[unitName] = nil
+    end
+end
+
+local function getLiveJamEffectState(unitName, jammerName)
+    local state = unitName and liveJamEffectState[unitName] or nil
+    if not state then
+        return nil
+    end
+    if jammerName and state.jammerName ~= jammerName then
+        return nil
+    end
+    if (timer.getTime() - (state.lastUpdate or 0)) > LIVE_JAM_EFFECT_TTL_SEC then
+        liveJamEffectState[unitName] = nil
+        return nil
+    end
+    return state
+end
+
+local function reportJamAttemptResult(jammerName, targetLabel, probabilityPercent, success, modeLabel)
+    local gid = jammerGroupIDs[jammerName]
+    if not gid then
+        return
+    end
+    local verb = success and "压制成功" or "压制失败"
+    local modeText = modeLabel and ("[" .. modeLabel .. "] ") or ""
+    trigger.action.outTextForGroup(
+        gid,
+        string.format("%s%s: %s | 当前成功率 %d%%", modeText, verb, targetLabel or "未知目标", math.floor((probabilityPercent or 0) + 0.5)),
+        3
+    )
+end
+
 local function computeOffensiveJamProbability(jammerName, emitterUnit, radarUnit)
     local settings = jammerSettings[jammerName] or {}
     local jammerMode = settings.offDir and "sector" or "broadcast"
@@ -898,6 +1002,37 @@ end
     end
 end
 
+offensiveLoop = function(jammer)
+    local unit = Unit.getByName(jammer)
+    if not unit or not unit:isExist() then return end
+    for _, name in ipairs(mist.makeUnitTable({'[red][vehicle]', '[red][ship]'})) do
+        local sam = Unit.getByName(name)
+        if sam and sam:isExist() and sam:hasAttribute("SAM TR") then
+            local samPos = sam:getPoint()
+            local allowed = jammerSettings[jammer].offensive or
+                (jammerSettings[jammer].offDir and isInSector(unit, samPos, jammerSettings[jammer].offDir))
+            if allowed then
+                local successProbability = computeOffensiveJamProbability(jammer, unit, sam)
+                local drain = jammerSettings[jammer].offensive and drainRateArea or drainRateDirectional
+                if successProbability and emitterCapacity[jammer] >= drain then
+                    emitterCapacity[jammer] = emitterCapacity[jammer] - drain
+                    local jamSucceeded = math.random(0, 100) <= successProbability
+                    setLiveJamEffectState(name, jammer, successProbability, jamSucceeded, jammerSettings[jammer].offensive and "broadcast" or "sector")
+                    local ctrl = sam:getGroup():getController()
+                    if jamSucceeded then
+                        setControllerWeaponHold(ctrl, true)
+                        suppressedSAMs[name] = {sam = sam, lastSuppressed = timer.getTime(), jammer = jammer}
+                    else
+                        setControllerWeaponHold(ctrl, false)
+                        suppressedSAMs[name] = nil
+                    end
+                    reportJamAttemptResult(jammer, getNatoName(sam), successProbability, jamSucceeded, jammerSettings[jammer].offensive and "面压制" or "扇区压制")
+                end
+            end
+        end
+    end
+end
+
 EA18GSkynetJammerBridge = EA18GSkynetJammerBridge or {}
 
 function EA18GSkynetJammerBridge.getSuccessProbability(emitterUnit, samSite)
@@ -924,11 +1059,25 @@ function EA18GSkynetJammerBridge.getSuccessProbability(emitterUnit, samSite)
     local bestProbability = nil
     local jammerPos = emitterUnit:getPoint()
 
+    local spotTargetName = nil
     if settings.spotTarget and currentCapacity > 15 and isSpotTargetMatchingSkynetSam(jammerName, samSite) then
+        spotTargetName = settings.spotTarget
+        local matchedRadarUnit = nil
         for _, radarUnit in ipairs(radarUnits) do
-            local spotProbability = computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUnit)
-            if spotProbability and (bestProbability == nil or spotProbability > bestProbability) then
-                bestProbability = spotProbability
+            if radarUnit:getName() == settings.spotTarget then
+                matchedRadarUnit = radarUnit
+                break
+            end
+        end
+
+        if matchedRadarUnit then
+            bestProbability = computeSkynetSpotJamProbability(jammerName, emitterUnit, matchedRadarUnit)
+        else
+            for _, radarUnit in ipairs(radarUnits) do
+                local spotProbability = computeSkynetSpotJamProbability(jammerName, emitterUnit, radarUnit)
+                if spotProbability and (bestProbability == nil or spotProbability > bestProbability) then
+                    bestProbability = spotProbability
+                end
             end
         end
     end
@@ -954,7 +1103,64 @@ function EA18GSkynetJammerBridge.getSuccessProbability(emitterUnit, samSite)
         end
     end
 
+    samSite._ea18gLastJammerName = jammerName
+    samSite._ea18gLastProbability = bestProbability
+    samSite._ea18gLastMode = settings.spotTarget and "spot" or (settings.offensive and "broadcast" or (settings.offDir and "sector" or "unknown"))
+    samSite._ea18gLastSpotTargetName = spotTargetName
+
     return true, bestProbability
+end
+
+function EA18GSkynetJammerBridge.onJamResult(samSite, successProbability, jamSucceeded)
+    if not samSite then
+        return
+    end
+
+    local jammerName = samSite._ea18gLastJammerName
+    if not jammerName then
+        return
+    end
+
+    local probabilityPercent = math.max(0, math.min(100, math.floor((successProbability or 0) + 0.5)))
+    local modeKey = samSite._ea18gLastMode or "unknown"
+    local modeLabel = (modeKey == "spot" and "点压制") or (modeKey == "broadcast" and "面压制") or (modeKey == "sector" and "扇区压制") or "压制"
+    local targetLabel = (samSite.getNatoName and samSite:getNatoName()) or (samSite.getDescription and samSite:getDescription()) or (samSite.getDCSName and samSite:getDCSName()) or "SAM"
+    local affectedRadarUnits = getSkynetSamRadarUnits(samSite)
+
+    if modeKey == "spot" and samSite._ea18gLastSpotTargetName then
+        local filtered = {}
+        for _, radarUnit in ipairs(affectedRadarUnits) do
+            if radarUnit:getName() == samSite._ea18gLastSpotTargetName then
+                table.insert(filtered, radarUnit)
+                break
+            end
+        end
+        if #filtered > 0 then
+            affectedRadarUnits = filtered
+            local targetUnit = Unit.getByName(samSite._ea18gLastSpotTargetName)
+            if targetUnit and targetUnit:isExist() then
+                targetLabel = getNatoName(targetUnit)
+            else
+                targetLabel = samSite._ea18gLastSpotTargetName
+            end
+        end
+    end
+
+    for _, radarUnit in ipairs(affectedRadarUnits) do
+        local radarName = radarUnit:getName()
+        setLiveJamEffectState(radarName, jammerName, probabilityPercent, jamSucceeded, modeKey)
+        if jamSucceeded then
+            suppressedSAMs[radarName] = {sam = radarUnit, lastSuppressed = timer.getTime(), jammer = jammerName, skynet = true}
+        else
+            if radarUnit and radarUnit:isExist() then
+                local ctrl = radarUnit:getGroup():getController()
+                setControllerWeaponHold(ctrl, false)
+            end
+            suppressedSAMs[radarName] = nil
+        end
+    end
+
+    reportJamAttemptResult(jammerName, targetLabel, probabilityPercent, jamSucceeded, modeLabel)
 end
 
 local function restoreSAMs()
@@ -994,6 +1200,28 @@ local function restoreSAMs()
                         break
                     end
                 end
+            end
+            suppressedSAMs[name] = nil
+        end
+    end
+end
+
+restoreSAMs = function()
+    for name, info in pairs(suppressedSAMs) do
+        local sam = info.sam
+        local stillSuppressed = false
+
+        if info.spot or info.skynet then
+            local liveState = getLiveJamEffectState(name, info.jammer)
+            stillSuppressed = liveState and liveState.isSuppressed == true or false
+        else
+            stillSuppressed = (timer.getTime() - (info.lastSuppressed or 0) <= 5)
+        end
+
+        if not stillSuppressed then
+            if sam and sam:isExist() then
+                local ctrl = sam:getGroup():getController()
+                setControllerWeaponHold(ctrl, false)
             end
             suppressedSAMs[name] = nil
         end
@@ -1934,6 +2162,158 @@ local function formatRadarSlotLineDisplay(jammer, index, entry)
     return string.format("%d. %s | %dnm", index, entry.natoName, roughNM)
 end
 
+getRadarEntryJammingDisplay = function(jammer, entry)
+    entry.isBeingJammed = false
+    entry.isSuppressed = false
+    entry.jamProbabilityPercent = nil
+
+    if not entry then
+        return false, nil, false
+    end
+
+    local liveState = getLiveJamEffectState(entry.unitName, jammer)
+    if liveState then
+        entry.isBeingJammed = true
+        entry.isSuppressed = liveState.isSuppressed == true
+        entry.jamProbabilityPercent = liveState.probabilityPercent
+        if entry.isSuppressed then
+            return true, entry.jamProbabilityPercent, true
+        end
+    end
+
+    if entry.status ~= "active" then
+        if liveState then
+            return true, entry.jamProbabilityPercent, false
+        end
+        return false, nil, false
+    end
+
+    if not isCurrentPresetAvailableForJammer(jammer) then
+        return false, nil, false
+    end
+
+    local jammerUnit = Unit.getByName(jammer)
+    local radarUnit = Unit.getByName(entry.unitName)
+    if not jammerUnit or not jammerUnit:isExist() or not radarUnit or not radarUnit:isExist() then
+        return false, nil, false
+    end
+
+    local settings = jammerSettings[jammer] or {}
+    local currentCapacity = emitterCapacity[jammer] or 0
+    local bestProbability = nil
+
+    if settings.spotTarget == entry.unitName and currentCapacity > 15 then
+        local spotProbability = computeSkynetSpotJamProbability(jammer, jammerUnit, radarUnit)
+        if spotProbability then
+            bestProbability = spotProbability
+        end
+    end
+
+    local offensiveAllowed = false
+    local offensiveDrain = nil
+    if settings.offensive then
+        offensiveAllowed = true
+        offensiveDrain = drainRateArea
+    elseif settings.offDir then
+        offensiveAllowed = isInSector(jammerUnit, radarUnit:getPoint(), settings.offDir)
+        offensiveDrain = drainRateDirectional
+    end
+
+    if offensiveAllowed and offensiveDrain and currentCapacity >= offensiveDrain then
+        local offensiveProbability = computeOffensiveJamProbability(jammer, jammerUnit, radarUnit)
+        if offensiveProbability and (not bestProbability or offensiveProbability > bestProbability) then
+            bestProbability = offensiveProbability
+        end
+    end
+
+    if bestProbability then
+        entry.isBeingJammed = true
+        entry.jamProbabilityPercent = math.max(0, math.min(100, math.floor(bestProbability + 0.5)))
+        return true, entry.jamProbabilityPercent, false
+    end
+
+    return false, nil, false
+end
+
+formatRadarSlotLineDisplay = function(jammer, index, entry)
+    local bearing = entry.lastBearing or 0
+    local distNM = entry.lastDistanceNM or 0
+    local isJammed, jamProbability, isSuppressed = getRadarEntryJammingDisplay(jammer, entry)
+
+    if DEBUG_MODE then
+        if isSuppressed then
+            return string.format("%d. %s | %03d° | %dnm | 压制中 %d%%", index, entry.natoName, bearing, distNM, jamProbability or 0)
+        end
+        if entry.status == "active" then
+            if isJammed then
+                return string.format("%d. %s | %03d° | %dnm | 干扰中 %d%%", index, entry.natoName, bearing, distNM, jamProbability or 0)
+            end
+            return string.format("%d. %s | %03d° | %dnm | 开机 | LOS通", index, entry.natoName, bearing, distNM)
+        end
+        return string.format("%d. %s | %03d° | %dnm | 无信号", index, entry.natoName, bearing, distNM)
+    end
+
+    local roughNM = roughDistanceNM(distNM)
+    if isSuppressed then
+        return string.format("%d. %s | %dnm | 压制中 %d%%", index, entry.natoName, roughNM, jamProbability or 0)
+    end
+    if entry.status ~= "active" then
+        if isJammed then
+            return string.format("%d. %s | %dnm | 干扰中 %d%%", index, entry.natoName, roughNM, jamProbability or 0)
+        end
+        return string.format("%d. %s | %dnm | 无信号", index, entry.natoName, roughNM)
+    end
+    if isJammed then
+        return string.format("%d. %s | %dnm | 干扰中 %d%%", index, entry.natoName, roughNM, jamProbability or 0)
+    end
+    return string.format("%d. %s | %dnm", index, entry.natoName, roughNM)
+end
+
+getRadarStatusPriority = function(entry)
+    if not entry then return 99 end
+    local liveState = getLiveJamEffectState(entry.unitName, nil)
+    if liveState and liveState.isSuppressed == true then return -1 end
+    if liveState then return 0 end
+    if entry.status == "active" then return 1 end
+    if entry.status == "blocked" then return 2 end
+    if entry.status == "inactive" then return 3 end
+    if entry.status == "destroyed" then return 4 end
+    return 5
+end
+
+buildRadarOrderKey = function(entries)
+    local parts = {}
+    for i = 1, RADAR_LIST_MAX_SLOTS do
+        local entry = entries[i]
+        if entry then
+            local liveState = getLiveJamEffectState(entry.unitName, nil)
+            local stateKey = entry.status or "?"
+            if liveState then
+                stateKey = liveState.isSuppressed and "suppressed" or "jamming"
+            end
+            table.insert(parts, string.format("%d:%s:%s", i, entry.unitName or "?", stateKey))
+        end
+    end
+    return table.concat(parts, "|")
+end
+
+buildRadarSetKey = function(entries)
+    local parts = {}
+    for i = 1, RADAR_LIST_MAX_SLOTS do
+        local entry = entries[i]
+        if entry then
+            local liveState = getLiveJamEffectState(entry.unitName, nil)
+            local stateKey = entry.status or "?"
+            if liveState then
+                stateKey = liveState.isSuppressed and "suppressed" or "jamming"
+            end
+            table.insert(parts, string.format("%s:%s", entry.unitName or "?", stateKey))
+        end
+    end
+    table.sort(parts)
+    return table.concat(parts, "|")
+end
+
 local function buildRadarMemoryEntries(jammer)
     local state = ensureRadarListState(jammer)
     local entries = {}
@@ -2279,18 +2659,26 @@ local function selectSpotTargetSlot(jammer, slotIndex)
         local jammerUnit = Unit.getByName(jammer)
         local distNM = 0
         local probabilityPercent = nil
+        local advancedResult = nil
         if jammerUnit and jammerUnit:isExist() then
             distNM = math.floor(get3DDist(jammerUnit:getPoint(), targetUnit:getPoint()) / 1852 + 0.5)
-            probabilityPercent = computeSkynetSpotJamProbability(jammer, jammerUnit, targetUnit)
+            probabilityPercent, advancedResult = computeSkynetSpotJamProbability(jammer, jammerUnit, targetUnit)
         end
         local probabilityText = probabilityPercent and string.format(" | 当前成功率 %d%%", math.floor(probabilityPercent + 0.5)) or ""
+        local advancedSummary = formatAdvancedSpotJamSummary(jammer, advancedResult)
         if DEBUG_MODE then
             trigger.action.outTextForGroup(gid,
                 string.format("点目标干扰已开启: 雷达%d -> %s | %03d° | %dnm%s",
                     slotIndex, entry.natoName, entry.lastBearing or 0, distNM, probabilityText), 5)
+            if advancedSummary then
+                trigger.action.outTextForGroup(gid, advancedSummary, 5)
+            end
         else
             trigger.action.outTextForGroup(gid,
                 string.format("点目标干扰已开启: 雷达%d -> %s%s", slotIndex, entry.natoName, probabilityText), 4)
+            if advancedSummary then
+                trigger.action.outTextForGroup(gid, advancedSummary, 5)
+            end
         end
     end
     refreshRadarSlotsNow(jammer, "点目标干扰候选", true)
