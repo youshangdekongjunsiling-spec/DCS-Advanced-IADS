@@ -29,7 +29,7 @@ iadsDebug.contacts = false
 iadsDebug.radarWentLive = false
 iadsDebug.radarWentDark = false
 iadsDebug.jammerProbability = false
-iadsDebug.harmDefence = false
+iadsDebug.harmDefence = true
 
 redIADS:addEarlyWarningRadarsByPrefix(EW_PREFIX)
 redIADS:addSAMSitesByPrefix(SAM_PREFIX)
