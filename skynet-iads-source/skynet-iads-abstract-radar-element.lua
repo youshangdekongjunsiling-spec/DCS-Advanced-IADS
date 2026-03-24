@@ -39,6 +39,15 @@ function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	instance.minHarmPresetShutdownTime = 30
 	instance.maxHarmPresetShutdownTime = 180
 	instance.harmShutdownTime = 0
+	instance.harmRelocationMinDistanceMeters = 100
+	instance.harmRelocationMaxDistanceMeters = 200
+	instance.harmRelocationFallbackSpeedKmph = 60
+	instance.harmRelocationCheckInterval = 2
+	instance.harmRelocationArrivalToleranceMeters = 35
+	instance.harmRelocationInProgress = false
+	instance.harmRelocationDestination = nil
+	instance.harmRelocationDeadline = 0
+	instance.harmRelocationPlannedDistanceMeters = 0
 	instance.firingRangePercent = 100
 	instance.actAsEW = false
 	instance.cachedTargets = {}
@@ -472,12 +481,182 @@ function SkynetIADSAbstractRadarElement:buildSingleUnit(unit, class, tableToAdd,
 	end
 end
 
+local setControllerAlarmState
+
 function SkynetIADSAbstractRadarElement:getController()
 	local dcsRepresentation = self:getDCSRepresentation()
 	if dcsRepresentation:isExist() then
 		return dcsRepresentation:getController()
 	else
 		return nil
+	end
+end
+
+function SkynetIADSAbstractRadarElement:getHARMRelocationGroup()
+	local dcsRepresentation = self:getDCSRepresentation()
+	if dcsRepresentation == nil or dcsRepresentation:isExist() == false then
+		return nil
+	end
+
+	local okUnits, units = pcall(function()
+		return dcsRepresentation:getUnits()
+	end)
+	if okUnits and units and #units > 0 then
+		return dcsRepresentation
+	end
+
+	local okGroup, group = pcall(function()
+		return dcsRepresentation:getGroup()
+	end)
+	if okGroup and group and group:isExist() then
+		return group
+	end
+
+	return nil
+end
+
+function SkynetIADSAbstractRadarElement:getHARMRelocationController()
+	local group = self:getHARMRelocationGroup()
+	if group and group:isExist() then
+		return group:getController()
+	end
+	return nil
+end
+
+function SkynetIADSAbstractRadarElement:calculateRandomHARMRelocationPoint(distanceMeters)
+	local group = self:getHARMRelocationGroup()
+	if group == nil then
+		return nil
+	end
+
+	local startPoint = mist.getLeadPos(group)
+	if startPoint == nil then
+		return nil
+	end
+
+	local headingRad = math.random() * 2 * math.pi
+	return {
+		x = startPoint.x + math.cos(headingRad) * distanceMeters,
+		y = startPoint.y,
+		z = startPoint.z + math.sin(headingRad) * distanceMeters
+	}
+end
+
+function SkynetIADSAbstractRadarElement:getHARMRelocationSpeedKmph()
+	local group = self:getHARMRelocationGroup()
+	if group and group:isExist() then
+		local units = group:getUnits()
+		for i = 1, #units do
+			local unit = units[i]
+			if unit and unit:isExist() then
+				local okDesc, desc = pcall(function()
+					return unit:getDesc()
+				end)
+				if okDesc and desc and desc.speedMax and desc.speedMax > 0 then
+					return math.max(self.harmRelocationFallbackSpeedKmph, math.floor(desc.speedMax * 3.6 + 0.5))
+				end
+			end
+		end
+	end
+	return self.harmRelocationFallbackSpeedKmph
+end
+
+function SkynetIADSAbstractRadarElement:calculateHARMRelocationTravelTimeSeconds(distanceMeters, speedKmph)
+	local speedMps = mist.utils.kmphToMps(speedKmph or self:getHARMRelocationSpeedKmph())
+	if speedMps <= 0 then
+		speedMps = 1
+	end
+	return math.max(10, math.ceil(distanceMeters / speedMps) + 6)
+end
+
+function SkynetIADSAbstractRadarElement:enterHARMRelocationDarkState()
+	if self:isDestroyed() == false then
+		self:getDCSRepresentation():enableEmission(false)
+	end
+
+	local movementController = self:getHARMRelocationController()
+	if movementController then
+		pcall(function()
+			movementController:setOnOff(true)
+		end)
+		setControllerAlarmState(movementController, false)
+	end
+
+	local controller = self:getController()
+	if controller and controller ~= movementController then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setControllerAlarmState(controller, false)
+	end
+
+	self:pointDefencesGoLive()
+	self.aiState = false
+	self:stopScanningForHARMs()
+	self.cachedTargets = {}
+end
+
+function SkynetIADSAbstractRadarElement:attemptHARMRelocation()
+	local group = self:getHARMRelocationGroup()
+	if group == nil or group:isExist() == false then
+		return false, 0, nil
+	end
+
+	local distanceMeters = math.random(self.harmRelocationMinDistanceMeters, self.harmRelocationMaxDistanceMeters)
+	local speedKmph = self:getHARMRelocationSpeedKmph()
+	local destination = self:calculateRandomHARMRelocationPoint(distanceMeters)
+	if destination == nil then
+		return false, 0, nil
+	end
+
+	local ok = pcall(function()
+		mist.groupToPoint(group, destination, "Diamond", math.random(0, 359), speedKmph, true)
+	end)
+
+	if ok ~= true then
+		return false, 0, nil
+	end
+
+	local travelTime = self:calculateHARMRelocationTravelTimeSeconds(distanceMeters, speedKmph)
+	self.harmRelocationInProgress = true
+	self.harmRelocationPlannedDistanceMeters = distanceMeters
+	self.harmRelocationDestination = destination
+	self.harmRelocationDeadline = timer.getTime() + travelTime
+	return true, travelTime, destination, speedKmph, distanceMeters
+end
+
+function SkynetIADSAbstractRadarElement:hasReachedHARMRelocationDestination()
+	if self.harmRelocationDestination == nil then
+		return true
+	end
+
+	local group = self:getHARMRelocationGroup()
+	if group == nil or group:isExist() == false then
+		return true
+	end
+
+	local currentPoint = mist.getLeadPos(group)
+	if currentPoint == nil then
+		return true
+	end
+
+	local distance = mist.utils.get2DDist(currentPoint, self.harmRelocationDestination)
+	return distance <= self.harmRelocationArrivalToleranceMeters
+end
+
+function SkynetIADSAbstractRadarElement.checkHARMRelocationArrival(self)
+	if self.harmRelocationInProgress ~= true then
+		self:finishHarmDefence(self)
+		return
+	end
+
+	local timedOut = timer.getTime() >= self.harmRelocationDeadline
+	if self:hasReachedHARMRelocationDestination() or timedOut then
+		if self.iads:getDebugSettings().harmDefence then
+			local reason = timedOut and "timeout" or "arrived"
+			self.iads:printOutputToLog("HARM DEFENCE RELOCATION COMPLETE: "..self:getDCSName().." | REASON: "..reason)
+		end
+		self:finishHarmDefence(self)
 	end
 end
 
@@ -547,6 +726,13 @@ local function setControllerROE(controller, weaponHold)
 	end)
 end
 
+setControllerAlarmState = function(controller, redState)
+	local alarmValue = redState and AI.Option.Ground.val.ALARM_STATE.RED or AI.Option.Ground.val.ALARM_STATE.GREEN
+	pcall(function()
+		controller:setOption(AI.Option.Ground.id.ALARM_STATE, alarmValue)
+	end)
+end
+
 function SkynetIADSAbstractRadarElement:goLive()
 	if ( self.aiState == false and self:hasWorkingPowerSource() and self.harmSilenceID == nil) 
 	and (self:hasRemainingAmmo() == true  )
@@ -554,7 +740,7 @@ function SkynetIADSAbstractRadarElement:goLive()
 		if self:isDestroyed() == false then
 			local  cont = self:getController()
 			cont:setOnOff(true)
-			cont:setOption(AI.Option.Ground.id.ALARM_STATE, AI.Option.Ground.val.ALARM_STATE.RED)	
+			setControllerAlarmState(cont, true)
 			setControllerROE(cont, false)
 			self:getDCSRepresentation():enableEmission(true)
 			self.goLiveTime = timer.getTime()
@@ -746,10 +932,26 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 	if ( timeToImpact == nil ) then
 		timeToImpact = 0
 	end
-	
+
+	local relocated, travelTime, _, speedKmph, distanceMeters = self:attemptHARMRelocation()
+	if relocated == true then
+		self.harmShutdownTime = travelTime
+		if self.iads:getDebugSettings().harmDefence then
+			self.iads:printOutputToLog("HARM DEFENCE SHUTDOWN + RELOCATE: "..self:getDCSName().." | DIST: "..distanceMeters.."m | SPEED: "..speedKmph.."km/h | ETA: "..self.harmShutdownTime.." seconds | TTI: "..timeToImpact)
+		end
+		self.harmSilenceID = mist.scheduleFunction(
+			SkynetIADSAbstractRadarElement.checkHARMRelocationArrival,
+			{self},
+			timer.getTime() + self.harmRelocationCheckInterval,
+			self.harmRelocationCheckInterval
+		)
+		self:enterHARMRelocationDarkState()
+		return
+	end
+
 	self.minHarmShutdownTime = self:calculateMinimalShutdownTimeInSeconds(timeToImpact)
 	self.maxHarmShutDownTime = self:calculateMaximalShutdownTimeInSeconds(self.minHarmShutdownTime)
-	
+
 	self.harmShutdownTime = self:calculateHARMShutdownTime()
 	if self.iads:getDebugSettings().harmDefence then
 		self.iads:printOutputToLog("HARM DEFENCE SHUTTING DOWN: "..self:getDCSName().." | FOR: "..self.harmShutdownTime.." seconds | TTI: "..timeToImpact)
@@ -771,8 +973,14 @@ function SkynetIADSAbstractRadarElement.finishHarmDefence(self)
 	mist.removeFunction(self.harmSilenceID)
 	self.harmSilenceID = nil
 	self.harmShutdownTime = 0
-	
-	if ( self:getAutonomousState() == true ) then
+	self.harmRelocationInProgress = false
+	self.harmRelocationDestination = nil
+	self.harmRelocationDeadline = 0
+	self.harmRelocationPlannedDistanceMeters = 0
+
+	self:goLive()
+
+	if ( self.aiState == false and self:getAutonomousState() == true ) then
 		self:goAutonomous()
 	end	
 end
