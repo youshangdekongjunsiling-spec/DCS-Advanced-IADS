@@ -704,7 +704,8 @@ function SkynetIADSAbstractRadarElement:jam(successProbability)
 			if self.iads:getDebugSettings().jammerProbability then
 				self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": Probability: "..successProbability)
 			end
-			if successProbability > probability then
+			local jamSucceeded = successProbability > probability
+			if jamSucceeded then
 				setControllerROE(controller, true)
 				if self.iads:getDebugSettings().jammerProbability then
 					self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": jammed, setting to weapon hold")
@@ -714,6 +715,9 @@ function SkynetIADSAbstractRadarElement:jam(successProbability)
 				if self.iads:getDebugSettings().jammerProbability then
 					self.iads:printOutputToLog("JAMMER: "..self:getDescription()..": jammed, setting to weapon free")
 				end
+			end
+			if EA18GSkynetJammerBridge and EA18GSkynetJammerBridge.onJamResult then
+				pcall(EA18GSkynetJammerBridge.onJamResult, self, successProbability, jamSucceeded)
 			end
 			self.lastJammerUpdate = timer:getTime()
 		end
