@@ -592,6 +592,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 	if threatPresent and entry.kind == "MSAM" and entry.state ~= "deployed" then
 		self:pausePatrolForDeployment(entry)
+		entry.element:goLive()
 	end
 
 	if threatPresent then
@@ -771,8 +772,11 @@ function SkynetIADSMobilePatrol.installHooks()
 	local originalSAMInformOfContact = SkynetIADSSamSite.informOfContact
 	function SkynetIADSSamSite:informOfContact(contact)
 		local hadTargetInRange = self.targetsInRange == true
-		local result = originalSAMInformOfContact(self, contact)
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
+		if entry and hadTargetInRange == false and entry.state == "patrolling" then
+			entry.manager:pausePatrolForDeployment(entry)
+		end
+		local result = originalSAMInformOfContact(self, contact)
 		if entry and hadTargetInRange == false and self.targetsInRange == true then
 			local radarPoint = entry.manager:getPatrolReferencePoint(entry)
 			local targetPoint = contact:getPosition().p
@@ -793,7 +797,6 @@ function SkynetIADSMobilePatrol.installHooks()
 				targetName = name
 			end
 			entry.manager:log("informOfContact deploy | "..entry.groupName.." | contact="..targetName.." | distance="..mist.utils.round(distanceNm, 1).."nm | threatRange="..mist.utils.round(threatRangeNm, 1).."nm")
-			entry.manager:pausePatrolForDeployment(entry)
 		end
 		return result
 	end

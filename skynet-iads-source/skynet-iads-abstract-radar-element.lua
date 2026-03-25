@@ -674,6 +674,47 @@ function SkynetIADSAbstractRadarElement:getTrackingRadars()
 	return self.trackingRadars
 end
 
+function SkynetIADSAbstractRadarElement:getEmitterRepresentations()
+	local emitterRepresentations = {}
+	local alreadyAdded = {}
+
+	local function addRepresentation(wrapper)
+		if wrapper == nil or wrapper.getDCSRepresentation == nil then
+			return
+		end
+
+		local representation = wrapper:getDCSRepresentation()
+		if representation == nil or representation.isExist == nil or representation:isExist() == false then
+			return
+		end
+
+		local key = tostring(representation)
+		local okName, name = pcall(function()
+			return representation:getName()
+		end)
+		if okName and name then
+			key = name
+		end
+
+		if alreadyAdded[key] ~= true then
+			alreadyAdded[key] = true
+			table.insert(emitterRepresentations, representation)
+		end
+	end
+
+	for i = 1, #self.searchRadars do
+		addRepresentation(self.searchRadars[i])
+	end
+	for i = 1, #self.trackingRadars do
+		addRepresentation(self.trackingRadars[i])
+	end
+	for i = 1, #self.launchers do
+		addRepresentation(self.launchers[i])
+	end
+
+	return emitterRepresentations
+end
+
 function SkynetIADSAbstractRadarElement:getRadars()
 	local radarUnits = {}	
 	for i = 1, #self.searchRadars do
@@ -753,6 +794,19 @@ function SkynetIADSAbstractRadarElement:goLive()
 			setControllerAlarmState(cont, true)
 			setControllerROE(cont, false)
 			self:getDCSRepresentation():enableEmission(true)
+			local emitters = self:getEmitterRepresentations()
+			for i = 1, #emitters do
+				local emitter = emitters[i]
+				pcall(function()
+					local emitterController = emitter:getController()
+					if emitterController then
+						emitterController:setOnOff(true)
+						setControllerAlarmState(emitterController, true)
+						setControllerROE(emitterController, false)
+					end
+					emitter:enableEmission(true)
+				end)
+			end
 			self.goLiveTime = timer.getTime()
 			self.aiState = true
 		end
@@ -778,6 +832,18 @@ function SkynetIADSAbstractRadarElement:goDark()
 	then
 		if self:isDestroyed() == false then
 			self:getDCSRepresentation():enableEmission(false)
+			local emitters = self:getEmitterRepresentations()
+			for i = 1, #emitters do
+				local emitter = emitters[i]
+				pcall(function()
+					local emitterController = emitter:getController()
+					if emitterController then
+						setControllerAlarmState(emitterController, false)
+						setControllerROE(emitterController, true)
+					end
+					emitter:enableEmission(false)
+				end)
+			end
 		end
 		-- point defence will only go live if the Radar Emitting site it is protecting goes dark and this is due to a it defending against a HARM
 		-- 点防御只有在它保护的雷达发射站点关闭时才会上线，这是由于它防御HARM
