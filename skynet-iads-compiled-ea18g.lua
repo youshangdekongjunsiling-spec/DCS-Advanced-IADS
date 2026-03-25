@@ -78,6 +78,7 @@ samTypesDB = {
 	},
 	['Buk'] = {
 		['type'] = 'complex',
+		['searchRadarOptional'] = true,
 		['searchRadar'] = {
 			['SA-11 Buk SR 9S18M1'] = {
 				['name'] = {
@@ -1092,6 +1093,10 @@ function SkynetIADSLogger:printSystemStatus()
 		local ewNoConnectionNode = 0
 		local ewActive = 0
 		local ewRadarsInactive = 0
+		local mobileEWTotal = 0
+		local mobileEWCombat = 0
+		local mobileEWPatrol = 0
+		local mobileEWHarm = 0
 
 		for i = 1, #earlyWarningRadars do
 			local ewRadar = earlyWarningRadars[i]
@@ -1104,11 +1109,27 @@ function SkynetIADSLogger:printSystemStatus()
 			if ewRadar:isActive() then
 				ewActive = ewActive + 1
 			end
+			if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
+				local entry = SkynetIADSMobilePatrol.getEntryForElement(ewRadar)
+				if entry and entry.kind == "MEW" then
+					mobileEWTotal = mobileEWTotal + 1
+					if entry.state == "patrolling" then
+						mobileEWPatrol = mobileEWPatrol + 1
+					elseif entry.state == "harm_evading" then
+						mobileEWHarm = mobileEWHarm + 1
+					else
+						mobileEWCombat = mobileEWCombat + 1
+					end
+				end
+			end
 		end
 		
 		ewRadarsInactive = ewTotal - ewActive	
 		local numEWRadarsDestroyed = #self.iads:getDestroyedEarlyWarningRadars()
 		self:printOutput("EW: "..ewTotal.." | On: "..ewActive.." | Off: "..ewRadarsInactive.." | Destroyed: "..numEWRadarsDestroyed.." | NoPowr: "..ewNoPower.." | NoCon: "..ewNoConnectionNode)
+		if mobileEWTotal > 0 then
+			self:printOutput("MEW: "..mobileEWTotal.." | Combat: "..mobileEWCombat.." | Patrol: "..mobileEWPatrol.." | HARM: "..mobileEWHarm)
+		end
 		
 		local samSitesInactive = 0
 		local samSitesActive = 0
@@ -1120,6 +1141,10 @@ function SkynetIADSLogger:printSystemStatus()
 		local samSiteAutonomous = 0
 		local samSiteRadarDestroyed = 0
 		local samSitesJammed = 0
+		local mobileSAMTotal = 0
+		local mobileSAMCombat = 0
+		local mobileSAMPatrol = 0
+		local mobileSAMHarm = 0
 		for i = 1, #samSites do
 			local samSite = samSites[i]
 			if samSite:hasWorkingPowerSource() == false then
@@ -1143,10 +1168,26 @@ function SkynetIADSLogger:printSystemStatus()
 			if samSite:hasWorkingRadar() == false then
 				samSiteRadarDestroyed = samSiteRadarDestroyed + 1
 			end
+			if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
+				local entry = SkynetIADSMobilePatrol.getEntryForElement(samSite)
+				if entry and entry.kind == "MSAM" then
+					mobileSAMTotal = mobileSAMTotal + 1
+					if entry.state == "patrolling" then
+						mobileSAMPatrol = mobileSAMPatrol + 1
+					elseif entry.state == "harm_evading" then
+						mobileSAMHarm = mobileSAMHarm + 1
+					else
+						mobileSAMCombat = mobileSAMCombat + 1
+					end
+				end
+			end
 		end
 		
 		samSitesInactive = samSitesTotal - samSitesActive
 		self:printOutput("SAM: "..samSitesTotal.." | On: "..samSitesActive.." | Off: "..samSitesInactive.." | Jammed: "..samSitesJammed.." | Autonm: "..samSiteAutonomous.." | Raddest: "..samSiteRadarDestroyed.." | NoPowr: "..samSitesNoPower.." | NoCon: "..samSitesNoConnectionNode.." | NoAmmo: "..samSitesOutOfAmmo)
+		if mobileSAMTotal > 0 then
+			self:printOutput("MSAM: "..mobileSAMTotal.." | Combat: "..mobileSAMCombat.." | Patrol: "..mobileSAMPatrol.." | HARM: "..mobileSAMHarm)
+		end
 	end
 	
 	if self:getDebugSettings().contacts then
@@ -2515,6 +2556,7 @@ function SkynetIADSAbstractRadarElement:setupElements()
 		local hasSearchRadar = false
 		local hasTrackingRadar = false
 		local hasLauncher = false
+		local searchRadarOptional = dataType['searchRadarOptional'] == true
 		self.searchRadars = {}
 		self.trackingRadars = {}
 		self.launchers = {}
@@ -2535,7 +2577,8 @@ function SkynetIADSAbstractRadarElement:setupElements()
 		
 		--this check ensures a unit or group has all required elements for the specific sam or ew type:
 		if (hasLauncher and hasSearchRadar and hasTrackingRadar and #self.launchers > 0 and #self.searchRadars > 0  and #self.trackingRadars > 0 ) 
-			or (hasSearchRadar and hasLauncher and #self.searchRadars > 0 and #self.launchers > 0) then
+			or (hasSearchRadar and hasLauncher and #self.searchRadars > 0 and #self.launchers > 0)
+			or (searchRadarOptional and hasLauncher and #self.launchers > 0) then
 			self:setHARMDetectionChance(dataType['harm_detection_chance'])
 			self.dataBaseSupportedTypesCanEngageHARM = dataType['can_engage_harm'] 
 			self:setCanEngageHARM(self.dataBaseSupportedTypesCanEngageHARM)
@@ -4162,7 +4205,7 @@ SkynetIADSMobilePatrol._entriesByElement = setmetatable({}, { __mode = "k" })
 
 SkynetIADSMobilePatrol.DEFAULT_CHECK_INTERVAL = 5
 SkynetIADSMobilePatrol.DEFAULT_PATROL_SPEED_KMPH = 35
-SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS = 45
+SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS = 30
 SkynetIADSMobilePatrol.DEFAULT_RESUME_MULTIPLIER = 2
 SkynetIADSMobilePatrol.DEFAULT_MSAM_RESUME_MULTIPLIER = 1.2
 SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS = 60
@@ -4339,6 +4382,36 @@ local function collectEnemyAirUnits(enemyCoalitionId)
 	return airUnits
 end
 
+local function setPatrolAlarmState(controller)
+	pcall(function()
+		controller:setOption(AI.Option.Ground.id.ALARM_STATE, AI.Option.Ground.val.ALARM_STATE.GREEN)
+	end)
+end
+
+local function forceElementIntoPatrolDarkState(element)
+	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	local dcsRepresentation = element:getDCSRepresentation()
+	if dcsRepresentation and dcsRepresentation.isExist and dcsRepresentation:isExist() then
+		pcall(function()
+			dcsRepresentation:enableEmission(false)
+		end)
+	end
+	local controller = element.getController and element:getController() or nil
+	if controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setPatrolAlarmState(controller)
+	end
+	element.aiState = false
+	element.cachedTargets = {}
+	if element.stopScanningForHARMs then
+		element:stopScanningForHARMs()
+	end
+end
+
 function SkynetIADSMobilePatrol.getEntryForElement(element)
 	return SkynetIADSMobilePatrol._entriesByElement[element]
 end
@@ -4430,6 +4503,9 @@ function SkynetIADSMobilePatrol:getThreatRangeMeters(entry)
 				maxRange = math.max(maxRange, launcher:getRange())
 			end
 		end
+		if maxRange > 0 then
+			return maxRange * (element:getGoLiveRangeInPercent() / 100)
+		end
 	end
 	local searchRadars = element.getSearchRadars and element:getSearchRadars() or {}
 	for i = 1, #searchRadars do
@@ -4437,9 +4513,6 @@ function SkynetIADSMobilePatrol:getThreatRangeMeters(entry)
 		if radar:isExist() and radar.getMaxRangeFindingTarget then
 			maxRange = math.max(maxRange, radar:getMaxRangeFindingTarget())
 		end
-	end
-	if entry.kind == "MSAM" and maxRange > 0 then
-		maxRange = maxRange * (element:getGoLiveRangeInPercent() / 100)
 	end
 	return maxRange
 end
@@ -4497,7 +4570,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.state = "patrolling"
 	entry.noThreatSince = nil
 	entry.lastThreatTime = 0
-	entry.element:goDark()
+	forceElementIntoPatrolDarkState(entry.element)
 	if entry.currentWaypointIndex == nil or entry.currentWaypointIndex < 1 then
 		entry.currentWaypointIndex = self:selectStartingWaypointIndex(entry)
 	end
@@ -4740,8 +4813,8 @@ function SkynetIADSMobilePatrol.installHooks()
 	function SkynetIADSSamSite:setToCorrectAutonomousState()
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		if entry and (entry.state == "patrolling" or entry.state == "harm_evading") then
-			self:resetAutonomousState()
-			self:goDark()
+			self.isAutonomous = false
+			forceElementIntoPatrolDarkState(self)
 			return
 		end
 		return originalSAMSetToCorrectAutonomousState(self)
@@ -4751,8 +4824,8 @@ function SkynetIADSMobilePatrol.installHooks()
 	function SkynetIADSEWRadar:setToCorrectAutonomousState()
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		if entry and (entry.state == "patrolling" or entry.state == "harm_evading") then
-			self:resetAutonomousState()
-			self:goDark()
+			self.isAutonomous = false
+			forceElementIntoPatrolDarkState(self)
 			return
 		end
 		return originalEWSetToCorrectAutonomousState(self)
