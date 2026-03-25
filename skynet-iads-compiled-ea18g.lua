@@ -2846,6 +2846,47 @@ function SkynetIADSAbstractRadarElement:getTrackingRadars()
 	return self.trackingRadars
 end
 
+function SkynetIADSAbstractRadarElement:getEmitterRepresentations()
+	local emitterRepresentations = {}
+	local alreadyAdded = {}
+
+	local function addRepresentation(wrapper)
+		if wrapper == nil or wrapper.getDCSRepresentation == nil then
+			return
+		end
+
+		local representation = wrapper:getDCSRepresentation()
+		if representation == nil or representation.isExist == nil or representation:isExist() == false then
+			return
+		end
+
+		local key = tostring(representation)
+		local okName, name = pcall(function()
+			return representation:getName()
+		end)
+		if okName and name then
+			key = name
+		end
+
+		if alreadyAdded[key] ~= true then
+			alreadyAdded[key] = true
+			table.insert(emitterRepresentations, representation)
+		end
+	end
+
+	for i = 1, #self.searchRadars do
+		addRepresentation(self.searchRadars[i])
+	end
+	for i = 1, #self.trackingRadars do
+		addRepresentation(self.trackingRadars[i])
+	end
+	for i = 1, #self.launchers do
+		addRepresentation(self.launchers[i])
+	end
+
+	return emitterRepresentations
+end
+
 function SkynetIADSAbstractRadarElement:getRadars()
 	local radarUnits = {}	
 	for i = 1, #self.searchRadars do
@@ -2925,6 +2966,19 @@ function SkynetIADSAbstractRadarElement:goLive()
 			setControllerAlarmState(cont, true)
 			setControllerROE(cont, false)
 			self:getDCSRepresentation():enableEmission(true)
+			local emitters = self:getEmitterRepresentations()
+			for i = 1, #emitters do
+				local emitter = emitters[i]
+				pcall(function()
+					local emitterController = emitter:getController()
+					if emitterController then
+						emitterController:setOnOff(true)
+						setControllerAlarmState(emitterController, true)
+						setControllerROE(emitterController, false)
+					end
+					emitter:enableEmission(true)
+				end)
+			end
 			self.goLiveTime = timer.getTime()
 			self.aiState = true
 		end
@@ -2950,6 +3004,18 @@ function SkynetIADSAbstractRadarElement:goDark()
 	then
 		if self:isDestroyed() == false then
 			self:getDCSRepresentation():enableEmission(false)
+			local emitters = self:getEmitterRepresentations()
+			for i = 1, #emitters do
+				local emitter = emitters[i]
+				pcall(function()
+					local emitterController = emitter:getController()
+					if emitterController then
+						setControllerAlarmState(emitterController, false)
+						setControllerROE(emitterController, true)
+					end
+					emitter:enableEmission(false)
+				end)
+			end
 		end
 		-- point defence will only go live if the Radar Emitting site it is protecting goes dark and this is due to a it defending against a HARM
 		if (self.harmSilenceID ~= nil) then
@@ -4809,6 +4875,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 	if threatPresent and entry.kind == "MSAM" and entry.state ~= "deployed" then
 		self:pausePatrolForDeployment(entry)
+		entry.element:goLive()
 	end
 
 	if threatPresent then
@@ -4988,8 +5055,11 @@ function SkynetIADSMobilePatrol.installHooks()
 	local originalSAMInformOfContact = SkynetIADSSamSite.informOfContact
 	function SkynetIADSSamSite:informOfContact(contact)
 		local hadTargetInRange = self.targetsInRange == true
-		local result = originalSAMInformOfContact(self, contact)
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
+		if entry and hadTargetInRange == false and entry.state == "patrolling" then
+			entry.manager:pausePatrolForDeployment(entry)
+		end
+		local result = originalSAMInformOfContact(self, contact)
 		if entry and hadTargetInRange == false and self.targetsInRange == true then
 			local radarPoint = entry.manager:getPatrolReferencePoint(entry)
 			local targetPoint = contact:getPosition().p
@@ -5010,7 +5080,6 @@ function SkynetIADSMobilePatrol.installHooks()
 				targetName = name
 			end
 			entry.manager:log("informOfContact deploy | "..entry.groupName.." | contact="..targetName.." | distance="..mist.utils.round(distanceNm, 1).."nm | threatRange="..mist.utils.round(threatRangeNm, 1).."nm")
-			entry.manager:pausePatrolForDeployment(entry)
 		end
 		return result
 	end
