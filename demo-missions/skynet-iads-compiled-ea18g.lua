@@ -2854,6 +2854,14 @@ function SkynetIADSAbstractRadarElement:getRadars()
 	for i = 1, #self.trackingRadars do
 		table.insert(radarUnits, self.trackingRadars[i])
 	end
+	if #radarUnits == 0 then
+		for i = 1, #self.launchers do
+			local launcher = self.launchers[i]
+			if launcher.canProvideRadarCoverage and launcher:canProvideRadarCoverage() then
+				table.insert(radarUnits, launcher)
+			end
+		end
+	end
 	return radarUnits
 end
 
@@ -4023,6 +4031,18 @@ function SkynetIADSSAMLauncher:isInRange(target)
 		return false
 	end
 	return self:isWithinFiringHeight(target) and self:isInHorizontalRange(target)
+end
+
+function SkynetIADSSAMLauncher:canProvideRadarCoverage()
+	if self:isExist() == false then
+		return false
+	end
+
+	local okSensors, sensors = pcall(function()
+		return self:getDCSRepresentation():getSensors()
+	end)
+
+	return okSensors and sensors ~= nil
 end
 
 end

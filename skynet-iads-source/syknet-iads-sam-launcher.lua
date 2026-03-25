@@ -101,6 +101,18 @@ function SkynetIADSSAMLauncher:isInRange(target)
 	return self:isWithinFiringHeight(target) and self:isInHorizontalRange(target)
 end
 
+function SkynetIADSSAMLauncher:canProvideRadarCoverage()
+	if self:isExist() == false then
+		return false
+	end
+
+	local okSensors, sensors = pcall(function()
+		return self:getDCSRepresentation():getSensors()
+	end)
+
+	return okSensors and sensors ~= nil
+end
+
 end
 
 --[[
