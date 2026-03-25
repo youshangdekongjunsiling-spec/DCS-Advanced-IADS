@@ -4209,6 +4209,9 @@ SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS = 30
 SkynetIADSMobilePatrol.DEFAULT_RESUME_MULTIPLIER = 2
 SkynetIADSMobilePatrol.DEFAULT_MSAM_RESUME_MULTIPLIER = 1.2
 SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS = 60
+SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS = 8
+SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS = 25
+SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 
 local function startsWith(value, prefix)
 	return value and prefix and string.find(value, prefix, 1, true) == 1
@@ -4388,15 +4391,83 @@ local function setPatrolAlarmState(controller)
 	end)
 end
 
+local function setPatrolROE(controller)
+	pcall(function()
+		controller:setOption(AI.Option.Ground.id.ROE, AI.Option.Ground.val.ROE.WEAPON_HOLD)
+	end)
+end
+
+local function appendUniqueRepresentation(representations, representation, seenKeys)
+	if representation == nil or representation.isExist == nil or representation:isExist() == false then
+		return
+	end
+	local key = nil
+	local okName, name = pcall(function()
+		return representation:getName()
+	end)
+	if okName and name then
+		key = name
+	end
+	if key == nil then
+		key = tostring(representation)
+	end
+	if seenKeys[key] then
+		return
+	end
+	seenKeys[key] = true
+	representations[#representations + 1] = representation
+end
+
+local function collectElementEmitterRepresentations(element)
+	local representations = {}
+	local seenKeys = {}
+	appendUniqueRepresentation(representations, element:getDCSRepresentation(), seenKeys)
+
+	local searchRadars = element.getSearchRadars and element:getSearchRadars() or {}
+	for i = 1, #searchRadars do
+		appendUniqueRepresentation(representations, searchRadars[i]:getDCSRepresentation(), seenKeys)
+	end
+
+	local trackingRadars = element.getTrackingRadars and element:getTrackingRadars() or {}
+	for i = 1, #trackingRadars do
+		appendUniqueRepresentation(representations, trackingRadars[i]:getDCSRepresentation(), seenKeys)
+	end
+
+	local launchers = element.getLaunchers and element:getLaunchers() or {}
+	for i = 1, #launchers do
+		appendUniqueRepresentation(representations, launchers[i]:getDCSRepresentation(), seenKeys)
+	end
+
+	return representations
+end
+
+local function applyPatrolOptionsToRepresentation(representation)
+	if representation == nil or representation.isExist == nil or representation:isExist() == false then
+		return
+	end
+	local okController, controller = pcall(function()
+		return representation:getController()
+	end)
+	if okController and controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setPatrolAlarmState(controller)
+		setPatrolROE(controller)
+	end
+end
+
 local function forceElementIntoPatrolDarkState(element)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
 		return
 	end
-	local dcsRepresentation = element:getDCSRepresentation()
-	if dcsRepresentation and dcsRepresentation.isExist and dcsRepresentation:isExist() then
+	local representations = collectElementEmitterRepresentations(element)
+	for i = 1, #representations do
+		local representation = representations[i]
 		pcall(function()
-			dcsRepresentation:enableEmission(false)
+			representation:enableEmission(false)
 		end)
+		applyPatrolOptionsToRepresentation(representation)
 	end
 	local controller = element.getController and element:getController() or nil
 	if controller then
@@ -4404,8 +4475,12 @@ local function forceElementIntoPatrolDarkState(element)
 			controller:setOnOff(true)
 		end)
 		setPatrolAlarmState(controller)
+		setPatrolROE(controller)
 	end
 	element.aiState = false
+	if element.targetsInRange ~= nil then
+		element.targetsInRange = false
+	end
 	element.cachedTargets = {}
 	if element.stopScanningForHARMs then
 		element:stopScanningForHARMs()
@@ -4464,16 +4539,68 @@ end
 
 function SkynetIADSMobilePatrol:issueRoadMove(entry, destination)
 	if entry.group == nil or entry.group:isExist() == false or destination == nil then
+		self:log("Road move skipped for "..tostring(entry.groupName).." | missing group or destination")
+		return false
+	end
+	local startPoint = self:getPatrolReferencePoint(entry)
+	if startPoint == nil then
+		self:log("Road move skipped for "..tostring(entry.groupName).." | missing start point")
 		return false
 	end
 	local ok = pcall(function()
-		mist.groupToPoint(entry.group, destination, "On Road", nil, entry.patrolSpeedKmph, false)
+		mist.goRoute(entry.group, {
+			mist.ground.buildWP(startPoint, "On Road", mist.utils.kmphToMps(entry.patrolSpeedKmph)),
+			mist.ground.buildWP(destination, "On Road", mist.utils.kmphToMps(entry.patrolSpeedKmph)),
+		})
 	end)
 	if ok then
 		entry.currentDestination = destination
 		entry.lastRouteIssueTime = timer.getTime()
+		entry.lastRouteIssueReferencePoint = startPoint
+		self:log("Road move issued for "..entry.groupName.." | speed="..entry.patrolSpeedKmph.."km/h")
+	else
+		self:log("Road move failed for "..entry.groupName)
 	end
 	return ok
+end
+
+function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
+	if entry.group == nil or entry.group:isExist() == false then
+		self:log("Patrol route skipped for "..tostring(entry.groupName).." | missing group")
+		return false
+	end
+	local ok = pcall(function()
+		mist.ground.patrolRoute({
+			gpData = entry.groupName,
+			useGroupRoute = entry.groupName,
+			onRoadForm = "On Road",
+			speed = mist.utils.kmphToMps(entry.patrolSpeedKmph),
+		})
+	end)
+	if ok then
+		entry.currentDestination = nil
+		entry.lastRouteIssueTime = timer.getTime()
+		entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
+		self:log("Patrol route issued for "..entry.groupName.." | speed="..entry.patrolSpeedKmph.."km/h")
+	else
+		self:log("Patrol route failed for "..entry.groupName)
+	end
+	return ok
+end
+
+function SkynetIADSMobilePatrol:shouldReissuePatrolRoute(entry)
+	if entry.lastRouteIssueTime == nil or entry.lastRouteIssueReferencePoint == nil then
+		return false
+	end
+	if (timer.getTime() - entry.lastRouteIssueTime) < self.defaultRouteReissueSeconds then
+		return false
+	end
+	local currentPoint = self:getPatrolReferencePoint(entry)
+	if currentPoint == nil then
+		return false
+	end
+	local movedDistance = mist.utils.get2DDist(currentPoint, entry.lastRouteIssueReferencePoint)
+	return movedDistance < self.defaultMinMovementMeters
 end
 
 function SkynetIADSMobilePatrol:issueHold(entry)
@@ -4541,6 +4668,25 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			and contact:isIdentifiedAsHARM() == false
 			and entry.element:areGoLiveConstraintsSatisfied(contact)
 			and entry.element:isTargetInRange(contact) then
+			local radarPoint = self:getPatrolReferencePoint(entry)
+			local targetPoint = contact:getPosition().p
+			local distanceNm = 0
+			local threatRangeNm = 0
+			if radarPoint and targetPoint then
+				distanceNm = mist.utils.metersToNM(mist.utils.get2DDist(radarPoint, targetPoint))
+			end
+			local threatRangeMeters = self:getThreatRangeMeters(entry)
+			if threatRangeMeters and threatRangeMeters > 0 then
+				threatRangeNm = mist.utils.metersToNM(threatRangeMeters)
+			end
+			local targetName = "unknown"
+			local okName, name = pcall(function()
+				return contact:getName()
+			end)
+			if okName and name then
+				targetName = name
+			end
+			self:log("MSAM deploy trigger | "..entry.groupName.." | contact="..targetName.." | distance="..mist.utils.round(distanceNm, 1).."nm | threatRange="..mist.utils.round(threatRangeNm, 1).."nm")
 			return contact
 		end
 	end
@@ -4571,11 +4717,10 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.noThreatSince = nil
 	entry.lastThreatTime = 0
 	forceElementIntoPatrolDarkState(entry.element)
-	if entry.currentWaypointIndex == nil or entry.currentWaypointIndex < 1 then
-		entry.currentWaypointIndex = self:selectStartingWaypointIndex(entry)
-	end
 	entry.currentDestination = nil
-	self:advancePatrol(entry, true)
+	entry.patrolRefreshDelays = mist.utils.deepCopy(self.defaultPatrolRefreshDelays)
+	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
+	self:issuePatrolRoute(entry)
 end
 
 function SkynetIADSMobilePatrol:advancePatrol(entry, force)
@@ -4667,7 +4812,22 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		return
 	end
 
-	self:advancePatrol(entry, false)
+	if entry.nextPatrolRefreshTime and timer.getTime() >= entry.nextPatrolRefreshTime then
+		forceElementIntoPatrolDarkState(entry.element)
+		self:log("Patrol refresh reissued for "..entry.groupName.." | delayed startup refresh")
+		self:issuePatrolRoute(entry)
+		table.remove(entry.patrolRefreshDelays, 1)
+		if #entry.patrolRefreshDelays > 0 then
+			entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
+		else
+			entry.nextPatrolRefreshTime = nil
+		end
+	end
+
+	if self:shouldReissuePatrolRoute(entry) then
+		self:log("Patrol route reissued for "..entry.groupName.." | group appears stationary")
+		self:issuePatrolRoute(entry)
+	end
 end
 
 function SkynetIADSMobilePatrol:tick(_, time)
@@ -4733,6 +4893,10 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		state = "patrolling",
 		lastThreatTime = 0,
 		noThreatSince = nil,
+		lastRouteIssueTime = nil,
+		lastRouteIssueReferencePoint = nil,
+		patrolRefreshDelays = {},
+		nextPatrolRefreshTime = nil,
 		manager = self,
 	}
 	entry.currentWaypointIndex = self:selectStartingWaypointIndex(entry)
@@ -4787,6 +4951,9 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultResumeMultiplier = (config and config.defaultResumeMultiplier) or SkynetIADSMobilePatrol.DEFAULT_RESUME_MULTIPLIER,
 		defaultMSAMResumeMultiplier = (config and config.defaultMSAMResumeMultiplier) or SkynetIADSMobilePatrol.DEFAULT_MSAM_RESUME_MULTIPLIER,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
+		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
+		defaultMinMovementMeters = (config and config.defaultMinMovementMeters) or SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS,
+		defaultPatrolRefreshDelays = (config and config.defaultPatrolRefreshDelays) or SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS,
 	}
 	setmetatable(patrol, SkynetIADSMobilePatrol)
 	return patrol
@@ -4804,6 +4971,25 @@ function SkynetIADSMobilePatrol.installHooks()
 		local result = originalSAMInformOfContact(self, contact)
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		if entry and hadTargetInRange == false and self.targetsInRange == true then
+			local radarPoint = entry.manager:getPatrolReferencePoint(entry)
+			local targetPoint = contact:getPosition().p
+			local distanceNm = 0
+			local threatRangeNm = 0
+			if radarPoint and targetPoint then
+				distanceNm = mist.utils.metersToNM(mist.utils.get2DDist(radarPoint, targetPoint))
+			end
+			local threatRangeMeters = entry.manager:getThreatRangeMeters(entry)
+			if threatRangeMeters and threatRangeMeters > 0 then
+				threatRangeNm = mist.utils.metersToNM(threatRangeMeters)
+			end
+			local targetName = "unknown"
+			local okName, name = pcall(function()
+				return contact:getName()
+			end)
+			if okName and name then
+				targetName = name
+			end
+			entry.manager:log("informOfContact deploy | "..entry.groupName.." | contact="..targetName.." | distance="..mist.utils.round(distanceNm, 1).."nm | threatRange="..mist.utils.round(threatRangeNm, 1).."nm")
 			entry.manager:pausePatrolForDeployment(entry)
 		end
 		return result
