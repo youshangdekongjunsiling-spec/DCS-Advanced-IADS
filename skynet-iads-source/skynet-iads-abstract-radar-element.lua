@@ -380,6 +380,7 @@ function SkynetIADSAbstractRadarElement:setupElements()
 		local hasSearchRadar = false
 		local hasTrackingRadar = false
 		local hasLauncher = false
+		local searchRadarOptional = dataType['searchRadarOptional'] == true
 		self.searchRadars = {}
 		self.trackingRadars = {}
 		self.launchers = {}
@@ -401,7 +402,8 @@ function SkynetIADSAbstractRadarElement:setupElements()
 		--this check ensures a unit or group has all required elements for the specific sam or ew type:
 		--此检查确保单位或组具有特定SAM或EW类型所需的所有元素：
 		if (hasLauncher and hasSearchRadar and hasTrackingRadar and #self.launchers > 0 and #self.searchRadars > 0  and #self.trackingRadars > 0 ) 
-			or (hasSearchRadar and hasLauncher and #self.searchRadars > 0 and #self.launchers > 0) then
+			or (hasSearchRadar and hasLauncher and #self.searchRadars > 0 and #self.launchers > 0)
+			or (searchRadarOptional and hasLauncher and #self.launchers > 0) then
 			self:setHARMDetectionChance(dataType['harm_detection_chance'])
 			self.dataBaseSupportedTypesCanEngageHARM = dataType['can_engage_harm'] 
 			self:setCanEngageHARM(self.dataBaseSupportedTypesCanEngageHARM)

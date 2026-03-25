@@ -8,7 +8,7 @@ SkynetIADSMobilePatrol._entriesByElement = setmetatable({}, { __mode = "k" })
 
 SkynetIADSMobilePatrol.DEFAULT_CHECK_INTERVAL = 5
 SkynetIADSMobilePatrol.DEFAULT_PATROL_SPEED_KMPH = 35
-SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS = 45
+SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS = 30
 SkynetIADSMobilePatrol.DEFAULT_RESUME_MULTIPLIER = 2
 SkynetIADSMobilePatrol.DEFAULT_MSAM_RESUME_MULTIPLIER = 1.2
 SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS = 60
@@ -185,6 +185,36 @@ local function collectEnemyAirUnits(enemyCoalitionId)
 	return airUnits
 end
 
+local function setPatrolAlarmState(controller)
+	pcall(function()
+		controller:setOption(AI.Option.Ground.id.ALARM_STATE, AI.Option.Ground.val.ALARM_STATE.GREEN)
+	end)
+end
+
+local function forceElementIntoPatrolDarkState(element)
+	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	local dcsRepresentation = element:getDCSRepresentation()
+	if dcsRepresentation and dcsRepresentation.isExist and dcsRepresentation:isExist() then
+		pcall(function()
+			dcsRepresentation:enableEmission(false)
+		end)
+	end
+	local controller = element:getController and element:getController() or nil
+	if controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setPatrolAlarmState(controller)
+	end
+	element.aiState = false
+	element.cachedTargets = {}
+	if element.stopScanningForHARMs then
+		element:stopScanningForHARMs()
+	end
+end
+
 function SkynetIADSMobilePatrol.getEntryForElement(element)
 	return SkynetIADSMobilePatrol._entriesByElement[element]
 end
@@ -276,6 +306,9 @@ function SkynetIADSMobilePatrol:getThreatRangeMeters(entry)
 				maxRange = math.max(maxRange, launcher:getRange())
 			end
 		end
+		if maxRange > 0 then
+			return maxRange * (element:getGoLiveRangeInPercent() / 100)
+		end
 	end
 	local searchRadars = element.getSearchRadars and element:getSearchRadars() or {}
 	for i = 1, #searchRadars do
@@ -283,9 +316,6 @@ function SkynetIADSMobilePatrol:getThreatRangeMeters(entry)
 		if radar:isExist() and radar.getMaxRangeFindingTarget then
 			maxRange = math.max(maxRange, radar:getMaxRangeFindingTarget())
 		end
-	end
-	if entry.kind == "MSAM" and maxRange > 0 then
-		maxRange = maxRange * (element:getGoLiveRangeInPercent() / 100)
 	end
 	return maxRange
 end
@@ -343,7 +373,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.state = "patrolling"
 	entry.noThreatSince = nil
 	entry.lastThreatTime = 0
-	entry.element:goDark()
+	forceElementIntoPatrolDarkState(entry.element)
 	if entry.currentWaypointIndex == nil or entry.currentWaypointIndex < 1 then
 		entry.currentWaypointIndex = self:selectStartingWaypointIndex(entry)
 	end
@@ -586,8 +616,8 @@ function SkynetIADSMobilePatrol.installHooks()
 	function SkynetIADSSamSite:setToCorrectAutonomousState()
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		if entry and (entry.state == "patrolling" or entry.state == "harm_evading") then
-			self:resetAutonomousState()
-			self:goDark()
+			self.isAutonomous = false
+			forceElementIntoPatrolDarkState(self)
 			return
 		end
 		return originalSAMSetToCorrectAutonomousState(self)
@@ -597,8 +627,8 @@ function SkynetIADSMobilePatrol.installHooks()
 	function SkynetIADSEWRadar:setToCorrectAutonomousState()
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		if entry and (entry.state == "patrolling" or entry.state == "harm_evading") then
-			self:resetAutonomousState()
-			self:goDark()
+			self.isAutonomous = false
+			forceElementIntoPatrolDarkState(self)
 			return
 		end
 		return originalEWSetToCorrectAutonomousState(self)

@@ -277,6 +277,10 @@ function SkynetIADSLogger:printSystemStatus()
 		local ewNoConnectionNode = 0
 		local ewActive = 0
 		local ewRadarsInactive = 0
+		local mobileEWTotal = 0
+		local mobileEWCombat = 0
+		local mobileEWPatrol = 0
+		local mobileEWHarm = 0
 
 		for i = 1, #earlyWarningRadars do
 			local ewRadar = earlyWarningRadars[i]
@@ -289,11 +293,27 @@ function SkynetIADSLogger:printSystemStatus()
 			if ewRadar:isActive() then
 				ewActive = ewActive + 1
 			end
+			if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
+				local entry = SkynetIADSMobilePatrol.getEntryForElement(ewRadar)
+				if entry and entry.kind == "MEW" then
+					mobileEWTotal = mobileEWTotal + 1
+					if entry.state == "patrolling" then
+						mobileEWPatrol = mobileEWPatrol + 1
+					elseif entry.state == "harm_evading" then
+						mobileEWHarm = mobileEWHarm + 1
+					else
+						mobileEWCombat = mobileEWCombat + 1
+					end
+				end
+			end
 		end
 		
 		ewRadarsInactive = ewTotal - ewActive	
 		local numEWRadarsDestroyed = #self.iads:getDestroyedEarlyWarningRadars()
 		self:printOutput("EW: "..ewTotal.." | On: "..ewActive.." | Off: "..ewRadarsInactive.." | Destroyed: "..numEWRadarsDestroyed.." | NoPowr: "..ewNoPower.." | NoCon: "..ewNoConnectionNode)
+		if mobileEWTotal > 0 then
+			self:printOutput("MEW: "..mobileEWTotal.." | Combat: "..mobileEWCombat.." | Patrol: "..mobileEWPatrol.." | HARM: "..mobileEWHarm)
+		end
 		
 		local samSitesInactive = 0
 		local samSitesActive = 0
@@ -305,6 +325,10 @@ function SkynetIADSLogger:printSystemStatus()
 		local samSiteAutonomous = 0
 		local samSiteRadarDestroyed = 0
 		local samSitesJammed = 0
+		local mobileSAMTotal = 0
+		local mobileSAMCombat = 0
+		local mobileSAMPatrol = 0
+		local mobileSAMHarm = 0
 		for i = 1, #samSites do
 			local samSite = samSites[i]
 			if samSite:hasWorkingPowerSource() == false then
@@ -328,10 +352,26 @@ function SkynetIADSLogger:printSystemStatus()
 			if samSite:hasWorkingRadar() == false then
 				samSiteRadarDestroyed = samSiteRadarDestroyed + 1
 			end
+			if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
+				local entry = SkynetIADSMobilePatrol.getEntryForElement(samSite)
+				if entry and entry.kind == "MSAM" then
+					mobileSAMTotal = mobileSAMTotal + 1
+					if entry.state == "patrolling" then
+						mobileSAMPatrol = mobileSAMPatrol + 1
+					elseif entry.state == "harm_evading" then
+						mobileSAMHarm = mobileSAMHarm + 1
+					else
+						mobileSAMCombat = mobileSAMCombat + 1
+					end
+				end
+			end
 		end
 		
 		samSitesInactive = samSitesTotal - samSitesActive
 		self:printOutput("SAM: "..samSitesTotal.." | On: "..samSitesActive.." | Off: "..samSitesInactive.." | Jammed: "..samSitesJammed.." | Autonm: "..samSiteAutonomous.." | Raddest: "..samSiteRadarDestroyed.." | NoPowr: "..samSitesNoPower.." | NoCon: "..samSitesNoConnectionNode.." | NoAmmo: "..samSitesOutOfAmmo)
+		if mobileSAMTotal > 0 then
+			self:printOutput("MSAM: "..mobileSAMTotal.." | Combat: "..mobileSAMCombat.." | Patrol: "..mobileSAMPatrol.." | HARM: "..mobileSAMHarm)
+		end
 	end
 	
 	if self:getDebugSettings().contacts then

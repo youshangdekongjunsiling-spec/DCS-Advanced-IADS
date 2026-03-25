@@ -77,6 +77,7 @@ samTypesDB = {
 	},
 	['Buk'] = {
 		['type'] = 'complex',
+		['searchRadarOptional'] = true,
 		['searchRadar'] = {
 			['SA-11 Buk SR 9S18M1'] = {
 				['name'] = {
