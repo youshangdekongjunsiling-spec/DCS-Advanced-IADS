@@ -612,7 +612,7 @@ function SkynetIADSAbstractRadarElement:attemptHARMRelocation()
 	end
 
 	local ok = pcall(function()
-		mist.groupToPoint(group, destination, "Diamond", math.random(0, 359), speedKmph, true)
+		mist.groupToPoint(group, destination, "Diamond", math.random(0, 359), speedKmph, false)
 	end)
 
 	if ok ~= true then

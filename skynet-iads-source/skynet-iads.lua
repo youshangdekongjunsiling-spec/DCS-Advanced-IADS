@@ -24,6 +24,9 @@ function SkynetIADS:create(name)
 	
 	-- 初始化 IADS 实例的所有属性
 	iads.radioMenu = nil                    -- 无线电菜单（用于调试和状态显示）
+	iads.detailedStateMenu = nil
+	iads.detailedStatePageMenus = {}
+	iads.detailedStatePageSize = 8
 	iads.earlyWarningRadars = {}           -- 早期预警雷达数组
 	iads.samSites = {}                     -- SAM（地空导弹）站点数组
 	iads.commandCenters = {}               -- 指挥中心数组
@@ -314,6 +317,16 @@ function SkynetIADS:getSAMSites()
 	return self:createTableDelegator(self.samSites)
 end
 
+function SkynetIADS:getSAMSiteByGroupName(groupName)
+	for i = 1, #self.samSites do
+		local samSite = self.samSites[i]
+		if samSite:getDCSName() == groupName then
+			return samSite
+		end
+	end
+	return nil
+end
+
 function SkynetIADS:getActiveSAMSites()
 	local activeSAMSites = {}
 	for i = 1, #self.samSites do
@@ -430,6 +443,12 @@ function SkynetIADS.evaluateContacts(self)
 		
 		-- 获取 EW 雷达检测到的目标
 		local ewContacts = ewRadar:getDetectedTargets()
+		if EA18GSkynetJammerBridge and EA18GSkynetJammerBridge.filterEWContacts then
+			local filteredContacts = EA18GSkynetJammerBridge.filterEWContacts(ewRadar, ewContacts)
+			if filteredContacts ~= nil then
+				ewContacts = filteredContacts
+			end
+		end
 		if #ewContacts > 0 then
 			-- 获取该 EW 雷达覆盖范围内的可用 SAM 站点
 			local samSitesUnderCoverage = ewRadar:getUsableChildRadars()
@@ -767,10 +786,67 @@ function SkynetIADS:addRadioMenu()
 	local displayIADSStatus = missionCommands.addCommand('hide IADS Status', self.radioMenu, SkynetIADS.updateDisplay, {self = self, value = false, option = 'IADSStatus'})
 	local displayIADSStatus = missionCommands.addCommand('show contacts', self.radioMenu, SkynetIADS.updateDisplay, {self = self, value = true, option = 'contacts'})
 	local displayIADSStatus = missionCommands.addCommand('hide contacts', self.radioMenu, SkynetIADS.updateDisplay, {self = self, value = false, option = 'contacts'})
+	self.detailedStateMenu = missionCommands.addSubMenu('Detailed State', self.radioMenu)
+	missionCommands.addCommand('Refresh List', self.detailedStateMenu, SkynetIADS.rebuildDetailedStateMenu, self)
+	self:rebuildDetailedStateMenu()
 end
 
 function SkynetIADS:removeRadioMenu()
 	missionCommands.removeItem(self.radioMenu)
+end
+
+function SkynetIADS.showDetailedSAMState(params)
+	local self = params.self
+	local groupName = params.groupName
+	local samSite = self:getSAMSiteByGroupName(groupName)
+	if samSite == nil then
+		trigger.action.outText("Detailed State | SAM site not found: "..tostring(groupName), 10)
+		return
+	end
+	trigger.action.outText(self.logger:buildDetailedSAMSiteReport(samSite), 18)
+end
+
+function SkynetIADS:rebuildDetailedStateMenu()
+	if self.detailedStatePageMenus then
+		for i = 1, #self.detailedStatePageMenus do
+			missionCommands.removeItem(self.detailedStatePageMenus[i])
+		end
+	end
+	self.detailedStatePageMenus = {}
+
+	if self.detailedStateMenu == nil then
+		return
+	end
+
+	local samSites = {}
+	for i = 1, #self.samSites do
+		samSites[#samSites + 1] = self.samSites[i]
+	end
+	table.sort(samSites, function(a, b)
+		return a:getDCSName() < b:getDCSName()
+	end)
+
+	local pageSize = self.detailedStatePageSize or 8
+	local pageCount = math.max(1, math.ceil(#samSites / pageSize))
+	for pageIndex = 1, pageCount do
+		local pageMenu = missionCommands.addSubMenu('Page '..pageIndex, self.detailedStateMenu)
+		self.detailedStatePageMenus[#self.detailedStatePageMenus + 1] = pageMenu
+		local startIndex = ((pageIndex - 1) * pageSize) + 1
+		local endIndex = math.min(pageIndex * pageSize, #samSites)
+		if startIndex > endIndex then
+			missionCommands.addCommand('No SAM Sites', pageMenu, function()
+				trigger.action.outText("Detailed State | no SAM sites registered", 8)
+			end)
+		else
+			for i = startIndex, endIndex do
+				local samSite = samSites[i]
+				missionCommands.addCommand(samSite:getDCSName(), pageMenu, SkynetIADS.showDetailedSAMState, {
+					self = self,
+					groupName = samSite:getDCSName()
+				})
+			end
+		end
+	end
 end
 
 function SkynetIADS.updateDisplay(params)

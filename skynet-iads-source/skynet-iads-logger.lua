@@ -40,6 +40,289 @@ function SkynetIADSLogger:printOutputToLog(output)
 	env.info("SKYNET: "..output, 4)
 end
 
+local function joinStrings(values, separator)
+	if values == nil or #values == 0 then
+		return ""
+	end
+	return table.concat(values, separator or ", ")
+end
+
+local function boolFlag(value)
+	if value then
+		return "Y"
+	end
+	return "N"
+end
+
+local function safeUnitAmmoCount(unit)
+	if unit == nil or unit.isExist == nil or unit:isExist() == false then
+		return 0
+	end
+	local okAmmo, ammo = pcall(function()
+		return unit:getAmmo()
+	end)
+	if okAmmo ~= true or ammo == nil then
+		return 0
+	end
+	local count = 0
+	for i = 1, #ammo do
+		local entry = ammo[i]
+		if entry and entry.count and entry.count > 0 then
+			count = count + entry.count
+		end
+	end
+	return count
+end
+
+function SkynetIADSLogger:getMobilePatrolEntry(abstractRadarElement)
+	if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
+		return SkynetIADSMobilePatrol.getEntryForElement(abstractRadarElement)
+	end
+	return nil
+end
+
+function SkynetIADSLogger:getUsableParentEWCount(samSite)
+	local parents = samSite:getParentRadars()
+	local count = 0
+	for i = 1, #parents do
+		local parent = parents[i]
+		if parent
+			and parent:getActAsEW() == true
+			and parent:isDestroyed() == false
+			and parent:hasWorkingPowerSource()
+			and parent:hasActiveConnectionNode()
+		then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+function SkynetIADSLogger:getSAMSiteStateLabel(samSite)
+	local patrolEntry = self:getMobilePatrolEntry(samSite)
+	if samSite:isDestroyed() then
+		return "DESTROYED"
+	end
+	if patrolEntry and patrolEntry.state == "harm_evading" then
+		return "HARM_EVADING"
+	end
+	if samSite:isDefendingHARM() then
+		return "HARM_DEFENCE"
+	end
+	if patrolEntry and patrolEntry.state == "patrolling" then
+		return "PATROLLING"
+	end
+	if samSite:isActive() then
+		if samSite:isJammed() then
+			return "COMBAT_JAMMED"
+		end
+		return "COMBAT"
+	end
+	if samSite:getAutonomousState() then
+		if samSite:getAutonomousBehaviour() == SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DARK then
+			return "AUTONOMOUS_DARK"
+		end
+		return "AUTONOMOUS_DCS_AI"
+	end
+	if samSite:getActAsEW() then
+		return "ACTING_AS_EW"
+	end
+	return "DARK"
+end
+
+function SkynetIADSLogger:getSAMSiteWhyText(samSite)
+	local patrolEntry = self:getMobilePatrolEntry(samSite)
+	local usableParents = self:getUsableParentEWCount(samSite)
+	if samSite:isDestroyed() then
+		return "Launcher and radar assets are destroyed."
+	end
+	if patrolEntry and patrolEntry.state == "harm_evading" then
+		return "Mobile patrol state is harm_evading; the group is repositioning to evade HARM."
+	end
+	if samSite:isDefendingHARM() then
+		return "The site detected a HARM threat and is executing HARM defence."
+	end
+	if patrolEntry and patrolEntry.state == "patrolling" then
+		return "Mobile patrol state is patrolling; emitters are forced dark until a threat enters the patrol trigger range."
+	end
+	if samSite:isActive() then
+		if samSite.targetsInRange == true then
+			return "A target is in range and go-live constraints are satisfied, so the site is active."
+		end
+		if samSite:getActAsEW() then
+			return "The site is active because it is configured to act as EW."
+		end
+		return "The site is active due to current Skynet/DCS AI state."
+	end
+	if samSite:isJammed() then
+		return "The site is currently jammed and not actively radiating."
+	end
+	if samSite:hasWorkingPowerSource() == false then
+		return "The site has no working power source."
+	end
+	if samSite:hasActiveConnectionNode() == false then
+		return "The site has no active connection node."
+	end
+	if self.iads:isCommandCenterUsable() == false then
+		return "The command center is unavailable."
+	end
+	if samSite:hasWorkingRadar() == false then
+		return "The site has no working radar."
+	end
+	if samSite:hasRemainingAmmo() == false and samSite:getActAsEW() == false then
+		return "The site has no remaining ammunition."
+	end
+	if samSite:getAutonomousState() then
+		if samSite:getAutonomousBehaviour() == SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DARK then
+			return "The site is autonomous and configured to stay dark."
+		end
+		return "The site is autonomous and waiting for local DCS AI conditions to trigger."
+	end
+	if usableParents > 0 then
+		return "The site is dark and waiting for a target to enter range or for Skynet to promote it from external EW coverage."
+	end
+	return "The site is dark because no target is in range and no higher-priority trigger is active."
+end
+
+function SkynetIADSLogger:getSAMSiteUnitRoleMap(samSite)
+	local roleMap = {}
+	local function markUnits(wrappers, roleName)
+		for i = 1, #wrappers do
+			local wrapper = wrappers[i]
+			if wrapper and wrapper.getDCSRepresentation then
+				local dcsObject = wrapper:getDCSRepresentation()
+				if dcsObject and dcsObject.isExist and dcsObject:isExist() and dcsObject.getName then
+					local unitName = dcsObject:getName()
+					if roleMap[unitName] == nil then
+						roleMap[unitName] = {}
+					end
+					roleMap[unitName][#roleMap[unitName] + 1] = roleName
+				end
+			end
+		end
+	end
+
+	markUnits(samSite:getSearchRadars(), "Search")
+	markUnits(samSite:getTrackingRadars(), "Track")
+	markUnits(samSite:getLaunchers(), "Launcher")
+	markUnits(samSite:getPowerSources(), "Power")
+	markUnits(samSite:getConnectionNodes(), "Conn")
+
+	local emitters = samSite:getEmitterRepresentations()
+	for i = 1, #emitters do
+		local emitter = emitters[i]
+		if emitter and emitter.isExist and emitter:isExist() and emitter.getName then
+			local emitterName = emitter:getName()
+			if roleMap[emitterName] == nil then
+				roleMap[emitterName] = {}
+			end
+			roleMap[emitterName][#roleMap[emitterName] + 1] = "Emitter"
+		end
+	end
+
+	return roleMap
+end
+
+function SkynetIADSLogger:buildDetailedSAMSiteReport(samSite)
+	if samSite == nil then
+		return "Detailed State | SAM site not found"
+	end
+
+	local lines = {}
+	local dcsGroup = samSite:getDCSRepresentation()
+	local groupName = samSite:getDCSName()
+	local patrolEntry = self:getMobilePatrolEntry(samSite)
+	local roleMap = self:getSAMSiteUnitRoleMap(samSite)
+	local detectedTargets = samSite:getDetectedTargets()
+	local reasons = {}
+
+	reasons[#reasons + 1] = "active=" .. boolFlag(samSite:isActive())
+	reasons[#reasons + 1] = "targetsInRange=" .. boolFlag(samSite.targetsInRange == true)
+	reasons[#reasons + 1] = "autonomous=" .. boolFlag(samSite:getAutonomousState())
+	reasons[#reasons + 1] = "power=" .. (samSite:hasWorkingPowerSource() and "OK" or "DOWN")
+	reasons[#reasons + 1] = "connection=" .. (samSite:hasActiveConnectionNode() and "OK" or "DOWN")
+	reasons[#reasons + 1] = "cmd=" .. (self.iads:isCommandCenterUsable() and "OK" or "DOWN")
+	reasons[#reasons + 1] = "radar=" .. (samSite:hasWorkingRadar() and "OK" or "DOWN")
+	reasons[#reasons + 1] = "ammo=" .. (samSite:hasRemainingAmmo() and "OK" or "EMPTY")
+	reasons[#reasons + 1] = "jammed=" .. boolFlag(samSite:isJammed())
+	reasons[#reasons + 1] = "harm=" .. boolFlag(samSite:isDefendingHARM())
+	reasons[#reasons + 1] = "actAsEW=" .. boolFlag(samSite:getActAsEW())
+	reasons[#reasons + 1] = "parents=" .. tostring(self:getUsableParentEWCount(samSite))
+	reasons[#reasons + 1] = "detected=" .. tostring(#detectedTargets)
+	reasons[#reasons + 1] = "mif=" .. tostring(samSite:getNumberOfMissilesInFlight())
+	if patrolEntry then
+		reasons[#reasons + 1] = "mobilePatrol=" .. tostring(patrolEntry.state)
+	end
+
+	lines[#lines + 1] = "Detailed State"
+	lines[#lines + 1] = "GROUP: " .. groupName .. " | NATO: " .. samSite:getNatoName() .. " | STATE: " .. self:getSAMSiteStateLabel(samSite)
+	lines[#lines + 1] = "WHY: " .. self:getSAMSiteWhyText(samSite)
+	lines[#lines + 1] = "FLAGS: " .. joinStrings(reasons, " | ")
+	if patrolEntry and patrolEntry.lastDeployTrigger then
+		local triggerInfo = patrolEntry.lastDeployTrigger
+		local ageSeconds = 0
+		if triggerInfo.time then
+			ageSeconds = math.max(0, timer.getTime() - triggerInfo.time)
+		end
+		lines[#lines + 1] =
+			"LAST DEPLOY: source=" .. tostring(triggerInfo.source)
+			.. " | contact=" .. tostring(triggerInfo.contactName)
+			.. " | type=" .. tostring(triggerInfo.contactType)
+			.. " | distance=" .. tostring(triggerInfo.distanceNm) .. "nm"
+			.. " | threatRange=" .. tostring(triggerInfo.threatRangeNm) .. "nm"
+			.. " | age=" .. tostring(mist.utils.round(ageSeconds, 1)) .. "s"
+	end
+
+	local parentNames = {}
+	local parents = samSite:getParentRadars()
+	for i = 1, #parents do
+		parentNames[#parentNames + 1] = parents[i]:getDCSName()
+	end
+	if #parentNames > 0 then
+		lines[#lines + 1] = "PARENTS: " .. joinStrings(parentNames, ", ")
+	end
+
+	local childNames = {}
+	local children = samSite:getChildRadars()
+	for i = 1, #children do
+		childNames[#childNames + 1] = children[i]:getDCSName()
+	end
+	if #childNames > 0 then
+		lines[#lines + 1] = "CHILDREN: " .. joinStrings(childNames, ", ")
+	end
+
+	lines[#lines + 1] = "UNITS:"
+	if dcsGroup and dcsGroup.isExist and dcsGroup:isExist() then
+		local units = dcsGroup:getUnits()
+		for i = 1, #units do
+			local unit = units[i]
+			local unitName = unit:getName()
+			local typeName = unit:getTypeName()
+			local roles = roleMap[unitName] or { "Other" }
+			local sensors = "N"
+			local okSensors, sensorData = pcall(function()
+				return unit:getSensors()
+			end)
+			if okSensors and sensorData ~= nil then
+				sensors = "Y"
+			end
+			lines[#lines + 1] = string.format(
+				"%d. %s | %s | ALIVE | Roles:%s | Sensors:%s | Ammo:%d",
+				i,
+				unitName,
+				typeName,
+				joinStrings(roles, "/"),
+				sensors,
+				safeUnitAmmoCount(unit)
+			)
+		end
+	else
+		lines[#lines + 1] = "GROUP DESTROYED"
+	end
+
+	return table.concat(lines, "\n")
+end
+
 function SkynetIADSLogger:printEarlyWarningRadarStatus()
 	local ewRadars = self.iads:getEarlyWarningRadars()
 	self:printOutputToLog("------------------------------------------ EW RADAR STATUS: "..self.iads:getCoalitionString().." -------------------------------")
