@@ -4638,15 +4638,13 @@ SkynetIADSMobilePatrol.__index = SkynetIADSMobilePatrol
 SkynetIADSMobilePatrol._hooksInstalled = false
 SkynetIADSMobilePatrol._entriesByElement = setmetatable({}, { __mode = "k" })
 
-SkynetIADSMobilePatrol.DEFAULT_CHECK_INTERVAL = 5
+SkynetIADSMobilePatrol.DEFAULT_CHECK_INTERVAL = 1
 SkynetIADSMobilePatrol.DEFAULT_PATROL_SPEED_KMPH = 35
 SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS = 30
 SkynetIADSMobilePatrol.DEFAULT_RESUME_MULTIPLIER = 2
 SkynetIADSMobilePatrol.DEFAULT_MSAM_RESUME_MULTIPLIER = 1.2
-SkynetIADSMobilePatrol.DEFAULT_SA11_ALERT_DISTANCE_NM = 25
-SkynetIADSMobilePatrol.DEFAULT_SA11_ENGAGE_DISTANCE_NM = 17
-SkynetIADSMobilePatrol.DEFAULT_SA11_FORCED_DISTANCE_NM = 8
-SkynetIADSMobilePatrol.DEFAULT_SA11_LOCK_RATE_THRESHOLD_NMPS = 0.015
+SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ALERT_DISTANCE_NM = 25
+SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ENGAGE_DISTANCE_NM = 16
 SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS = 25
@@ -4830,10 +4828,23 @@ local function setPatrolAlarmState(controller)
 	end)
 end
 
-local function setPatrolROE(controller)
+local function setCombatAlarmState(controller)
 	pcall(function()
-		controller:setOption(AI.Option.Ground.id.ROE, AI.Option.Ground.val.ROE.WEAPON_HOLD)
+		controller:setOption(AI.Option.Ground.id.ALARM_STATE, AI.Option.Ground.val.ALARM_STATE.RED)
 	end)
+end
+
+local function setGroundROE(controller, weaponHold)
+	pcall(function()
+		controller:setOption(
+			AI.Option.Ground.id.ROE,
+			weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.OPEN_FIRE
+		)
+	end)
+end
+
+local function setPatrolROE(controller)
+	setGroundROE(controller, true)
 end
 
 local function appendUniqueRepresentation(representations, representation, seenKeys)
@@ -4878,6 +4889,46 @@ local function collectElementEmitterRepresentations(element)
 	end
 
 	return representations
+end
+
+local function setCombatROEForRepresentation(representation, weaponHold)
+	if representation == nil or representation.isExist == nil or representation:isExist() == false then
+		return
+	end
+	local okController, controller = pcall(function()
+		return representation:getController()
+	end)
+	if okController and controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setCombatAlarmState(controller)
+		setGroundROE(controller, weaponHold)
+		pcall(function()
+			representation:enableEmission(true)
+		end)
+	end
+end
+
+local function setElementCombatROE(element, weaponHold)
+	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	local representations = collectElementEmitterRepresentations(element)
+	for i = 1, #representations do
+		setCombatROEForRepresentation(representations[i], weaponHold)
+	end
+	local controller = element.getController and element:getController() or nil
+	if controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setCombatAlarmState(controller)
+		setGroundROE(controller, weaponHold)
+	end
+	if weaponHold then
+		element.aiState = true
+	end
 end
 
 local function applyPatrolOptionsToRepresentation(representation)
@@ -5092,10 +5143,8 @@ function SkynetIADSMobilePatrol:getMSAMCombatProfile(entry)
 		return nil
 	end
 	return {
-		alertRangeMeters = mist.utils.NMToMeters(self.sa11AlertDistanceNm),
-		engageRangeMeters = mist.utils.NMToMeters(self.sa11EngageDistanceNm),
-		forcedRangeMeters = mist.utils.NMToMeters(self.sa11ForcedDistanceNm),
-		lockRateThresholdNmps = self.sa11LockRateThresholdNmps,
+		alertRangeMeters = mist.utils.NMToMeters(self.sa11MSAMAlertDistanceNm),
+		engageRangeMeters = mist.utils.NMToMeters(self.sa11MSAMEngageDistanceNm),
 	}
 end
 
@@ -5125,75 +5174,6 @@ function SkynetIADSMobilePatrol:getContactDistanceMeters(entry, contact)
 		return mist.utils.get2DDist(radarPoint, targetPoint)
 	end
 	return math.huge
-end
-
-function SkynetIADSMobilePatrol:updateContactKinematics(entry, contact, distanceNm)
-	local contactName = self:getContactName(contact)
-	local now = timer.getTime()
-	entry.contactKinematics = entry.contactKinematics or {}
-	local previous = entry.contactKinematics[contactName]
-	local sample = {
-		time = now,
-		distanceNm = distanceNm,
-		closingRateNmps = nil,
-		crossedZero = false,
-	}
-	if previous and previous.time and now > previous.time then
-		local deltaTime = now - previous.time
-		local closingRateNmps = (previous.distanceNm - distanceNm) / deltaTime
-		sample.closingRateNmps = closingRateNmps
-		if previous.closingRateNmps and previous.closingRateNmps > 0 and closingRateNmps <= 0 then
-			sample.crossedZero = true
-		end
-	end
-	entry.contactKinematics[contactName] = sample
-	return sample
-end
-
-function SkynetIADSMobilePatrol:evaluateSpecialMSAMContact(entry, profile, contact, distanceMeters)
-	local distanceNm = mist.utils.metersToNM(distanceMeters)
-	local kinematics = self:updateContactKinematics(entry, contact, distanceNm)
-	local shouldGoLive = false
-	local shouldWeaponHold = false
-	local triggerSource = "contact_scan_alert"
-	local combatMode = "alert_hold"
-
-	if distanceMeters <= profile.forcedRangeMeters then
-		shouldGoLive = true
-		shouldWeaponHold = false
-		triggerSource = "contact_scan_forced"
-		combatMode = "forced_fire"
-	elseif distanceMeters <= profile.engageRangeMeters then
-		local closingRateNmps = kinematics.closingRateNmps
-		if kinematics.crossedZero == true then
-			shouldGoLive = true
-			shouldWeaponHold = false
-			triggerSource = "contact_scan_peak"
-			combatMode = "peak_fire"
-		elseif closingRateNmps and math.abs(closingRateNmps) <= profile.lockRateThresholdNmps then
-			shouldGoLive = true
-			shouldWeaponHold = true
-			triggerSource = "contact_scan_lock"
-			combatMode = "lock_hold"
-		else
-			triggerSource = "contact_scan_engage"
-			combatMode = "engage_wait"
-		end
-	end
-
-	local triggerInfo = self:buildDeployTriggerInfo(entry, contact, triggerSource)
-	triggerInfo.combatMode = combatMode
-	triggerInfo.closingRateNmps = kinematics.closingRateNmps and mist.utils.round(kinematics.closingRateNmps, 3) or nil
-	triggerInfo.crossedZero = kinematics.crossedZero == true
-
-	return {
-		contact = contact,
-		triggerInfo = triggerInfo,
-		shouldDeploy = true,
-		shouldGoLive = shouldGoLive,
-		shouldWeaponHold = shouldWeaponHold,
-		combatMode = combatMode,
-	}
 end
 
 function SkynetIADSMobilePatrol:findNearestEligibleContact(entry, maxDistanceMeters)
@@ -5268,7 +5248,21 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		if contact == nil then
 			return nil
 		end
-		return self:evaluateSpecialMSAMContact(entry, profile, contact, distanceMeters)
+		local shouldGoLive = distanceMeters <= profile.engageRangeMeters
+		local triggerInfo = self:buildDeployTriggerInfo(
+			entry,
+			contact,
+			shouldGoLive and "contact_scan_engage" or "contact_scan_alert"
+		)
+		triggerInfo.combatMode = shouldGoLive and "engage_fire" or "alert_hold"
+		return {
+			contact = contact,
+			triggerInfo = triggerInfo,
+			shouldDeploy = true,
+			shouldGoLive = shouldGoLive,
+			shouldWeaponHold = false,
+			combatMode = triggerInfo.combatMode,
+		}
 	end
 
 	local contacts = self.iads:getContacts()
@@ -5309,6 +5303,9 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	end
 
 	if threatDecision.shouldGoLive then
+		if entry.element.targetsInRange ~= nil then
+			entry.element.targetsInRange = true
+		end
 		entry.element:goLive()
 		setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
 	else
@@ -5393,7 +5390,7 @@ function SkynetIADSMobilePatrol:advancePatrol(entry, force)
 end
 
 function SkynetIADSMobilePatrol:handleDeployedState(entry)
-	local resumeRange = self:getThreatRangeMeters(entry) * entry.resumeMultiplier
+	local resumeRange = self:getDeployTriggerRangeMeters(entry) * entry.resumeMultiplier
 	if self:hasAircraftWithinRange(entry, resumeRange) then
 		entry.noThreatSince = nil
 		entry.lastThreatTime = timer.getTime()
@@ -5539,7 +5536,6 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		combatMode = "patrolling",
 		lastThreatTime = 0,
 		noThreatSince = nil,
-		contactKinematics = {},
 		lastRouteIssueTime = nil,
 		lastRouteIssueReferencePoint = nil,
 		patrolRefreshDelays = {},
@@ -5597,10 +5593,8 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultResumeDelaySeconds = (config and config.defaultResumeDelaySeconds) or SkynetIADSMobilePatrol.DEFAULT_RESUME_DELAY_SECONDS,
 		defaultResumeMultiplier = (config and config.defaultResumeMultiplier) or SkynetIADSMobilePatrol.DEFAULT_RESUME_MULTIPLIER,
 		defaultMSAMResumeMultiplier = (config and config.defaultMSAMResumeMultiplier) or SkynetIADSMobilePatrol.DEFAULT_MSAM_RESUME_MULTIPLIER,
-		sa11AlertDistanceNm = (config and config.sa11AlertDistanceNm) or SkynetIADSMobilePatrol.DEFAULT_SA11_ALERT_DISTANCE_NM,
-		sa11EngageDistanceNm = (config and config.sa11EngageDistanceNm) or SkynetIADSMobilePatrol.DEFAULT_SA11_ENGAGE_DISTANCE_NM,
-		sa11ForcedDistanceNm = (config and config.sa11ForcedDistanceNm) or SkynetIADSMobilePatrol.DEFAULT_SA11_FORCED_DISTANCE_NM,
-		sa11LockRateThresholdNmps = (config and config.sa11LockRateThresholdNmps) or SkynetIADSMobilePatrol.DEFAULT_SA11_LOCK_RATE_THRESHOLD_NMPS,
+		sa11MSAMAlertDistanceNm = (config and config.sa11MSAMAlertDistanceNm) or SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ALERT_DISTANCE_NM,
+		sa11MSAMEngageDistanceNm = (config and config.sa11MSAMEngageDistanceNm) or SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ENGAGE_DISTANCE_NM,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultMinMovementMeters = (config and config.defaultMinMovementMeters) or SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS,
@@ -5625,16 +5619,15 @@ function SkynetIADSMobilePatrol.installHooks()
 			if profile and contact:isIdentifiedAsHARM() == false and self:areGoLiveConstraintsSatisfied(contact) == true then
 				local distanceMeters = entry.manager:getContactDistanceMeters(entry, contact)
 				if distanceMeters <= profile.alertRangeMeters then
-					local threatDecision = entry.manager:evaluateSpecialMSAMContact(entry, profile, contact, distanceMeters)
 					if entry.state == "patrolling" then
-						entry.manager:pausePatrolForDeployment(entry, threatDecision.triggerInfo)
+						entry.manager:pausePatrolForDeployment(
+							entry,
+							entry.manager:buildDeployTriggerInfo(entry, contact, "inform_of_contact_alert")
+						)
 					end
-					if threatDecision.shouldGoLive then
-						local result = originalSAMInformOfContact(self, contact)
-						entry.manager:applyMSAMThreatDecision(entry, threatDecision, true)
-						return result
+					if distanceMeters <= profile.engageRangeMeters then
+						return originalSAMInformOfContact(self, contact)
 					end
-					entry.manager:applyMSAMThreatDecision(entry, threatDecision, true)
 					return
 				end
 			end

@@ -201,8 +201,12 @@ end
 redIADS:activate()
 
 if ENABLE_MOBILE_PATROL and MobilePatrolModule then
-    _G.redIADSMobilePatrol = MobilePatrolModule.create(redIADS, {})
-    local registeredSAM, registeredEW = _G.redIADSMobilePatrol:registerByPrefixes(MOBILE_SAM_PREFIX, MOBILE_EW_PREFIX, {})
+    _G.redIADSMobilePatrol = MobilePatrolModule.create(redIADS, {
+        checkInterval = 1,
+    })
+    local registeredSAM, registeredEW = _G.redIADSMobilePatrol:registerByPrefixes(MOBILE_SAM_PREFIX, MOBILE_EW_PREFIX, {
+        checkInterval = 1,
+    })
     local registeredMobileSAMNames = getRegisteredSAMNamesByPrefix(redIADS, MOBILE_SAM_PREFIX)
     _G.redIADSMobilePatrol:start()
     trigger.action.outText("my-iads-setup: mobile patrol active | MSAM=" .. registeredSAM .. " | MEW=" .. registeredEW, 10)
