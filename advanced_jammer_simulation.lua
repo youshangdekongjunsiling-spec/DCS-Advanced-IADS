@@ -410,6 +410,58 @@ do
         return result
     end
 
+    function sim.evaluateUnitsForTarget(params)
+        local jammerUnit = params.jammerUnit
+        local radarUnit = params.radarUnit
+        if not objectExists(jammerUnit) or not objectExists(radarUnit) then
+            return nil
+        end
+
+        local jammerPos = jammerUnit:getPoint()
+        local radarPos = radarUnit:getPoint()
+        local jammerRangeM = get3dDistance(jammerPos, radarPos)
+        local losOk = land.isVisible(radarPos, jammerPos)
+
+        local targetObject = params.targetObject
+        local targetPoint = params.targetPoint
+        local resolvedTargetPos = nil
+        local targetObjectName = "explicit_target"
+
+        if objectExists(targetObject) and targetObject.getPoint then
+            resolvedTargetPos = targetObject:getPoint()
+            targetObjectName = getObjectName(targetObject)
+        elseif targetPoint and targetPoint.x and targetPoint.z then
+            resolvedTargetPos = {
+                x = targetPoint.x,
+                y = targetPoint.y or 0.0,
+                z = targetPoint.z
+            }
+        else
+            return sim.evaluateUnits(params)
+        end
+
+        local targetRangeM = get3dDistance(radarPos, resolvedTargetPos)
+        local angleDeg = sim.computeOffBoresightAngleDeg(radarPos, resolvedTargetPos, jammerPos)
+        local result = sim.evaluateScenario({
+            radarTypeName = radarUnit:getTypeName(),
+            jammerMode = params.jammerMode or "spot",
+            alq99Count = params.alq99Count or 0,
+            alq249Count = params.alq249Count or 0,
+            jammerAltitudeM = jammerPos.y or 0.0,
+            jammerRangeM = jammerRangeM,
+            targetRangeM = targetRangeM,
+            angleDeg = angleDeg,
+            losOk = losOk,
+            extraGainDb = params.extraGainDb or 0.0,
+            sigmoidK = params.sigmoidK or sim.CONFIG.sigmoidK
+        })
+
+        result.radarUnitName = getObjectName(radarUnit)
+        result.targetObjectName = targetObjectName
+        result.targetSource = params.targetSource or "explicit_target"
+        return result
+    end
+
     sim.VERSION = "2026-03-19"
     if not sim._loadMessageSent then
         sim._loadMessageSent = true

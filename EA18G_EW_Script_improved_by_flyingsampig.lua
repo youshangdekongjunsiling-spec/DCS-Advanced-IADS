@@ -159,6 +159,7 @@ local RADAR_LIST_REPORT_INTERVAL = 15
 local RADAR_LIST_REORDER_HOLD_SEC = 4
 local RADAR_LIST_ROUGH_DISTANCE_NM = 5
 local LIVE_JAM_EFFECT_TTL_SEC = 6
+local EW_JAM_FILTER_INTERVAL_SEC = 15
 
 -- === ESM / ELINT（基于 RWR） ===
 local ESM_TICK            = 1.0          -- 判定周期（秒）
@@ -823,6 +824,75 @@ local function evaluateAdvancedJammerForRadar(jammerName, emitterUnit, radarUnit
     return result
 end
 
+local function evaluateAdvancedJammerForTarget(jammerName, emitterUnit, radarUnit, jammerMode, targetObject, targetPoint, targetSource)
+    if not AdvancedJammerSimulation then
+        return nil
+    end
+
+    local alq99Count, alq249Count = getCurrentPresetCounts(jammerName)
+    local result = nil
+    if AdvancedJammerSimulation.evaluateUnitsForTarget then
+        result = AdvancedJammerSimulation.evaluateUnitsForTarget({
+            jammerUnit = emitterUnit,
+            radarUnit = radarUnit,
+            jammerMode = jammerMode,
+            alq99Count = alq99Count,
+            alq249Count = alq249Count,
+            targetObject = targetObject,
+            targetPoint = targetPoint,
+            targetSource = targetSource or "explicit_target"
+        })
+    else
+        result = evaluateAdvancedJammerForRadar(jammerName, emitterUnit, radarUnit, jammerMode)
+    end
+
+    if result and not advancedJammerModuleActiveAnnounced then
+        advancedJammerModuleActiveAnnounced = true
+        if env and env.info then
+            env.info("[EA18G] Advanced Jammer Simulation is active and being used for jammer evaluation", false)
+        end
+        if trigger and trigger.action and trigger.action.outText then
+            trigger.action.outText("EA-18G is using Advanced Jammer Simulation", 10)
+        end
+    end
+    return result
+end
+
+local function isAircraftLikeContact(contact)
+    if not contact or not contact.getDesc then
+        return false
+    end
+    local desc = contact:getDesc() or {}
+    local category = desc.category
+    return category == Unit.Category.AIRPLANE or category == Unit.Category.HELICOPTER
+end
+
+local function getContactPoint(contact)
+    if not contact then
+        return nil
+    end
+    if contact.getPosition then
+        local position = contact:getPosition()
+        if position and position.p then
+            return position.p
+        end
+    end
+    local obj = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+    if obj and obj.isExist and obj:isExist() and obj.getPoint then
+        return obj:getPoint()
+    end
+    return nil
+end
+
+local function getContactDistanceMetersToRadar(contact, radarUnit)
+    local radarPos = radarUnit and radarUnit.getPoint and radarUnit:getPoint() or nil
+    local contactPos = getContactPoint(contact)
+    if not radarPos or not contactPos then
+        return nil
+    end
+    return get3DDist(radarPos, contactPos)
+end
+
 local function computeLegacySpotJamProbabilityPercent(jammerName, emitterUnit, radarUnit)
     local jammerPos = emitterUnit:getPoint()
     local targetPos = radarUnit:getPoint()
@@ -1034,6 +1104,229 @@ offensiveLoop = function(jammer)
 end
 
 EA18GSkynetJammerBridge = EA18GSkynetJammerBridge or {}
+EA18GSkynetJammerBridge.ewFilterCache = EA18GSkynetJammerBridge.ewFilterCache or {}
+
+local function getSkynetEmitterLeadRadarUnit(abstractRadarElement)
+    if not abstractRadarElement then
+        return nil
+    end
+
+    if abstractRadarElement.getRadars then
+        local radars = abstractRadarElement:getRadars()
+        if radars and #radars > 0 then
+            for _, radarUnit in ipairs(radars) do
+                if radarUnit and radarUnit.isExist and radarUnit:isExist() then
+                    return radarUnit
+                end
+            end
+        end
+    end
+
+    if abstractRadarElement.getDCSRepresentation then
+        local dcsObject = abstractRadarElement:getDCSRepresentation()
+        if dcsObject and dcsObject.isExist and dcsObject:isExist() then
+            return dcsObject
+        end
+    end
+
+    return nil
+end
+
+function EA18GSkynetJammerBridge.getBestEWContactProbability(ewRadar, contact)
+    local radarUnit = getSkynetEmitterLeadRadarUnit(ewRadar)
+    if not radarUnit or not radarUnit.isExist or not radarUnit:isExist() then
+        return nil
+    end
+
+    local targetObject = contact and contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+    local targetPoint = getContactPoint(contact)
+    local bestProbability = nil
+    local bestMeta = nil
+
+    for _, jammerName in ipairs(jammerUnits) do
+        if isManagedEA18GJammer(jammerName) and isCurrentPresetAvailableForJammer(jammerName) then
+            local emitterUnit = Unit.getByName(jammerName)
+            if emitterUnit and emitterUnit:isExist() then
+                local settings = jammerSettings[jammerName] or {}
+                local currentCapacity = emitterCapacity[jammerName] or 0
+                local radarPos = radarUnit:getPoint()
+
+                if settings.spotTarget == radarUnit:getName() and currentCapacity > 15 then
+                    local advancedResult = evaluateAdvancedJammerForTarget(
+                        jammerName,
+                        emitterUnit,
+                        radarUnit,
+                        "spot",
+                        targetObject,
+                        targetPoint,
+                        "ew_contact"
+                    )
+                    local probability = advancedResult and advancedResult.probabilityPercent or nil
+                    if probability and (bestProbability == nil or probability > bestProbability) then
+                        bestProbability = probability
+                        bestMeta = {
+                            jammerName = jammerName,
+                            mode = "spot",
+                            advancedResult = advancedResult
+                        }
+                    end
+                end
+
+                local offensiveDrain = nil
+                local offensiveMode = nil
+                local offensiveAllowed = false
+                if settings.offensive then
+                    offensiveDrain = drainRateArea
+                    offensiveMode = "broadcast"
+                    offensiveAllowed = true
+                elseif settings.offDir then
+                    offensiveDrain = drainRateDirectional
+                    offensiveMode = "sector"
+                    offensiveAllowed = isInSector(emitterUnit, radarPos, settings.offDir)
+                end
+
+                if offensiveAllowed and offensiveDrain and currentCapacity >= offensiveDrain then
+                    local advancedResult = evaluateAdvancedJammerForTarget(
+                        jammerName,
+                        emitterUnit,
+                        radarUnit,
+                        offensiveMode,
+                        targetObject,
+                        targetPoint,
+                        "ew_contact"
+                    )
+                    local probability = advancedResult and advancedResult.probabilityPercent or nil
+                    if probability and (bestProbability == nil or probability > bestProbability) then
+                        bestProbability = probability
+                        bestMeta = {
+                            jammerName = jammerName,
+                            mode = offensiveMode,
+                            advancedResult = advancedResult
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    return bestProbability, bestMeta
+end
+
+local function applyCachedEWFilter(cache, radarUnit, contacts)
+    if not cache or not contacts or #contacts == 0 then
+        return contacts
+    end
+
+    local filteredContacts = {}
+    for _, contact in ipairs(contacts) do
+        if not isAircraftLikeContact(contact) then
+            table.insert(filteredContacts, contact)
+        else
+            local distanceM = getContactDistanceMetersToRadar(contact, radarUnit)
+            local isBlocked = false
+            if cache.blockDistanceM and distanceM and distanceM >= (cache.blockDistanceM - 1.0) then
+                isBlocked = true
+            end
+
+            if not isBlocked then
+                table.insert(filteredContacts, contact)
+            end
+        end
+    end
+
+    return filteredContacts
+end
+
+function EA18GSkynetJammerBridge.filterEWContacts(ewRadar, contacts)
+    if not ewRadar or not contacts or #contacts == 0 then
+        return contacts
+    end
+
+    local radarUnit = getSkynetEmitterLeadRadarUnit(ewRadar)
+    if not radarUnit or not radarUnit.isExist or not radarUnit:isExist() then
+        return contacts
+    end
+
+    local radarName = radarUnit:getName()
+    if not radarName then
+        return contacts
+    end
+
+    local now = timer.getTime()
+    local cache = EA18GSkynetJammerBridge.ewFilterCache[radarName]
+    if cache and (now - (cache.lastUpdate or 0)) < EW_JAM_FILTER_INTERVAL_SEC then
+        return applyCachedEWFilter(cache, radarUnit, contacts)
+    end
+
+    local aircraftContacts = {}
+    for _, contact in ipairs(contacts) do
+        if isAircraftLikeContact(contact) then
+            local distanceM = getContactDistanceMetersToRadar(contact, radarUnit)
+            if distanceM then
+                table.insert(aircraftContacts, {
+                    contact = contact,
+                    distanceM = distanceM
+                })
+            end
+        end
+    end
+
+    table.sort(aircraftContacts, function(a, b)
+        return (a.distanceM or math.huge) < (b.distanceM or math.huge)
+    end)
+
+    local blockDistanceM = nil
+    local cutoffContactName = nil
+    local cutoffProbability = nil
+    local cutoffMode = nil
+    local cutoffJammerName = nil
+
+    for _, entry in ipairs(aircraftContacts) do
+        local probability, meta = EA18GSkynetJammerBridge.getBestEWContactProbability(ewRadar, entry.contact)
+        local probabilityFraction = math.max(0, math.min(1, (probability or 0) / 100.0))
+        local jamSucceeded = probabilityFraction > 0 and math.random() < probabilityFraction
+        if jamSucceeded then
+            blockDistanceM = entry.distanceM
+            cutoffContactName = entry.contact:getName()
+            cutoffProbability = probability
+            cutoffMode = meta and meta.mode or "unknown"
+            cutoffJammerName = meta and meta.jammerName or "unknown"
+            break
+        end
+    end
+
+    cache = {
+        lastUpdate = now,
+        blockDistanceM = blockDistanceM,
+        cutoffContactName = cutoffContactName,
+        cutoffProbability = cutoffProbability,
+        cutoffMode = cutoffMode,
+        cutoffJammerName = cutoffJammerName
+    }
+    EA18GSkynetJammerBridge.ewFilterCache[radarName] = cache
+
+    if env and env.info then
+        if blockDistanceM then
+            env.info(string.format(
+                "[EA18G] EW jam filter | radar=%s | cutoff=%s | blockFrom=%.1fnm | prob=%.0f%% | mode=%s | jammer=%s",
+                radarName,
+                cutoffContactName or "unknown",
+                blockDistanceM / 1852.0,
+                cutoffProbability or 0,
+                cutoffMode or "unknown",
+                cutoffJammerName or "unknown"
+            ), false)
+        else
+            env.info(string.format(
+                "[EA18G] EW jam filter | radar=%s | no cutoff | aircraftPassed=%d",
+                radarName,
+                #aircraftContacts
+            ), false)
+        end
+    end
+
+    return applyCachedEWFilter(cache, radarUnit, contacts)
+end
 
 function EA18GSkynetJammerBridge.getSuccessProbability(emitterUnit, samSite)
     if not emitterUnit or not emitterUnit.isExist or not emitterUnit:isExist() then

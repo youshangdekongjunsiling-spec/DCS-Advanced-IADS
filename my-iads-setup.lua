@@ -8,6 +8,9 @@
 -- Mobile patrol is already integrated into skynet-iads-compiled-ea18g.lua.
 -- Source is kept separately only for reading/editing:
 -- Skynet-IADS\skynet-iads-source\skynet-iads-mobile-patrol.lua
+-- EWR reporter is also integrated into skynet-iads-compiled-ea18g.lua.
+-- Source is kept separately only for reading/editing:
+-- Skynet-IADS\skynet-iads-source\skynet-iads-ewr-reporter.lua
 
 do
 
@@ -20,7 +23,14 @@ local JAMMER_UNIT_NAME = "Growler"
 local ENABLE_RADIO_MENU = true
 local JAMMER_POLL_INTERVAL = 5
 local ENABLE_MOBILE_PATROL = true
+local ENABLE_EWR_REPORTER = true
 local MobilePatrolModule = SkynetIADSMobilePatrol or MobileIADSPatrol
+local EWRReporterModule = SkynetIADSEWRReporter
+local EWR_REPORT_INTERVAL_SECONDS = 15
+local EWR_REPORT_DURATION_SECONDS = 8
+local EWR_REPORT_MAX_CONTACTS = 3
+local EWR_REPORT_CLEAN = false
+local EWR_REPORT_DEBUG_ALL_PLAYERS = true
 
 if not SkynetIADS then
     trigger.action.outText("my-iads-setup: SkynetIADS not loaded, init aborted", 10)
@@ -207,6 +217,20 @@ if ENABLE_MOBILE_PATROL and MobilePatrolModule then
     end
 elseif ENABLE_MOBILE_PATROL then
     trigger.action.outText("my-iads-setup: mobile patrol module missing | reselect latest skynet-iads-compiled-ea18g.lua in Mission Editor", 15)
+end
+
+if ENABLE_EWR_REPORTER and EWRReporterModule then
+    _G.redIADSEWRReporter = EWRReporterModule:create(redIADS, {
+        intervalSeconds = EWR_REPORT_INTERVAL_SECONDS,
+        messageDurationSeconds = EWR_REPORT_DURATION_SECONDS,
+        maxContactsPerPlayer = EWR_REPORT_MAX_CONTACTS,
+        reportClean = EWR_REPORT_CLEAN,
+        debugAllPlayers = EWR_REPORT_DEBUG_ALL_PLAYERS
+    })
+    _G.redIADSEWRReporter:start()
+    trigger.action.outText("my-iads-setup: EWR reporter active | interval=" .. EWR_REPORT_INTERVAL_SECONDS .. "s | topN=" .. EWR_REPORT_MAX_CONTACTS .. " | debugAllPlayers=" .. tostring(EWR_REPORT_DEBUG_ALL_PLAYERS), 10)
+elseif ENABLE_EWR_REPORTER then
+    trigger.action.outText("my-iads-setup: EWR reporter module missing | reselect latest skynet-iads-compiled-ea18g.lua in Mission Editor", 15)
 end
 
 local function tryConnectJammer(_, time)
