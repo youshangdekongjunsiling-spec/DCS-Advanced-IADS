@@ -272,6 +272,17 @@ function SkynetIADSLogger:buildDetailedSAMSiteReport(samSite)
 			.. " | threatRange=" .. tostring(triggerInfo.threatRangeNm) .. "nm"
 			.. " | age=" .. tostring(mist.utils.round(ageSeconds, 1)) .. "s"
 	end
+	if SkynetIADSSiblingCoordination and SkynetIADSSiblingCoordination.getFamilyForElement then
+		local siblingInfo = SkynetIADSSiblingCoordination.getFamilyForElement(samSite)
+		if siblingInfo then
+			lines[#lines + 1] =
+				"SIBLING: family=" .. tostring(siblingInfo.name)
+				.. " | role=" .. tostring(siblingInfo.role)
+				.. " | primary=" .. tostring(siblingInfo.primaryGroupName)
+				.. " | reason=" .. tostring(siblingInfo.reason)
+				.. " | passive=" .. tostring(siblingInfo.passiveAction)
+		end
+	end
 
 	local parentNames = {}
 	local parents = samSite:getParentRadars()
