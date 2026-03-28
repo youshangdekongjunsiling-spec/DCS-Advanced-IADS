@@ -11,6 +11,9 @@
 -- EWR reporter is also integrated into skynet-iads-compiled-ea18g.lua.
 -- Source is kept separately only for reading/editing:
 -- Skynet-IADS\skynet-iads-source\skynet-iads-ewr-reporter.lua
+-- Sibling coordination is also integrated into skynet-iads-compiled-ea18g.lua.
+-- Source is kept separately only for reading/editing:
+-- Skynet-IADS\skynet-iads-source\skynet-iads-sibling-coordination.lua
 
 do
 
@@ -24,13 +27,23 @@ local ENABLE_RADIO_MENU = true
 local JAMMER_POLL_INTERVAL = 5
 local ENABLE_MOBILE_PATROL = true
 local ENABLE_EWR_REPORTER = true
+local ENABLE_SIBLING_COORDINATION = true
 local MobilePatrolModule = SkynetIADSMobilePatrol or MobileIADSPatrol
 local EWRReporterModule = SkynetIADSEWRReporter
+local SiblingCoordinationModule = SkynetIADSSiblingCoordination
 local EWR_REPORT_INTERVAL_SECONDS = 15
 local EWR_REPORT_DURATION_SECONDS = 8
 local EWR_REPORT_MAX_CONTACTS = 3
 local EWR_REPORT_CLEAN = false
 local EWR_REPORT_DEBUG_ALL_PLAYERS = true
+local SIBLING_FAMILIES = {
+    -- Example:
+    -- {
+    --     name = "SA-11 pair north",
+    --     members = { "MSAM-1", "MSAM-2" },
+    --     passiveAction = "relocate", -- relocate | hold_dark
+    -- },
+}
 
 if not SkynetIADS then
     trigger.action.outText("my-iads-setup: SkynetIADS not loaded, init aborted", 10)
@@ -221,6 +234,22 @@ if ENABLE_MOBILE_PATROL and MobilePatrolModule then
     end
 elseif ENABLE_MOBILE_PATROL then
     trigger.action.outText("my-iads-setup: mobile patrol module missing | reselect latest skynet-iads-compiled-ea18g.lua in Mission Editor", 15)
+end
+
+if ENABLE_SIBLING_COORDINATION and SiblingCoordinationModule then
+    _G.redIADSSiblingCoordination = SiblingCoordinationModule.create(redIADS, {
+        checkInterval = 1,
+        defaultPassiveAction = "hold_dark",
+    })
+    local registeredSiblingFamilies, registeredSiblingMembers = _G.redIADSSiblingCoordination:registerFamilies(SIBLING_FAMILIES)
+    if registeredSiblingFamilies > 0 then
+        _G.redIADSSiblingCoordination:start()
+        trigger.action.outText("my-iads-setup: sibling coordination active | families=" .. registeredSiblingFamilies .. " | members=" .. registeredSiblingMembers, 10)
+    elseif #SIBLING_FAMILIES > 0 then
+        trigger.action.outText("my-iads-setup: sibling coordination configured but no valid families registered", 10)
+    end
+elseif ENABLE_SIBLING_COORDINATION then
+    trigger.action.outText("my-iads-setup: sibling coordination module missing | reselect latest skynet-iads-compiled-ea18g.lua in Mission Editor", 15)
 end
 
 if ENABLE_EWR_REPORTER and EWRReporterModule then
