@@ -5475,6 +5475,13 @@ function SkynetIADSMobilePatrol:handleDeployedState(entry)
 	end
 end
 
+function SkynetIADSMobilePatrol:getSiblingInfo(entry)
+	if SkynetIADSSiblingCoordination and SkynetIADSSiblingCoordination.getFamilyForElement then
+		return SkynetIADSSiblingCoordination.getFamilyForElement(entry.element)
+	end
+	return nil
+end
+
 function SkynetIADSMobilePatrol:updateEntry(entry)
 	if entry.element:isDestroyed() or entry.group == nil or entry.group:isExist() == false then
 		return
@@ -5486,15 +5493,44 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		return
 	end
 
+	local siblingInfo = self:getSiblingInfo(entry)
+	local siblingPassiveRelocate = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "relocate"
+	local siblingPassiveHold = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "hold_dark"
+	local siblingPassiveStandby = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "standby"
+
+	if siblingPassiveHold then
+		entry.noThreatSince = nil
+		if entry.state == "deployed" then
+			entry.state = "patrolling"
+			entry.combatMode = "patrolling"
+		end
+		return
+	end
+
+	if siblingPassiveStandby then
+		entry.noThreatSince = nil
+		entry.lastThreatTime = timer.getTime()
+		if entry.state ~= "deployed" then
+			entry.state = "deployed"
+			entry.combatMode = "sibling_standby"
+		end
+		return
+	end
+
+	if siblingPassiveRelocate and entry.state ~= "patrolling" then
+		self:beginPatrol(entry)
+		return
+	end
+
 	local threatPresent = false
-	if entry.kind == "MSAM" then
+	if entry.kind == "MSAM" and siblingPassiveRelocate ~= true then
 		local threatDecision = self:findSAMThreatContact(entry)
 		threatPresent = threatDecision ~= nil
 		if threatDecision then
 			self:applyMSAMThreatDecision(entry, threatDecision)
 			return
 		end
-	else
+	elseif entry.kind ~= "MSAM" then
 		threatPresent = self:findMEWThreat(entry)
 		if threatPresent and entry.state ~= "deployed" then
 			self:pausePatrolForDeployment(entry)
@@ -5957,7 +5993,13 @@ function SkynetIADSSiblingCoordination.getFamilyForElement(element)
         primaryGroupName = family.activeGroupName,
         reason = family.activeReason,
         passiveAction = family.passiveAction,
+        passiveMode = member.passiveMode,
     }
+end
+
+function SkynetIADSSiblingCoordination.isElementForcedPassive(element)
+    local member = SkynetIADSSiblingCoordination._memberByElement[element]
+    return member ~= nil and member.forcedPassive == true
 end
 
 function SkynetIADSSiblingCoordination:log(message)
@@ -5980,14 +6022,11 @@ end
 
 function SkynetIADSSiblingCoordination:isEngaged(member)
     local element = member.element
-    if member.forcedPassive == true then
-        return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
-    end
-    if element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0 then
-        return true
-    end
     local entry = self:getMobilePatrolEntry(element)
-    return entry ~= nil and entry.state == "deployed"
+    if entry ~= nil then
+        return entry.state == "deployed" or element:getNumberOfMissilesInFlight() > 0
+    end
+    return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
 end
 
 function SkynetIADSSiblingCoordination:canCover(member)
@@ -6056,9 +6095,11 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason)
         return
     end
     member.forcedPassive = false
+    member.passiveMode = nil
     member.lastRole = "primary"
     local entry = self:getMobilePatrolEntry(member.element)
-    if entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
+    local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
+    if shouldForceDeploy and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
         entry.manager:pausePatrolForDeployment(entry, {
             source = "sibling_coord",
             contactName = family.activeGroupName or "sibling",
@@ -6084,17 +6125,44 @@ end
 function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     if self:isSuppressed(member) then
         member.lastRole = "suppressed"
+        member.passiveMode = "suppressed"
         return
     end
+    local previousRole = member.lastRole
     member.forcedPassive = true
     member.lastRole = "passive"
     local entry = self:getMobilePatrolEntry(member.element)
+    if family.passiveAction == "relocate" and entry and entry.kind == "MSAM" then
+        if previousRole == "primary" or previousRole == "suppressed" then
+            member.passiveMode = "relocate"
+            if entry.manager and entry.manager.beginPatrol and entry.state ~= "patrolling" then
+                entry.manager:beginPatrol(entry)
+            end
+            return
+        end
+        member.passiveMode = "standby"
+        if entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
+            entry.manager:pausePatrolForDeployment(entry, {
+                source = "sibling_coord",
+                contactName = family.activeGroupName or "sibling",
+                contactType = "sibling_standby",
+                distanceNm = 0,
+                threatRangeNm = 0,
+                time = timer.getTime(),
+                combatMode = "sibling_standby",
+            })
+        end
+        forceElementIntoDarkStandby(member.element)
+        return
+    end
     if family.passiveAction == "relocate" and entry and entry.manager and entry.manager.beginPatrol then
+        member.passiveMode = "relocate"
         if entry.state ~= "patrolling" then
             entry.manager:beginPatrol(entry)
         end
         return
     end
+    member.passiveMode = "hold_dark"
     if entry and entry.manager and entry.manager.issueHold then
         entry.manager:issueHold(entry)
     end
@@ -6103,6 +6171,7 @@ end
 
 function SkynetIADSSiblingCoordination:releaseMember(member)
     member.forcedPassive = false
+    member.passiveMode = nil
     member.lastRole = "released"
     if self:isSuppressed(member) then
         return

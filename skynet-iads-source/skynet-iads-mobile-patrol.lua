@@ -834,6 +834,13 @@ function SkynetIADSMobilePatrol:handleDeployedState(entry)
 	end
 end
 
+function SkynetIADSMobilePatrol:getSiblingInfo(entry)
+	if SkynetIADSSiblingCoordination and SkynetIADSSiblingCoordination.getFamilyForElement then
+		return SkynetIADSSiblingCoordination.getFamilyForElement(entry.element)
+	end
+	return nil
+end
+
 function SkynetIADSMobilePatrol:updateEntry(entry)
 	if entry.element:isDestroyed() or entry.group == nil or entry.group:isExist() == false then
 		return
@@ -845,15 +852,44 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		return
 	end
 
+	local siblingInfo = self:getSiblingInfo(entry)
+	local siblingPassiveRelocate = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "relocate"
+	local siblingPassiveHold = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "hold_dark"
+	local siblingPassiveStandby = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "standby"
+
+	if siblingPassiveHold then
+		entry.noThreatSince = nil
+		if entry.state == "deployed" then
+			entry.state = "patrolling"
+			entry.combatMode = "patrolling"
+		end
+		return
+	end
+
+	if siblingPassiveStandby then
+		entry.noThreatSince = nil
+		entry.lastThreatTime = timer.getTime()
+		if entry.state ~= "deployed" then
+			entry.state = "deployed"
+			entry.combatMode = "sibling_standby"
+		end
+		return
+	end
+
+	if siblingPassiveRelocate and entry.state ~= "patrolling" then
+		self:beginPatrol(entry)
+		return
+	end
+
 	local threatPresent = false
-	if entry.kind == "MSAM" then
+	if entry.kind == "MSAM" and siblingPassiveRelocate ~= true then
 		local threatDecision = self:findSAMThreatContact(entry)
 		threatPresent = threatDecision ~= nil
 		if threatDecision then
 			self:applyMSAMThreatDecision(entry, threatDecision)
 			return
 		end
-	else
+	elseif entry.kind ~= "MSAM" then
 		threatPresent = self:findMEWThreat(entry)
 		if threatPresent and entry.state ~= "deployed" then
 			self:pausePatrolForDeployment(entry)
