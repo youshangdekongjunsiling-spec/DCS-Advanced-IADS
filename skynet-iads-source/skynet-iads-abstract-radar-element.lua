@@ -39,15 +39,17 @@ function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	instance.minHarmPresetShutdownTime = 30
 	instance.maxHarmPresetShutdownTime = 180
 	instance.harmShutdownTime = 0
-	instance.harmRelocationMinDistanceMeters = 100
-	instance.harmRelocationMaxDistanceMeters = 200
+	instance.harmRelocationMinDistanceMeters = 180
+	instance.harmRelocationMaxDistanceMeters = 320
 	instance.harmRelocationFallbackSpeedKmph = 60
-	instance.harmRelocationCheckInterval = 2
+	instance.harmRelocationCheckInterval = 1
 	instance.harmRelocationArrivalToleranceMeters = 35
 	instance.harmRelocationInProgress = false
 	instance.harmRelocationDestination = nil
 	instance.harmRelocationDeadline = 0
 	instance.harmRelocationPlannedDistanceMeters = 0
+	instance.harmReactionCooldownSeconds = 3
+	instance.harmReactionLockUntil = 0
 	instance.firingRangePercent = 100
 	instance.actAsEW = false
 	instance.cachedTargets = {}
@@ -1004,7 +1006,14 @@ function SkynetIADSAbstractRadarElement:stopScanningForHARMs()
 end
 
 function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
-	self:finishHarmDefence(self)
+	local now = timer.getTime()
+	if self.harmSilenceID ~= nil or self.harmRelocationInProgress == true then
+		return false
+	end
+	if self.harmReactionLockUntil ~= nil and now < self.harmReactionLockUntil then
+		return false
+	end
+	self.harmReactionLockUntil = now + self.harmReactionCooldownSeconds
 	if ( timeToImpact == nil ) then
 		timeToImpact = 0
 	end
@@ -1022,7 +1031,7 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 			self.harmRelocationCheckInterval
 		)
 		self:enterHARMRelocationDarkState()
-		return
+		return true
 	end
 
 	self.minHarmShutdownTime = self:calculateMinimalShutdownTimeInSeconds(timeToImpact)
@@ -1034,6 +1043,7 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 	end
 	self.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {self}, timer.getTime() + self.harmShutdownTime, 1)
 	self:goDark()
+	return true
 end
 
 function SkynetIADSAbstractRadarElement:getHARMShutdownTime()
@@ -1053,6 +1063,7 @@ function SkynetIADSAbstractRadarElement.finishHarmDefence(self)
 	self.harmRelocationDestination = nil
 	self.harmRelocationDeadline = 0
 	self.harmRelocationPlannedDistanceMeters = 0
+	self.harmReactionLockUntil = timer.getTime() + self.harmReactionCooldownSeconds
 
 	self:setToCorrectAutonomousState()
 end

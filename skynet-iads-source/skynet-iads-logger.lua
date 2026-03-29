@@ -277,8 +277,10 @@ function SkynetIADSLogger:buildDetailedSAMSiteReport(samSite)
 		if siblingInfo then
 			lines[#lines + 1] =
 				"SIBLING: family=" .. tostring(siblingInfo.name)
+				.. " | mode=" .. tostring(siblingInfo.mode)
 				.. " | role=" .. tostring(siblingInfo.role)
 				.. " | primary=" .. tostring(siblingInfo.primaryGroupName)
+				.. " | preferred=" .. tostring(siblingInfo.preferredPrimaryGroupName)
 				.. " | reason=" .. tostring(siblingInfo.reason)
 				.. " | passive=" .. tostring(siblingInfo.passiveAction)
 		end

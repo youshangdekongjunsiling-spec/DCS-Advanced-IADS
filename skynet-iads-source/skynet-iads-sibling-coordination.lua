@@ -8,6 +8,8 @@ SkynetIADSSiblingCoordination._memberByElement = setmetatable({}, { __mode = "k"
 
 SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL = 1
 SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION = "hold_dark"
+SkynetIADSSiblingCoordination.DEFAULT_MODE = "ambush"
+SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM = 25
 
 local function setGroundROE(controller, weaponHold)
     pcall(function()
@@ -167,8 +169,10 @@ function SkynetIADSSiblingCoordination.getFamilyForElement(element)
     end
     return {
         name = family.name,
+        mode = family.mode,
         role = member.lastRole or "released",
         primaryGroupName = family.activeGroupName,
+        preferredPrimaryGroupName = family.preferredPrimaryGroupName,
         reason = family.activeReason,
         passiveAction = family.passiveAction,
         passiveMode = member.passiveMode,
@@ -183,6 +187,12 @@ end
 function SkynetIADSSiblingCoordination:log(message)
     if self.iads and self.iads.printOutputToLog then
         self.iads:printOutputToLog("[SiblingCoord] " .. message)
+    end
+end
+
+function SkynetIADSSiblingCoordination:notifyDebug(message)
+    if _G.SkynetRuntimeDebugNotify and message then
+        pcall(_G.SkynetRuntimeDebugNotify, message)
     end
 end
 
@@ -235,23 +245,148 @@ function SkynetIADSSiblingCoordination:pickCoverMember(family, excludedGroupName
     return nil
 end
 
+function SkynetIADSSiblingCoordination:getPreferredPrimaryMember(family)
+    if family.preferredPrimaryGroupName then
+        local preferred = self:findMemberByGroupName(family, family.preferredPrimaryGroupName)
+        if preferred then
+            return preferred
+        end
+    end
+    return family.members[1]
+end
+
+function SkynetIADSSiblingCoordination:getBestAmbushThreatCandidate(family)
+    local bestMember = nil
+    local bestDecision = nil
+    local bestShouldGoLive = -1
+    local bestDistanceNm = math.huge
+    local bestPreferred = -1
+    for i = 1, #family.members do
+        local member = family.members[i]
+        if self:isSuppressed(member) == false and self:canCover(member) then
+            local entry = self:getMobilePatrolEntry(member.element)
+            if entry and entry.kind == "MSAM" and entry.manager and entry.manager.findSAMThreatContact then
+                local threatDecision = entry.manager:findSAMThreatContact(entry)
+                if threatDecision then
+                    local triggerInfo = threatDecision.triggerInfo or {}
+                    local shouldGoLiveScore = threatDecision.shouldGoLive == true and 1 or 0
+                    local distanceNm = tonumber(triggerInfo.distanceNm) or math.huge
+                    local preferredScore = family.preferredPrimaryGroupName == member.groupName and 1 or 0
+                    local isBetter =
+                        shouldGoLiveScore > bestShouldGoLive
+                        or (shouldGoLiveScore == bestShouldGoLive and distanceNm < bestDistanceNm)
+                        or (shouldGoLiveScore == bestShouldGoLive and distanceNm == bestDistanceNm and preferredScore > bestPreferred)
+                    if isBetter then
+                        bestMember = member
+                        bestDecision = threatDecision
+                        bestShouldGoLive = shouldGoLiveScore
+                        bestDistanceNm = distanceNm
+                        bestPreferred = preferredScore
+                    end
+                end
+            end
+        end
+    end
+    return bestMember, bestDecision
+end
+
+function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
+    local family = SkynetIADSSiblingCoordination._familyByElement[element]
+    local member = SkynetIADSSiblingCoordination._memberByElement[element]
+    if family == nil or member == nil then
+        return nil, true
+    end
+    if member.forcedPassive == true then
+        return nil, false
+    end
+
+    local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
+    if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
+        if currentPrimary ~= member then
+            return nil, false
+        end
+        local entry = self:getMobilePatrolEntry(member.element)
+        if entry and entry.kind == "MSAM" and entry.manager and entry.manager.findSAMThreatContact then
+            return entry.manager:findSAMThreatContact(entry), true
+        end
+        return nil, true
+    end
+
+    if family.mode == "denial" then
+        local preferredPrimary = self:getPreferredPrimaryMember(family)
+        if preferredPrimary ~= member or self:isSuppressed(preferredPrimary) or self:canCover(preferredPrimary) == false then
+            return nil, false
+        end
+        return self:getDenialThreatDecision(family, preferredPrimary), true
+    end
+
+    local bestMember, bestDecision = self:getBestAmbushThreatCandidate(family)
+    if bestMember == nil then
+        return nil, true
+    end
+    if bestMember ~= member then
+        return nil, false
+    end
+    return bestDecision, true
+end
+
+function SkynetIADSSiblingCoordination:getDenialThreatDecision(family, member)
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry == nil or entry.kind ~= "MSAM" or entry.manager == nil then
+        return nil
+    end
+    local alertRangeMeters = mist.utils.NMToMeters(family.denialAlertDistanceNm or self.defaultDenialAlertDistanceNm)
+    local contact, distanceMeters = entry.manager:findNearestEligibleContact(entry, alertRangeMeters)
+    if contact == nil then
+        return nil
+    end
+    local triggerInfo = entry.manager:buildDeployTriggerInfo(entry, contact, "sibling_denial_alert")
+    triggerInfo.combatMode = "sibling_denial_alert"
+    triggerInfo.familyMode = family.mode
+    triggerInfo.distanceNm = mist.utils.round(mist.utils.metersToNM(distanceMeters), 1)
+    return {
+        contact = contact,
+        triggerInfo = triggerInfo,
+        shouldDeploy = true,
+        shouldGoLive = true,
+        shouldWeaponHold = false,
+        combatMode = "sibling_denial_alert",
+    }
+end
+
 function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
     if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
-        return currentPrimary, "engaged"
+        return currentPrimary, "engaged", nil
     end
 
     if currentPrimary and self:isSuppressed(currentPrimary) then
         local coverMember = self:pickCoverMember(family, currentPrimary.groupName)
         if coverMember then
-            return coverMember, "cover_for_" .. currentPrimary.groupName
+            return coverMember, "cover_for_" .. currentPrimary.groupName, nil
+        end
+    end
+
+    if family.mode == "denial" then
+        local preferredPrimary = self:getPreferredPrimaryMember(family)
+        if preferredPrimary and self:isSuppressed(preferredPrimary) == false and self:canCover(preferredPrimary) then
+            local denialThreatDecision = self:getDenialThreatDecision(family, preferredPrimary)
+            if denialThreatDecision then
+                return preferredPrimary, "denial_trigger", denialThreatDecision
+            end
+        end
+        if preferredPrimary and self:isSuppressed(preferredPrimary) then
+            local coverMember = self:pickCoverMember(family, preferredPrimary.groupName)
+            if coverMember then
+                return coverMember, "cover_for_" .. preferredPrimary.groupName, nil
+            end
         end
     end
 
     for i = 1, #family.members do
         local member = family.members[i]
         if self:isSuppressed(member) == false and self:isEngaged(member) then
-            return member, "engaged"
+            return member, "engaged", nil
         end
     end
 
@@ -260,50 +395,60 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
         if self:isSuppressed(member) then
             local coverMember = self:pickCoverMember(family, member.groupName)
             if coverMember then
-                return coverMember, "cover_for_" .. member.groupName
+                return coverMember, "cover_for_" .. member.groupName, nil
             end
         end
     end
 
-    return nil, nil
+    return nil, nil, nil
 end
 
-function SkynetIADSSiblingCoordination:activateMember(family, member, reason)
+function SkynetIADSSiblingCoordination:activateMember(family, member, reason, threatDecision)
     if self:isSuppressed(member) then
         return
     end
+    local switchedPrimary = family.activeGroupName ~= member.groupName or family.activeReason ~= reason
     member.forcedPassive = false
     member.passiveMode = nil
     member.lastRole = "primary"
     local entry = self:getMobilePatrolEntry(member.element)
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
-    if shouldForceDeploy and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
-        entry.manager:pausePatrolForDeployment(entry, {
-            source = "sibling_coord",
-            contactName = family.activeGroupName or "sibling",
-            contactType = "sibling_cover",
-            distanceNm = 0,
-            threatRangeNm = 0,
-            time = timer.getTime(),
-            combatMode = "sibling_cover",
-        })
+    if threatDecision and entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+        entry.manager:applyMSAMThreatDecision(entry, threatDecision)
+    else
+        if shouldForceDeploy and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
+            entry.manager:pausePatrolForDeployment(entry, {
+                source = "sibling_coord",
+                contactName = family.activeGroupName or "sibling",
+                contactType = "sibling_cover",
+                distanceNm = 0,
+                threatRangeNm = 0,
+                time = timer.getTime(),
+                combatMode = "sibling_cover",
+            })
+        end
+        if member.element.targetsInRange ~= nil then
+            member.element.targetsInRange = true
+        end
+        member.element:goLive()
+        setElementCombatROE(member.element, false)
     end
-    if member.element.targetsInRange ~= nil then
-        member.element.targetsInRange = true
-    end
-    member.element:goLive()
-    setElementCombatROE(member.element, false)
-    if family.activeGroupName ~= member.groupName or family.activeReason ~= reason then
+    if switchedPrimary then
         self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
+        self:notifyDebug(family.name .. " 主战切换 -> " .. member.groupName .. " | reason=" .. tostring(reason))
     end
     family.activeGroupName = member.groupName
     family.activeReason = reason
 end
 
 function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
+    local previousPassiveMode = member.passiveMode
     if self:isSuppressed(member) then
         member.lastRole = "suppressed"
         member.passiveMode = "suppressed"
+        if previousPassiveMode ~= "suppressed" then
+            self:notifyDebug(member.groupName .. " 受压制待机 | family=" .. family.name)
+        end
         return
     end
     local previousRole = member.lastRole
@@ -315,6 +460,9 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
             member.passiveMode = "relocate"
             if entry.manager and entry.manager.beginPatrol and entry.state ~= "patrolling" then
                 entry.manager:beginPatrol(entry)
+            end
+            if previousPassiveMode ~= "relocate" then
+                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
             end
             return
         end
@@ -331,12 +479,18 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
             })
         end
         forceElementIntoDarkStandby(member.element)
+        if previousPassiveMode ~= "standby" then
+            self:notifyDebug(member.groupName .. " 部署待机 | family=" .. family.name)
+        end
         return
     end
     if family.passiveAction == "relocate" and entry and entry.manager and entry.manager.beginPatrol then
         member.passiveMode = "relocate"
         if entry.state ~= "patrolling" then
             entry.manager:beginPatrol(entry)
+        end
+        if previousPassiveMode ~= "relocate" then
+            self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
         end
         return
     end
@@ -345,9 +499,13 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
         entry.manager:issueHold(entry)
     end
     forceElementIntoDarkStandby(member.element)
+    if previousPassiveMode ~= "hold_dark" then
+        self:notifyDebug(member.groupName .. " 黑灯待命 | family=" .. family.name)
+    end
 end
 
 function SkynetIADSSiblingCoordination:releaseMember(member)
+    local previousRole = member.lastRole
     member.forcedPassive = false
     member.passiveMode = nil
     member.lastRole = "released"
@@ -359,6 +517,9 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
         if entry.state ~= "patrolling" then
             entry.manager:beginPatrol(entry)
         end
+        if previousRole ~= "released" then
+            self:notifyDebug(member.groupName .. " 解除兄弟约束")
+        end
         return
     end
     if member.element.setToCorrectAutonomousState then
@@ -366,15 +527,18 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
     else
         member.element:goDark()
     end
+    if previousRole ~= "released" then
+        self:notifyDebug(member.groupName .. " 解除兄弟约束")
+    end
 end
 
 function SkynetIADSSiblingCoordination:updateFamily(family)
-    local primary, reason = self:choosePrimaryMember(family)
+    local primary, reason, threatDecision = self:choosePrimaryMember(family)
     if primary then
         for i = 1, #family.members do
             local member = family.members[i]
             if member == primary then
-                self:activateMember(family, member, reason)
+                self:activateMember(family, member, reason, threatDecision)
             else
                 self:setPassiveMember(family, member)
             end
@@ -399,6 +563,20 @@ function SkynetIADSSiblingCoordination:tick(_, time)
     return time + self.checkInterval
 end
 
+function SkynetIADSSiblingCoordination:requestImmediateEvaluation(reason)
+    if self._immediateEvaluationInProgress == true or #self.families == 0 then
+        return
+    end
+    self._immediateEvaluationInProgress = true
+    for i = 1, #self.families do
+        self:updateFamily(self.families[i])
+    end
+    self._immediateEvaluationInProgress = false
+    if reason then
+        self:log("immediate evaluation | reason=" .. tostring(reason))
+    end
+end
+
 function SkynetIADSSiblingCoordination:start()
     if self.taskID ~= nil or #self.families == 0 then
         return
@@ -418,7 +596,10 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
     end
     local family = {
         name = definition.name or ("SiblingFamily-" .. tostring(#self.families + 1)),
+        mode = definition.mode or self.defaultMode,
         passiveAction = definition.passiveAction or self.defaultPassiveAction,
+        preferredPrimaryGroupName = definition.primary,
+        denialAlertDistanceNm = definition.denialAlertDistanceNm or self.defaultDenialAlertDistanceNm,
         members = {},
         activeGroupName = nil,
         activeReason = nil,
@@ -449,7 +630,17 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
     end
 
     self.families[#self.families + 1] = family
-    self:log("registered | family=" .. family.name .. " | members=" .. tostring(#family.members) .. " | passiveAction=" .. tostring(family.passiveAction))
+    if family.preferredPrimaryGroupName == nil and #family.members > 0 then
+        family.preferredPrimaryGroupName = family.members[1].groupName
+    end
+
+    self:log(
+        "registered | family=" .. family.name
+        .. " | mode=" .. tostring(family.mode)
+        .. " | preferredPrimary=" .. tostring(family.preferredPrimaryGroupName)
+        .. " | members=" .. tostring(#family.members)
+        .. " | passiveAction=" .. tostring(family.passiveAction)
+    )
     return true, #family.members
 end
 
@@ -475,8 +666,11 @@ function SkynetIADSSiblingCoordination.create(iads, config)
     self.iads = iads
     self.checkInterval = (config and config.checkInterval) or SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL
     self.defaultPassiveAction = (config and config.defaultPassiveAction) or SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION
+    self.defaultMode = (config and config.defaultMode) or SkynetIADSSiblingCoordination.DEFAULT_MODE
+    self.defaultDenialAlertDistanceNm = (config and config.defaultDenialAlertDistanceNm) or SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM
     self.families = {}
     self.taskID = nil
+    self._immediateEvaluationInProgress = false
     return self
 end
 
