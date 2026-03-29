@@ -37,12 +37,11 @@ local EWR_REPORT_MAX_CONTACTS = 3
 local EWR_REPORT_CLEAN = false
 local EWR_REPORT_DEBUG_ALL_PLAYERS = true
 local SIBLING_FAMILIES = {
-    -- Example:
-    -- {
-    --     name = "SA-11 pair north",
-    --     members = { "MSAM-1", "MSAM-2" },
-    --     passiveAction = "relocate", -- relocate | hold_dark
-    -- },
+    {
+        name = "MSAM test pair",
+        members = { "MSAM-1", "MSAM-2" },
+        passiveAction = "relocate",
+    },
 }
 
 if not SkynetIADS then
@@ -51,6 +50,7 @@ if not SkynetIADS then
 end
 
 redIADS = SkynetIADS:create(IADS_NAME)
+redIADS:setUpdateInterval(1)
 
 -- Keep debug output minimal for first validation.
 local iadsDebug = redIADS:getDebugSettings()
