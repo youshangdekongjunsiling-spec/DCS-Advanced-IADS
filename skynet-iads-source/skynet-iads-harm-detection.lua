@@ -26,7 +26,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		--if a contact has only been hit by a radar once it's speed is 0
 		--如果接触只被雷达击中一次，其速度为0
 		if groundSpeed == 0 then
-			return
+			-- Ignore this incomplete contact and continue evaluating the rest.
 		end
 		local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
 		local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
@@ -138,5 +138,4 @@ function SkynetIADSHARMDetection:getDetectionProbability(radars)
 end
 
 end
-
 

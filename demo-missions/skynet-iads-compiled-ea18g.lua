@@ -4529,7 +4529,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		local groundSpeed  = contact:getGroundSpeedInKnots(0)
 		--if a contact has only been hit by a radar once it's speed is 0
 		if groundSpeed == 0 then
-			return
+			-- Ignore this incomplete contact and continue evaluating the rest.
 		end
 		local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
 		local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
@@ -4660,6 +4660,8 @@ SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS = 25
 SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
+SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
+SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
 
 local function startsWith(value, prefix)
 	return value and prefix and string.find(value, prefix, 1, true) == 1
@@ -5120,6 +5122,61 @@ function SkynetIADSMobilePatrol:issueHold(entry)
 	return ok
 end
 
+function SkynetIADSMobilePatrol:calculateDeployScatterPoint(entry)
+	local startPoint = self:getPatrolReferencePoint(entry)
+	if startPoint == nil then
+		return nil
+	end
+	local headingRad = math.random() * 2 * math.pi
+	local distanceMeters = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS
+	return {
+		x = startPoint.x + math.cos(headingRad) * distanceMeters,
+		y = startPoint.y,
+		z = startPoint.z + math.sin(headingRad) * distanceMeters
+	}
+end
+
+function SkynetIADSMobilePatrol:getDeployScatterSpeedKmph(entry)
+	local speed = entry.patrolSpeedKmph or self.defaultPatrolSpeedKmph
+	if entry.element and entry.element.getHARMRelocationSpeedKmph then
+		local okSpeed, relocationSpeed = pcall(function()
+			return entry.element:getHARMRelocationSpeedKmph()
+		end)
+		if okSpeed and relocationSpeed and relocationSpeed > speed then
+			speed = relocationSpeed
+		end
+	end
+	return speed
+end
+
+function SkynetIADSMobilePatrol:issueDeployScatter(entry)
+	if entry.group == nil or entry.group:isExist() == false then
+		return false
+	end
+	local destination = self:calculateDeployScatterPoint(entry)
+	if destination == nil then
+		return false
+	end
+	local speedKmph = self:getDeployScatterSpeedKmph(entry)
+	local ok = pcall(function()
+		mist.groupToPoint(
+			entry.group,
+			destination,
+			SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM,
+			math.random(0, 359),
+			speedKmph,
+			false
+		)
+	end)
+	if ok then
+		entry.currentDestination = destination
+		entry.lastRouteIssueTime = timer.getTime()
+		entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
+		self:log("Deploy scatter issued for "..entry.groupName.." | speed="..speedKmph.."km/h | distance="..SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS.."m")
+	end
+	return ok
+end
+
 function SkynetIADSMobilePatrol:getThreatRangeMeters(entry)
 	local element = entry.element
 	local maxRange = 0
@@ -5342,7 +5399,9 @@ function SkynetIADSMobilePatrol:isHarmEvading(entry)
 end
 
 function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
-	self:issueHold(entry)
+	if self:issueDeployScatter(entry) ~= true then
+		self:issueHold(entry)
+	end
 	entry.state = "deployed"
 	entry.noThreatSince = nil
 	entry.lastThreatTime = timer.getTime()
