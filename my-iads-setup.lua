@@ -28,6 +28,8 @@ local JAMMER_POLL_INTERVAL = 5
 local ENABLE_MOBILE_PATROL = true
 local ENABLE_EWR_REPORTER = true
 local ENABLE_SIBLING_COORDINATION = true
+local ENABLE_TACTICAL_RUNTIME_DEBUG = true
+local TACTICAL_RUNTIME_DEBUG_DURATION_SECONDS = 8
 local MobilePatrolModule = SkynetIADSMobilePatrol or MobileIADSPatrol
 local EWRReporterModule = SkynetIADSEWRReporter
 local SiblingCoordinationModule = SkynetIADSSiblingCoordination
@@ -38,8 +40,19 @@ local EWR_REPORT_CLEAN = false
 local EWR_REPORT_DEBUG_ALL_PLAYERS = true
 local SIBLING_FAMILIES = {
     {
-        name = "MSAM test pair",
+        name = "MSAM ambush pair 1",
         members = { "MSAM-1", "MSAM-2" },
+        mode = "ambush", -- ambush | denial
+        primary = "MSAM-1",
+        denialAlertDistanceNm = 25,
+        passiveAction = "relocate",
+    },
+    {
+        name = "MSAM ambush pair 2",
+        members = { "MSAM-3", "MSAM-4" },
+        mode = "ambush", -- ambush | denial
+        primary = "MSAM-3",
+        denialAlertDistanceNm = 25,
         passiveAction = "relocate",
     },
 }
@@ -47,6 +60,18 @@ local SIBLING_FAMILIES = {
 if not SkynetIADS then
     trigger.action.outText("my-iads-setup: SkynetIADS not loaded, init aborted", 10)
     return
+end
+
+_G.SkynetRuntimeDebug = {
+    enabled = ENABLE_TACTICAL_RUNTIME_DEBUG,
+    duration = TACTICAL_RUNTIME_DEBUG_DURATION_SECONDS,
+}
+
+_G.SkynetRuntimeDebugNotify = function(message)
+    local debugConfig = _G.SkynetRuntimeDebug
+    if debugConfig and debugConfig.enabled and message then
+        trigger.action.outText("[SKYNET DBG] " .. tostring(message), debugConfig.duration or 8)
+    end
 end
 
 redIADS = SkynetIADS:create(IADS_NAME)
@@ -240,6 +265,8 @@ if ENABLE_SIBLING_COORDINATION and SiblingCoordinationModule then
     _G.redIADSSiblingCoordination = SiblingCoordinationModule.create(redIADS, {
         checkInterval = 1,
         defaultPassiveAction = "hold_dark",
+        defaultMode = "ambush",
+        defaultDenialAlertDistanceNm = 25,
     })
     local registeredSiblingFamilies, registeredSiblingMembers = _G.redIADSSiblingCoordination:registerFamilies(SIBLING_FAMILIES)
     if registeredSiblingFamilies > 0 then
