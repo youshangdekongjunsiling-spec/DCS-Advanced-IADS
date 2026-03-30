@@ -3063,23 +3063,83 @@ function SkynetIADSAbstractRadarElement:getHARMRelocationController()
 	return nil
 end
 
-function SkynetIADSAbstractRadarElement:calculateRandomHARMRelocationPoint(distanceMeters)
+function SkynetIADSAbstractRadarElement:isHARMRelocationPointOnLand(point)
+	if point == nil then
+		return false
+	end
+	if land == nil or land.getSurfaceType == nil or land.SurfaceType == nil or land.SurfaceType.LAND == nil then
+		return true
+	end
+	local ok, surfaceType = pcall(function()
+		return land.getSurfaceType({
+			x = point.x,
+			y = point.z
+		})
+	end)
+	if ok ~= true then
+		return true
+	end
+	return surfaceType == land.SurfaceType.LAND
+end
+
+function SkynetIADSAbstractRadarElement:calculateRandomHARMRelocationPoint(minDistanceMeters, maxDistanceMeters)
 	local group = self:getHARMRelocationGroup()
 	if group == nil then
-		return nil
+		return nil, 0, nil
 	end
 
 	local startPoint = mist.getLeadPos(group)
 	if startPoint == nil then
-		return nil
+		return nil, 0, nil
 	end
 
-	local headingRad = math.random() * 2 * math.pi
-	return {
-		x = startPoint.x + math.cos(headingRad) * distanceMeters,
-		y = startPoint.y,
-		z = startPoint.z + math.sin(headingRad) * distanceMeters
+	local fallbackPoint = nil
+	local fallbackDistance = 0
+	for i = 1, 50 do
+		local distanceMeters = math.random(minDistanceMeters, maxDistanceMeters)
+		local headingRad = math.random() * 2 * math.pi
+		local candidate = {
+			x = startPoint.x + math.cos(headingRad) * distanceMeters,
+			y = startPoint.y,
+			z = startPoint.z + math.sin(headingRad) * distanceMeters
+		}
+		if fallbackPoint == nil then
+			fallbackPoint = candidate
+			fallbackDistance = distanceMeters
+		end
+		if self:isHARMRelocationPointOnLand(candidate) then
+			return candidate, distanceMeters, startPoint
+		end
+	end
+
+	return fallbackPoint, fallbackDistance, startPoint
+end
+
+function SkynetIADSAbstractRadarElement:issueHARMRelocationRoute(group, destination, speedKmph)
+	if group == nil or group:isExist() == false or destination == nil then
+		return false
+	end
+
+	local startPoint = mist.getLeadPos(group)
+	if startPoint == nil then
+		return false
+	end
+
+	local speedMps = mist.utils.kmphToMps(speedKmph or self:getHARMRelocationSpeedKmph())
+	local path = {
+		mist.ground.buildWP(startPoint, "Diamond", speedMps),
+		mist.ground.buildWP({
+			x = startPoint.x + 25,
+			z = startPoint.z + 25
+		}, "Diamond", speedMps),
+		mist.ground.buildWP(destination, "Diamond", speedMps)
 	}
+
+	local ok = pcall(function()
+		mist.goRoute(group, path)
+	end)
+
+	return ok == true
 end
 
 function SkynetIADSAbstractRadarElement:getHARMRelocationSpeedKmph()
@@ -3142,23 +3202,20 @@ function SkynetIADSAbstractRadarElement:attemptHARMRelocation()
 		return false, 0, nil
 	end
 
-	local distanceMeters = math.random(self.harmRelocationMinDistanceMeters, self.harmRelocationMaxDistanceMeters)
 	local speedKmph = self:getHARMRelocationSpeedKmph()
-	local destination = self:calculateRandomHARMRelocationPoint(distanceMeters)
+	local destination, distanceMeters, startPoint = self:calculateRandomHARMRelocationPoint(
+		self.harmRelocationMinDistanceMeters,
+		self.harmRelocationMaxDistanceMeters
+	)
 	if destination == nil then
 		return false, 0, nil
 	end
 
-	local ok = pcall(function()
-		mist.groupToPoint(group, destination, "Diamond", math.random(0, 359), speedKmph, false)
-	end)
-
-	if ok ~= true then
+	if self:issueHARMRelocationRoute(group, destination, speedKmph) ~= true then
 		return false, 0, nil
 	end
 
 	local travelTime = self:calculateHARMRelocationTravelTimeSeconds(distanceMeters, speedKmph)
-	local startPoint = mist.getLeadPos(group)
 	self.harmRelocationInProgress = true
 	self.harmRelocationPlannedDistanceMeters = distanceMeters
 	self.harmRelocationDestination = destination
