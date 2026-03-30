@@ -212,7 +212,14 @@ function SkynetIADSSiblingCoordination:isEngaged(member)
     local element = member.element
     local entry = self:getMobilePatrolEntry(element)
     if entry ~= nil then
-        return entry.state == "deployed" or entry.state == "mobile_engaging" or element:getNumberOfMissilesInFlight() > 0
+        if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
+            return (
+                (entry.combatMode ~= nil and entry.combatMode ~= "patrolling" and entry.combatMode ~= "searching")
+                or element.targetsInRange == true
+                or element:getNumberOfMissilesInFlight() > 0
+            )
+        end
+        return entry.state == "deployed" or element:getNumberOfMissilesInFlight() > 0
     end
     return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
 end
@@ -412,11 +419,29 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     member.passiveMode = nil
     member.lastRole = "primary"
     local entry = self:getMobilePatrolEntry(member.element)
+    local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
-    if threatDecision and entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+    if entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+        if threatDecision == nil then
+            threatDecision = {
+                shouldDeploy = moveFireCapable ~= true,
+                shouldGoLive = true,
+                shouldWeaponHold = false,
+                combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
+                triggerInfo = {
+                    source = "sibling_coord",
+                    contactName = family.activeGroupName or family.name,
+                    contactType = shouldForceDeploy and "sibling_cover" or "sibling_primary",
+                    distanceNm = 0,
+                    threatRangeNm = 0,
+                    time = timer.getTime(),
+                    combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
+                },
+            }
+        end
         entry.manager:applyMSAMThreatDecision(entry, threatDecision)
     else
-        if shouldForceDeploy and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
+        if shouldForceDeploy and moveFireCapable ~= true and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
             entry.manager:pausePatrolForDeployment(entry, {
                 source = "sibling_coord",
                 contactName = family.activeGroupName or "sibling",
@@ -456,6 +481,16 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     member.lastRole = "passive"
     local entry = self:getMobilePatrolEntry(member.element)
     if family.passiveAction == "relocate" and entry and entry.kind == "MSAM" then
+        if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
+            member.passiveMode = "relocate"
+            if entry.state ~= "patrolling" then
+                entry.manager:beginPatrol(entry)
+            end
+            if previousPassiveMode ~= "relocate" then
+                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+            end
+            return
+        end
         if previousRole == "primary" or previousRole == "suppressed" then
             member.passiveMode = "relocate"
             if entry.manager and entry.manager.beginPatrol and entry.state ~= "patrolling" then
