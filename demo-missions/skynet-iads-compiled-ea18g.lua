@@ -2556,7 +2556,7 @@ SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DARK = 2
 SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_KILL_ZONE = 1
 SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_SEARCH_RANGE = 2
 
-SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT = 15
+SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT = 5
 SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM = 20
 
 function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
@@ -2595,6 +2595,8 @@ function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	instance.harmRelocationDestination = nil
 	instance.harmRelocationDeadline = 0
 	instance.harmRelocationPlannedDistanceMeters = 0
+	instance.harmRelocationStartPoint = nil
+	instance.harmRelocationMinimumCompletionMeters = 0
 	instance.harmReactionCooldownSeconds = 3
 	instance.harmReactionLockUntil = 0
 	instance.firingRangePercent = 100
@@ -3156,11 +3158,32 @@ function SkynetIADSAbstractRadarElement:attemptHARMRelocation()
 	end
 
 	local travelTime = self:calculateHARMRelocationTravelTimeSeconds(distanceMeters, speedKmph)
+	local startPoint = mist.getLeadPos(group)
 	self.harmRelocationInProgress = true
 	self.harmRelocationPlannedDistanceMeters = distanceMeters
 	self.harmRelocationDestination = destination
 	self.harmRelocationDeadline = timer.getTime() + travelTime
+	self.harmRelocationStartPoint = startPoint
+	self.harmRelocationMinimumCompletionMeters = math.max(80, math.floor(distanceMeters * 0.6))
 	return true, travelTime, destination, speedKmph, distanceMeters
+end
+
+function SkynetIADSAbstractRadarElement:getHARMRelocationDistanceMovedMeters()
+	if self.harmRelocationStartPoint == nil then
+		return 0
+	end
+
+	local group = self:getHARMRelocationGroup()
+	if group == nil or group:isExist() == false then
+		return 0
+	end
+
+	local currentPoint = mist.getLeadPos(group)
+	if currentPoint == nil then
+		return 0
+	end
+
+	return mist.utils.get2DDist(currentPoint, self.harmRelocationStartPoint)
 end
 
 function SkynetIADSAbstractRadarElement:hasReachedHARMRelocationDestination()
@@ -3189,12 +3212,25 @@ function SkynetIADSAbstractRadarElement.checkHARMRelocationArrival(self)
 	end
 
 	local timedOut = timer.getTime() >= self.harmRelocationDeadline
-	if self:hasReachedHARMRelocationDestination() or timedOut then
+	local movedDistance = self:getHARMRelocationDistanceMovedMeters()
+	local movedEnough = movedDistance >= (self.harmRelocationMinimumCompletionMeters or 0)
+	if self:hasReachedHARMRelocationDestination() or (timedOut and movedEnough) then
 		if self.iads:getDebugSettings().harmDefence then
-			local reason = timedOut and "timeout" or "arrived"
+			local reason = timedOut and "timeout_moved" or "arrived"
 			self.iads:printOutputToLog("HARM DEFENCE RELOCATION COMPLETE: "..self:getDCSName().." | REASON: "..reason)
 		end
 		self:finishHarmDefence(self)
+	elseif timedOut then
+		self.harmRelocationDeadline = timer.getTime() + math.max(5, self.harmRelocationCheckInterval)
+		if self.iads:getDebugSettings().harmDefence then
+			self.iads:printOutputToLog(
+				"HARM DEFENCE RELOCATION WAITING: "
+				..self:getDCSName()
+				.." | MOVED: "..mist.utils.round(movedDistance, 0)
+				.."m | REQUIRED: "..tostring(self.harmRelocationMinimumCompletionMeters)
+				.."m"
+			)
+		end
 	end
 end
 
@@ -3595,6 +3631,8 @@ function SkynetIADSAbstractRadarElement.finishHarmDefence(self)
 	self.harmRelocationDestination = nil
 	self.harmRelocationDeadline = 0
 	self.harmRelocationPlannedDistanceMeters = 0
+	self.harmRelocationStartPoint = nil
+	self.harmRelocationMinimumCompletionMeters = 0
 	self.harmReactionLockUntil = timer.getTime() + self.harmReactionCooldownSeconds
 
 	self:setToCorrectAutonomousState()
@@ -3667,6 +3705,16 @@ function SkynetIADSAbstractRadarElement:shallIgnoreHARMShutdown()
 end
 
 function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
+	local siblingCoordClass = rawget(_G, "SkynetIADSSiblingCoordination")
+	if siblingCoordClass and siblingCoordClass.getFamilyForElement then
+		local siblingInfo = siblingCoordClass.getFamilyForElement(self)
+		if siblingInfo and siblingInfo.role == "passive" then
+			return
+		end
+	end
+	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
+		return
+	end
 	local radars = self:getRadars()
 		for j = 1, #radars do
 			local radar = radars[j]
@@ -4675,6 +4723,8 @@ SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS = 25
 SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
+SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
+SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 
 local function startsWith(value, prefix)
 	return value and prefix and string.find(value, prefix, 1, true) == 1
@@ -4867,6 +4917,40 @@ local function setGroundROE(controller, weaponHold)
 			weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.OPEN_FIRE
 		)
 	end)
+end
+
+local function setGroundFormationInterval(controller, meters)
+	if controller == nil or meters == nil then
+		return
+	end
+	local intervalMeters = math.max(0, math.min(100, math.floor(meters + 0.5)))
+	pcall(function()
+		controller:setOption(30, intervalMeters)
+	end)
+end
+
+local function applyFormationIntervalToEntry(entry, meters)
+	if entry == nil then
+		return
+	end
+	local group = entry.group
+	if group and group.isExist and group:isExist() then
+		local okController, controller = pcall(function()
+			return group:getController()
+		end)
+		if okController and controller then
+			setGroundFormationInterval(controller, meters)
+		end
+	end
+	local element = entry.element
+	if element and element.getController then
+		local okController, controller = pcall(function()
+			return element:getController()
+		end)
+		if okController and controller then
+			setGroundFormationInterval(controller, meters)
+		end
+	end
 end
 
 local function setPatrolROE(controller)
@@ -5460,6 +5544,7 @@ end
 
 function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 	local wasDeployed = entry.state == "deployed"
+	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS)
 	if self:issueDeployScatter(entry) ~= true then
 		self:issueHold(entry)
 	end
@@ -5502,6 +5587,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.contactKinematics = {}
 	entry.debugLastCombatAnnouncementKey = nil
 	forceElementIntoPatrolDarkState(entry.element)
+	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
 	entry.patrolRefreshDelays = mist.utils.deepCopy(self.defaultPatrolRefreshDelays)
 	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
@@ -5902,7 +5988,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			shouldAnnounce = entry.debugHarmActive ~= true
 		end
 		local result = originalGoSilentToEvadeHARM(self, timeToImpact)
-		if result ~= false and entry then
+		if result ~= false and entry and self.harmRelocationInProgress == true then
 			entry.state = "harm_evading"
 			entry.noThreatSince = nil
 			entry.debugHarmActive = true

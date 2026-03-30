@@ -9,7 +9,7 @@ SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DARK = 2
 SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_KILL_ZONE = 1
 SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_SEARCH_RANGE = 2
 
-SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT = 15
+SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT = 5
 SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM = 20
 
 function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
@@ -48,6 +48,8 @@ function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	instance.harmRelocationDestination = nil
 	instance.harmRelocationDeadline = 0
 	instance.harmRelocationPlannedDistanceMeters = 0
+	instance.harmRelocationStartPoint = nil
+	instance.harmRelocationMinimumCompletionMeters = 0
 	instance.harmReactionCooldownSeconds = 3
 	instance.harmReactionLockUntil = 0
 	instance.firingRangePercent = 100
@@ -622,11 +624,32 @@ function SkynetIADSAbstractRadarElement:attemptHARMRelocation()
 	end
 
 	local travelTime = self:calculateHARMRelocationTravelTimeSeconds(distanceMeters, speedKmph)
+	local startPoint = mist.getLeadPos(group)
 	self.harmRelocationInProgress = true
 	self.harmRelocationPlannedDistanceMeters = distanceMeters
 	self.harmRelocationDestination = destination
 	self.harmRelocationDeadline = timer.getTime() + travelTime
+	self.harmRelocationStartPoint = startPoint
+	self.harmRelocationMinimumCompletionMeters = math.max(80, math.floor(distanceMeters * 0.6))
 	return true, travelTime, destination, speedKmph, distanceMeters
+end
+
+function SkynetIADSAbstractRadarElement:getHARMRelocationDistanceMovedMeters()
+	if self.harmRelocationStartPoint == nil then
+		return 0
+	end
+
+	local group = self:getHARMRelocationGroup()
+	if group == nil or group:isExist() == false then
+		return 0
+	end
+
+	local currentPoint = mist.getLeadPos(group)
+	if currentPoint == nil then
+		return 0
+	end
+
+	return mist.utils.get2DDist(currentPoint, self.harmRelocationStartPoint)
 end
 
 function SkynetIADSAbstractRadarElement:hasReachedHARMRelocationDestination()
@@ -655,12 +678,25 @@ function SkynetIADSAbstractRadarElement.checkHARMRelocationArrival(self)
 	end
 
 	local timedOut = timer.getTime() >= self.harmRelocationDeadline
-	if self:hasReachedHARMRelocationDestination() or timedOut then
+	local movedDistance = self:getHARMRelocationDistanceMovedMeters()
+	local movedEnough = movedDistance >= (self.harmRelocationMinimumCompletionMeters or 0)
+	if self:hasReachedHARMRelocationDestination() or (timedOut and movedEnough) then
 		if self.iads:getDebugSettings().harmDefence then
-			local reason = timedOut and "timeout" or "arrived"
+			local reason = timedOut and "timeout_moved" or "arrived"
 			self.iads:printOutputToLog("HARM DEFENCE RELOCATION COMPLETE: "..self:getDCSName().." | REASON: "..reason)
 		end
 		self:finishHarmDefence(self)
+	elseif timedOut then
+		self.harmRelocationDeadline = timer.getTime() + math.max(5, self.harmRelocationCheckInterval)
+		if self.iads:getDebugSettings().harmDefence then
+			self.iads:printOutputToLog(
+				"HARM DEFENCE RELOCATION WAITING: "
+				..self:getDCSName()
+				.." | MOVED: "..mist.utils.round(movedDistance, 0)
+				.."m | REQUIRED: "..tostring(self.harmRelocationMinimumCompletionMeters)
+				.."m"
+			)
+		end
 	end
 end
 
@@ -1063,6 +1099,8 @@ function SkynetIADSAbstractRadarElement.finishHarmDefence(self)
 	self.harmRelocationDestination = nil
 	self.harmRelocationDeadline = 0
 	self.harmRelocationPlannedDistanceMeters = 0
+	self.harmRelocationStartPoint = nil
+	self.harmRelocationMinimumCompletionMeters = 0
 	self.harmReactionLockUntil = timer.getTime() + self.harmReactionCooldownSeconds
 
 	self:setToCorrectAutonomousState()
@@ -1138,6 +1176,16 @@ function SkynetIADSAbstractRadarElement:shallIgnoreHARMShutdown()
 end
 
 function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
+	local siblingCoordClass = rawget(_G, "SkynetIADSSiblingCoordination")
+	if siblingCoordClass and siblingCoordClass.getFamilyForElement then
+		local siblingInfo = siblingCoordClass.getFamilyForElement(self)
+		if siblingInfo and siblingInfo.role == "passive" then
+			return
+		end
+	end
+	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
+		return
+	end
 	local radars = self:getRadars()
 		for j = 1, #radars do
 			local radar = radars[j]

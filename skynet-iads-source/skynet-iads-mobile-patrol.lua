@@ -19,6 +19,8 @@ SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS = 25
 SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
+SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
+SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 
 local function startsWith(value, prefix)
 	return value and prefix and string.find(value, prefix, 1, true) == 1
@@ -213,6 +215,40 @@ local function setGroundROE(controller, weaponHold)
 			weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.OPEN_FIRE
 		)
 	end)
+end
+
+local function setGroundFormationInterval(controller, meters)
+	if controller == nil or meters == nil then
+		return
+	end
+	local intervalMeters = math.max(0, math.min(100, math.floor(meters + 0.5)))
+	pcall(function()
+		controller:setOption(30, intervalMeters)
+	end)
+end
+
+local function applyFormationIntervalToEntry(entry, meters)
+	if entry == nil then
+		return
+	end
+	local group = entry.group
+	if group and group.isExist and group:isExist() then
+		local okController, controller = pcall(function()
+			return group:getController()
+		end)
+		if okController and controller then
+			setGroundFormationInterval(controller, meters)
+		end
+	end
+	local element = entry.element
+	if element and element.getController then
+		local okController, controller = pcall(function()
+			return element:getController()
+		end)
+		if okController and controller then
+			setGroundFormationInterval(controller, meters)
+		end
+	end
 end
 
 local function setPatrolROE(controller)
@@ -806,6 +842,7 @@ end
 
 function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 	local wasDeployed = entry.state == "deployed"
+	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS)
 	if self:issueDeployScatter(entry) ~= true then
 		self:issueHold(entry)
 	end
@@ -848,6 +885,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.contactKinematics = {}
 	entry.debugLastCombatAnnouncementKey = nil
 	forceElementIntoPatrolDarkState(entry.element)
+	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
 	entry.patrolRefreshDelays = mist.utils.deepCopy(self.defaultPatrolRefreshDelays)
 	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
@@ -1248,7 +1286,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			shouldAnnounce = entry.debugHarmActive ~= true
 		end
 		local result = originalGoSilentToEvadeHARM(self, timeToImpact)
-		if result ~= false and entry then
+		if result ~= false and entry and self.harmRelocationInProgress == true then
 			entry.state = "harm_evading"
 			entry.noThreatSince = nil
 			entry.debugHarmActive = true
