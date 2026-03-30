@@ -23,6 +23,13 @@ SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_CHECK_INTERVAL_SECONDS = 1
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_MIN_COMPLETION_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
+SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
+	["SA-8 Gecko"] = true,
+	["SA-15 Gauntlet"] = true,
+	["SA-19 Grison"] = true,
+	["Gepard"] = true,
+	["Zues"] = true,
+}
 
 local function startsWith(value, prefix)
 	return value and prefix and string.find(value, prefix, 1, true) == 1
@@ -733,6 +740,14 @@ function SkynetIADSMobilePatrol:getMSAMCombatProfile(entry)
 	}
 end
 
+function SkynetIADSMobilePatrol:isMoveFireCapable(entry)
+	if entry == nil or entry.kind ~= "MSAM" then
+		return false
+	end
+	local natoName = entry.element.getNatoName and entry.element:getNatoName() or nil
+	return natoName ~= nil and self.moveFireNatoNames[natoName] == true
+end
+
 function SkynetIADSMobilePatrol:getDeployTriggerRangeMeters(entry)
 	local profile = self:getMSAMCombatProfile(entry)
 	if profile then
@@ -883,8 +898,9 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 
 	local triggerInfo = threatDecision.triggerInfo
 	entry.combatMode = threatDecision.combatMode or "default_fire"
+	local moveFireCapable = self:isMoveFireCapable(entry)
 
-	if threatDecision.shouldDeploy and entry.state ~= "deployed" and entry.state ~= "deploy_scattering" and skipPause ~= true then
+	if moveFireCapable ~= true and threatDecision.shouldDeploy and entry.state ~= "deployed" and entry.state ~= "deploy_scattering" and skipPause ~= true then
 		self:pausePatrolForDeployment(entry, triggerInfo)
 	end
 
@@ -904,7 +920,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 		forceElementIntoPatrolDarkState(entry.element)
 	end
 
-	entry.state = "deployed"
+	entry.state = moveFireCapable and "mobile_engaging" or "deployed"
 	entry.lastThreatTime = timer.getTime()
 	entry.noThreatSince = nil
 	self:announceCombatState(entry, threatDecision)
@@ -1308,6 +1324,7 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultMinMovementMeters = (config and config.defaultMinMovementMeters) or SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS,
 		defaultPatrolRefreshDelays = (config and config.defaultPatrolRefreshDelays) or SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS,
+		moveFireNatoNames = mist.utils.deepCopy((config and config.moveFireNatoNames) or SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES),
 	}
 	setmetatable(patrol, SkynetIADSMobilePatrol)
 	return patrol

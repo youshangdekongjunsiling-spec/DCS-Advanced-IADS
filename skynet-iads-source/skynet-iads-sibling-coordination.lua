@@ -212,7 +212,7 @@ function SkynetIADSSiblingCoordination:isEngaged(member)
     local element = member.element
     local entry = self:getMobilePatrolEntry(element)
     if entry ~= nil then
-        return entry.state == "deployed" or element:getNumberOfMissilesInFlight() > 0
+        return entry.state == "deployed" or entry.state == "mobile_engaging" or element:getNumberOfMissilesInFlight() > 0
     end
     return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
 end
