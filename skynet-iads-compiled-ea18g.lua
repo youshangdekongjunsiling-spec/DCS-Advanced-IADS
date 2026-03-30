@@ -4786,7 +4786,6 @@ SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
-	["SA-15 Gauntlet"] = true,
 	["SA-19 Grison"] = true,
 	["Gepard"] = true,
 	["Zues"] = true,
@@ -5107,6 +5106,51 @@ local function setElementCombatROE(element, weaponHold)
 	end
 end
 
+local function setMovingCombatROEForRepresentation(representation, weaponHold)
+	if representation == nil or representation.isExist == nil or representation:isExist() == false then
+		return
+	end
+	local okController, controller = pcall(function()
+		return representation:getController()
+	end)
+	if okController and controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setPatrolAlarmState(controller)
+		setGroundROE(controller, weaponHold)
+		pcall(function()
+			representation:enableEmission(true)
+		end)
+	end
+end
+
+local function setElementMovingCombatState(element, weaponHold)
+	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	local representations = collectElementEmitterRepresentations(element)
+	for i = 1, #representations do
+		setMovingCombatROEForRepresentation(representations[i], weaponHold)
+	end
+	local controller = element.getController and element:getController() or nil
+	if controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setPatrolAlarmState(controller)
+		setGroundROE(controller, weaponHold)
+	end
+	element.goLiveTime = timer.getTime()
+	element.aiState = true
+	if element.pointDefencesStopActingAsEW then
+		element:pointDefencesStopActingAsEW()
+	end
+	if element.scanForHarms then
+		element:scanForHarms()
+	end
+end
+
 local function applyPatrolOptionsToRepresentation(representation)
 	if representation == nil or representation.isExist == nil or representation:isExist() == false then
 		return
@@ -5178,19 +5222,25 @@ function SkynetIADSMobilePatrol:announceCombatState(entry, threatDecision)
 	local mode = threatDecision.combatMode or entry.combatMode or "default"
 	local shouldGoLive = threatDecision.shouldGoLive == true
 	local shouldWeaponHold = threatDecision.shouldWeaponHold == true
+	local moveFireCapable = self:isMoveFireCapable(entry)
 	local announcementKey = table.concat({
 		tostring(mode),
 		tostring(shouldGoLive),
 		tostring(shouldWeaponHold),
 		tostring(targetName),
+		tostring(moveFireCapable),
 	}, "|")
 	if entry.debugLastCombatAnnouncementKey == announcementKey then
 		return
 	end
 	entry.debugLastCombatAnnouncementKey = announcementKey
-	local action = "进入警戒模式"
+	local action = moveFireCapable and "机动警戒" or "进入警戒模式"
 	if shouldGoLive then
-		action = shouldWeaponHold and "进入锁定待射" or "进入战斗模式"
+		if moveFireCapable then
+			action = shouldWeaponHold and "机动锁定待射" or "机动交战"
+		else
+			action = shouldWeaponHold and "进入锁定待射" or "进入战斗模式"
+		end
 	end
 	self:notifyDebug(
 		entry.groupName
@@ -5231,16 +5281,106 @@ function SkynetIADSMobilePatrol:getWaypointDistance(entry, point)
 	return mist.utils.get2DDist(currentPoint, point)
 end
 
+function SkynetIADSMobilePatrol:getPatrolForwardVector(entry)
+	if entry == nil then
+		return nil
+	end
+	local units = nil
+	if entry.group and entry.group.isExist and entry.group:isExist() then
+		local okUnits, groupUnits = pcall(function()
+			return entry.group:getUnits()
+		end)
+		if okUnits and groupUnits then
+			units = groupUnits
+		end
+	end
+	if units then
+		for i = 1, #units do
+			local unit = units[i]
+			if unit and unit.isExist and unit:isExist() then
+				local okPos, position = pcall(function()
+					return unit:getPosition()
+				end)
+				if okPos and position and position.x then
+					return { x = position.x.x, z = position.x.z }
+				end
+			end
+		end
+	end
+	local dcsRepresentation = entry.element and entry.element.getDCSRepresentation and entry.element:getDCSRepresentation() or nil
+	if dcsRepresentation and dcsRepresentation.isExist and dcsRepresentation:isExist() then
+		local okPos, position = pcall(function()
+			return dcsRepresentation:getPosition()
+		end)
+		if okPos and position and position.x then
+			return { x = position.x.x, z = position.x.z }
+		end
+	end
+	return nil
+end
+
+function SkynetIADSMobilePatrol:isWaypointAhead(entry, point)
+	local currentPoint = self:getPatrolReferencePoint(entry)
+	local heading = self:getPatrolForwardVector(entry)
+	if currentPoint == nil or point == nil or heading == nil then
+		return nil
+	end
+	local vecX = point.x - currentPoint.x
+	local vecZ = point.z - currentPoint.z
+	local vecMag = math.sqrt((vecX * vecX) + (vecZ * vecZ))
+	local headingMag = math.sqrt((heading.x * heading.x) + (heading.z * heading.z))
+	if vecMag <= 1 or headingMag <= 0.001 then
+		return nil
+	end
+	local dot = ((vecX / vecMag) * (heading.x / headingMag)) + ((vecZ / vecMag) * (heading.z / headingMag))
+	return dot >= 0.15
+end
+
 function SkynetIADSMobilePatrol:selectStartingWaypointIndex(entry)
 	if #entry.routePoints <= 1 then
 		return 1
 	end
+	local nearestIndex = 1
+	local nearestDistance = math.huge
+	local nearestAheadIndex = nil
+	local nearestAheadDistance = math.huge
 	for i = 1, #entry.routePoints do
-		if self:getWaypointDistance(entry, entry.routePoints[i]) > entry.arrivalToleranceMeters then
-			return i
+		local distance = self:getWaypointDistance(entry, entry.routePoints[i])
+		if distance < nearestDistance then
+			nearestDistance = distance
+			nearestIndex = i
+		end
+		if self:isWaypointAhead(entry, entry.routePoints[i]) == true and distance < nearestAheadDistance then
+			nearestAheadDistance = distance
+			nearestAheadIndex = i
 		end
 	end
-	return 1
+	if nearestAheadIndex ~= nil then
+		if nearestAheadDistance <= entry.arrivalToleranceMeters then
+			return (nearestAheadIndex % #entry.routePoints) + 1
+		end
+		return nearestAheadIndex
+	end
+	if nearestDistance <= entry.arrivalToleranceMeters then
+		return (nearestIndex % #entry.routePoints) + 1
+	end
+	return nearestIndex
+end
+
+function SkynetIADSMobilePatrol:buildRoadPatrolRoute(entry, startIndex)
+	if entry == nil or #entry.routePoints == 0 then
+		return nil
+	end
+	local route = {}
+	local speedMps = mist.utils.kmphToMps(entry.patrolSpeedKmph)
+	for offset = 0, (#entry.routePoints - 1) do
+		local index = ((startIndex - 1 + offset) % #entry.routePoints) + 1
+		local point = entry.routePoints[index]
+		if point then
+			route[#route + 1] = mist.ground.buildWP(point, "On Road", speedMps)
+		end
+	end
+	return #route > 0 and route or nil
 end
 
 function SkynetIADSMobilePatrol:issueRoadMove(entry, destination)
@@ -5673,13 +5813,21 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 		if entry.element.targetsInRange ~= nil then
 			entry.element.targetsInRange = true
 		end
-		entry.element:goLive()
-		setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
+		if moveFireCapable then
+			setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
+		else
+			entry.element:goLive()
+			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
+		end
 	else
 		forceElementIntoPatrolDarkState(entry.element)
 	end
 
-	entry.state = moveFireCapable and "mobile_engaging" or "deployed"
+	if moveFireCapable then
+		entry.state = "patrolling"
+	else
+		entry.state = "deployed"
+	end
 	entry.lastThreatTime = timer.getTime()
 	entry.noThreatSince = nil
 	self:announceCombatState(entry, threatDecision)
@@ -5767,10 +5915,10 @@ end
 
 function SkynetIADSMobilePatrol:advancePatrol(entry, force)
 	if entry.state ~= "patrolling" then
-		return
+		return false
 	end
 	if entry.group == nil or entry.group:isExist() == false or #entry.routePoints == 0 then
-		return
+		return false
 	end
 	local nextPoint = entry.routePoints[entry.currentWaypointIndex]
 	if nextPoint == nil then
@@ -5778,17 +5926,27 @@ function SkynetIADSMobilePatrol:advancePatrol(entry, force)
 		nextPoint = entry.routePoints[1]
 	end
 	if force ~= true and entry.currentDestination and self:getWaypointDistance(entry, entry.currentDestination) > entry.arrivalToleranceMeters then
-		return
+		return false
 	end
 	if self:getWaypointDistance(entry, nextPoint) <= entry.arrivalToleranceMeters then
 		entry.currentWaypointIndex = (entry.currentWaypointIndex % #entry.routePoints) + 1
 		nextPoint = entry.routePoints[entry.currentWaypointIndex]
 	end
 	if nextPoint then
-		if self:issueRoadMove(entry, nextPoint) then
+		local startIndex = entry.currentWaypointIndex
+		local route = self:buildRoadPatrolRoute(entry, startIndex)
+		if route and pcall(function()
+			mist.goRoute(entry.group, route)
+		end) then
+			entry.currentDestination = nextPoint
+			entry.lastRouteIssueTime = timer.getTime()
+			entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
+			self:log("Road patrol issued for "..entry.groupName.." | wp="..tostring(startIndex).." | speed="..entry.patrolSpeedKmph.."km/h")
 			entry.currentWaypointIndex = (entry.currentWaypointIndex % #entry.routePoints) + 1
+			return true
 		end
 	end
+	return false
 end
 
 function SkynetIADSMobilePatrol:handleDeployedState(entry)
@@ -5903,6 +6061,10 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		if threatDecision then
 			self:applyMSAMThreatDecision(entry, threatDecision)
 			return
+		elseif self:isMoveFireCapable(entry) and entry.combatMode ~= "patrolling" then
+			forceElementIntoPatrolDarkState(entry.element)
+			entry.combatMode = "patrolling"
+			entry.debugLastCombatAnnouncementKey = nil
 		end
 	elseif entry.kind ~= "MSAM" then
 		threatPresent = self:findMEWThreat(entry)
@@ -5921,7 +6083,12 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 	end
 
 	if entry.state == "harm_evading" then
-		entry.state = "deployed"
+		if self:isMoveFireCapable(entry) then
+			entry.state = "patrolling"
+			entry.combatMode = "patrolling"
+		else
+			entry.state = "deployed"
+		end
 	end
 
 	if entry.state == "deployed" then
@@ -6183,14 +6350,41 @@ function SkynetIADSMobilePatrol.installHooks()
 	end
 
 	local originalGoSilentToEvadeHARM = SkynetIADSAbstractRadarElement.goSilentToEvadeHARM
+	local function goSilentToEvadeHARMWhileMoving(element, timeToImpact)
+		local now = timer.getTime()
+		if element.harmSilenceID ~= nil or element.harmRelocationInProgress == true then
+			return false
+		end
+		if element.harmReactionLockUntil ~= nil and now < element.harmReactionLockUntil then
+			return false
+		end
+		element.harmReactionLockUntil = now + element.harmReactionCooldownSeconds
+		element.minHarmShutdownTime = element:calculateMinimalShutdownTimeInSeconds(timeToImpact)
+		element.maxHarmShutDownTime = element:calculateMaximalShutdownTimeInSeconds(element.minHarmShutdownTime)
+		element.harmShutdownTime = element:calculateHARMShutdownTime()
+		if element.iads:getDebugSettings().harmDefence then
+			element.iads:printOutputToLog("HARM DEFENCE SHUTDOWN + CONTINUE MOVING: "..element:getDCSName().." | FOR: "..element.harmShutdownTime.." seconds | TTI: "..timeToImpact)
+		end
+		element.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {element}, timer.getTime() + element.harmShutdownTime, 1)
+		element:enterHARMRelocationDarkState()
+		return true
+	end
+
 	function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		local shouldAnnounce = false
+		local moveFireCapable = false
 		if entry then
 			shouldAnnounce = entry.debugHarmActive ~= true
+			moveFireCapable = entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
 		end
-		local result = originalGoSilentToEvadeHARM(self, timeToImpact)
-		if result ~= false and entry and self.harmRelocationInProgress == true then
+		local result
+		if moveFireCapable then
+			result = goSilentToEvadeHARMWhileMoving(self, timeToImpact)
+		else
+			result = originalGoSilentToEvadeHARM(self, timeToImpact)
+		end
+		if result ~= false and entry and (self.harmRelocationInProgress == true or moveFireCapable) then
 			entry.state = "harm_evading"
 			entry.noThreatSince = nil
 			entry.debugHarmActive = true
@@ -6448,7 +6642,14 @@ function SkynetIADSSiblingCoordination:isEngaged(member)
     local element = member.element
     local entry = self:getMobilePatrolEntry(element)
     if entry ~= nil then
-        return entry.state == "deployed" or entry.state == "mobile_engaging" or element:getNumberOfMissilesInFlight() > 0
+        if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
+            return (
+                (entry.combatMode ~= nil and entry.combatMode ~= "patrolling" and entry.combatMode ~= "searching")
+                or element.targetsInRange == true
+                or element:getNumberOfMissilesInFlight() > 0
+            )
+        end
+        return entry.state == "deployed" or element:getNumberOfMissilesInFlight() > 0
     end
     return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
 end
@@ -6648,11 +6849,29 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     member.passiveMode = nil
     member.lastRole = "primary"
     local entry = self:getMobilePatrolEntry(member.element)
+    local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
-    if threatDecision and entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+    if entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+        if threatDecision == nil then
+            threatDecision = {
+                shouldDeploy = moveFireCapable ~= true,
+                shouldGoLive = true,
+                shouldWeaponHold = false,
+                combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
+                triggerInfo = {
+                    source = "sibling_coord",
+                    contactName = family.activeGroupName or family.name,
+                    contactType = shouldForceDeploy and "sibling_cover" or "sibling_primary",
+                    distanceNm = 0,
+                    threatRangeNm = 0,
+                    time = timer.getTime(),
+                    combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
+                },
+            }
+        end
         entry.manager:applyMSAMThreatDecision(entry, threatDecision)
     else
-        if shouldForceDeploy and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
+        if shouldForceDeploy and moveFireCapable ~= true and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
             entry.manager:pausePatrolForDeployment(entry, {
                 source = "sibling_coord",
                 contactName = family.activeGroupName or "sibling",
@@ -6692,6 +6911,16 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     member.lastRole = "passive"
     local entry = self:getMobilePatrolEntry(member.element)
     if family.passiveAction == "relocate" and entry and entry.kind == "MSAM" then
+        if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
+            member.passiveMode = "relocate"
+            if entry.state ~= "patrolling" then
+                entry.manager:beginPatrol(entry)
+            end
+            if previousPassiveMode ~= "relocate" then
+                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+            end
+            return
+        end
         if previousRole == "primary" or previousRole == "suppressed" then
             member.passiveMode = "relocate"
             if entry.manager and entry.manager.beginPatrol and entry.state ~= "patrolling" then
