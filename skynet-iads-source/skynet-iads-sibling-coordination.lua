@@ -327,6 +327,22 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
         return self:getDenialThreatDecision(family, preferredPrimary), true
     end
 
+    if family.mode == "ambush" then
+        local preferredPrimary = self:getPreferredPrimaryMember(family)
+        if preferredPrimary and self:isSuppressed(preferredPrimary) == false and self:canCover(preferredPrimary) then
+            local preferredEntry = self:getMobilePatrolEntry(preferredPrimary.element)
+            if preferredEntry and preferredEntry.kind == "MSAM" and preferredEntry.manager and preferredEntry.manager.findSAMThreatContact then
+                local preferredDecision = preferredEntry.manager:findSAMThreatContact(preferredEntry)
+                if preferredDecision then
+                    if preferredPrimary ~= member then
+                        return nil, false
+                    end
+                    return preferredDecision, true
+                end
+            end
+        end
+    end
+
     local bestMember, bestDecision = self:getBestAmbushThreatCandidate(family)
     if bestMember == nil then
         return nil, true
@@ -390,6 +406,25 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
         end
     end
 
+    if family.mode == "ambush" then
+        local preferredPrimary = self:getPreferredPrimaryMember(family)
+        if preferredPrimary and self:isSuppressed(preferredPrimary) == false and self:canCover(preferredPrimary) then
+            local preferredEntry = self:getMobilePatrolEntry(preferredPrimary.element)
+            if preferredEntry and preferredEntry.kind == "MSAM" and preferredEntry.manager and preferredEntry.manager.findSAMThreatContact then
+                local preferredDecision = preferredEntry.manager:findSAMThreatContact(preferredEntry)
+                if preferredDecision then
+                    return preferredPrimary, "preferred_trigger", preferredDecision
+                end
+            end
+        end
+        if preferredPrimary and self:isSuppressed(preferredPrimary) then
+            local coverMember = self:pickCoverMember(family, preferredPrimary.groupName)
+            if coverMember then
+                return coverMember, "cover_for_" .. preferredPrimary.groupName, nil
+            end
+        end
+    end
+
     for i = 1, #family.members do
         local member = family.members[i]
         if self:isSuppressed(member) == false and self:isEngaged(member) then
@@ -421,8 +456,21 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     local entry = self:getMobilePatrolEntry(member.element)
     local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
+    if entry and entry.combatCommitted == true and shouldForceDeploy ~= true and reason == "engaged" then
+        if switchedPrimary then
+            self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
+            self:notifyDebug(family.name .. " 主战切换 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+        end
+        family.activeGroupName = member.groupName
+        family.activeReason = reason
+        return
+    end
     if entry and entry.manager and entry.manager.applyMSAMThreatDecision then
         if threatDecision == nil then
+            local preferredTargetName = family.activeGroupName or family.name
+            if entry.lastDeployTrigger and entry.lastDeployTrigger.contactName then
+                preferredTargetName = entry.lastDeployTrigger.contactName
+            end
             threatDecision = {
                 shouldDeploy = moveFireCapable ~= true,
                 shouldGoLive = true,
@@ -430,7 +478,7 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
                 combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
                 triggerInfo = {
                     source = "sibling_coord",
-                    contactName = family.activeGroupName or family.name,
+                    contactName = preferredTargetName,
                     contactType = shouldForceDeploy and "sibling_cover" or "sibling_primary",
                     distanceNm = 0,
                     threatRangeNm = 0,
