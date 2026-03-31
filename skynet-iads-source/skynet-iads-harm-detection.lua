@@ -3,7 +3,7 @@ do
 SkynetIADSHARMDetection = {}
 SkynetIADSHARMDetection.__index = SkynetIADSHARMDetection
 
-SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS = 800
+SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS = 400
 
 function SkynetIADSHARMDetection:create(iads)
 	local harmDetection = {}
@@ -138,4 +138,3 @@ function SkynetIADSHARMDetection:getDetectionProbability(radars)
 end
 
 end
-
