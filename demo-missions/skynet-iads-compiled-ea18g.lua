@@ -5794,6 +5794,43 @@ function SkynetIADSMobilePatrol:buildDeployTriggerInfo(entry, contact, source)
 	}
 end
 
+function SkynetIADSMobilePatrol:buildAircraftUnitTriggerInfo(entry, unit, source, threatRangeMeters)
+	local radarPoint = self:getPatrolReferencePoint(entry)
+	local targetPoint = unit and unit.getPoint and unit:getPoint() or nil
+	local distanceNm = 0
+	local threatRangeNm = 0
+	if radarPoint and targetPoint then
+		distanceNm = mist.utils.metersToNM(mist.utils.get2DDist(radarPoint, targetPoint))
+	end
+	if threatRangeMeters and threatRangeMeters > 0 then
+		threatRangeNm = mist.utils.metersToNM(threatRangeMeters)
+	end
+	local targetName = "unknown"
+	local okName, unitName = pcall(function()
+		return unit:getName()
+	end)
+	if okName and unitName then
+		targetName = unitName
+	end
+	local targetType = "unknown"
+	local okType, typeName = pcall(function()
+		return unit:getTypeName()
+	end)
+	if okType and typeName then
+		targetType = typeName
+	end
+	return {
+		source = source or "direct_unit_scan",
+		time = timer.getTime(),
+		contactName = targetName,
+		contactType = targetType,
+		distanceNm = mist.utils.round(distanceNm, 1),
+		directDistanceNm = mist.utils.round(distanceNm, 1),
+		effectiveDistanceNm = mist.utils.round(distanceNm, 1),
+		threatRangeNm = mist.utils.round(threatRangeNm, 1),
+	}
+end
+
 function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 	local moveFireCapable = self:isMoveFireCapable(entry)
 	local profile = self:getMSAMCombatProfile(entry)
@@ -5838,6 +5875,27 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			shouldGoLive = shouldGoLive,
 			shouldWeaponHold = false,
 			combatMode = triggerInfo.combatMode,
+		}
+	end
+
+	if moveFireCapable then
+		local threatRangeMeters = self:getThreatRangeMeters(entry)
+		if threatRangeMeters <= 0 then
+			return nil
+		end
+		local directUnit, directUnitDistanceMeters = self:findNearestEnemyAircraftUnit(entry, threatRangeMeters)
+		if directUnit == nil then
+			return nil
+		end
+		local triggerInfo = self:buildAircraftUnitTriggerInfo(entry, directUnit, "direct_unit_scan", threatRangeMeters)
+		triggerInfo.engageRangeNm = mist.utils.round(mist.utils.metersToNM(threatRangeMeters), 1)
+		return {
+			contact = nil,
+			triggerInfo = triggerInfo,
+			shouldDeploy = false,
+			shouldGoLive = true,
+			shouldWeaponHold = false,
+			combatMode = "direct_unit_fire",
 		}
 	end
 
@@ -5955,6 +6013,11 @@ function SkynetIADSMobilePatrol:hasSAMCombatThreat(entry)
 	local combatRangeMeters = self:getCombatRangeMeters(entry)
 	if combatRangeMeters <= 0 then
 		return false
+	end
+
+	if self:isMoveFireCapable(entry) then
+		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
+		return directUnit ~= nil
 	end
 
 	local profile = self:getMSAMCombatProfile(entry)
