@@ -216,29 +216,6 @@ local function isAirContact(contact)
 	if contact == nil or contact.getDesc == nil then
 		return false
 	end
-	local representation = nil
-	local okRepresentation = pcall(function()
-		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
-	end)
-	if okRepresentation ~= true or representation == nil then
-		return false
-	end
-	if representation.isExist and representation:isExist() == false then
-		return false
-	end
-	local categoryId = nil
-	if representation.getCategory ~= nil then
-		local okCategory, resolvedCategoryId = pcall(function()
-			return representation:getCategory()
-		end)
-		if okCategory ~= true then
-			return false
-		end
-		categoryId = resolvedCategoryId
-	end
-	if categoryId ~= nil and categoryId ~= Object.Category.UNIT then
-		return false
-	end
 	local okDesc, desc = pcall(function()
 		return contact:getDesc() or {}
 	end)
@@ -599,12 +576,12 @@ function SkynetIADSMobilePatrol:announceCombatState(entry, threatDecision)
 		return
 	end
 	entry.debugLastCombatAnnouncementKey = announcementKey
-	local action = moveFireCapable and "机动警戒" or "进入警戒模式"
+	local action = moveFireCapable and "moving alert" or "deploy alert"
 	if shouldGoLive then
 		if moveFireCapable then
-			action = shouldWeaponHold and "机动锁定待射" or "机动交战"
+			action = shouldWeaponHold and "moving track" or "moving engage"
 		else
-			action = shouldWeaponHold and "进入锁定待射" or "进入战斗模式"
+			action = shouldWeaponHold and "track hold" or "engage fire"
 		end
 	end
 	if triggerInfo.distanceNm ~= nil then
@@ -1223,7 +1200,11 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		end
 
 		local inEngageRange = effectiveDistanceMeters <= profile.engageRangeMeters
-		local hasFireQualityContact = contact ~= nil and contactDistanceMeters <= profile.engageRangeMeters
+		local hasFireQualityContact = (
+			(contact ~= nil and contactDistanceMeters <= profile.engageRangeMeters)
+			or
+			(directUnit ~= nil and directUnitDistanceMeters <= profile.engageRangeMeters)
+		)
 		local shouldGoLive = inEngageRange
 		local shouldWeaponHold = inEngageRange and hasFireQualityContact ~= true
 		local triggerInfo = nil
@@ -1238,7 +1219,7 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			triggerInfo = self:buildAircraftUnitTriggerInfo(
 				entry,
 				directUnit,
-				(inEngageRange and "direct_unit_track" or "direct_unit_alert"),
+				(inEngageRange and "direct_unit_engage" or "direct_unit_alert"),
 				profile.alertRangeMeters
 			)
 			triggerInfo.contactDistanceNm = nil
@@ -1535,7 +1516,7 @@ function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 		local targetName = triggerInfo and triggerInfo.contactName or "unknown"
 		self:notifyDebug(
 			entry.groupName
-			.. " 停车展开 | mode="
+			.. " deploy and hold | mode="
 			.. tostring(deployMode)
 			.. " | target="
 			.. tostring(targetName)
@@ -1560,7 +1541,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
 	self:issuePatrolRoute(entry)
 	if previousState ~= "patrolling" then
-		self:notifyDebug(entry.groupName .. " 恢复巡逻")
+		self:notifyDebug(entry.groupName .. " resume patrol")
 	end
 end
 
@@ -1628,7 +1609,7 @@ function SkynetIADSMobilePatrol:handleDeployScatterState(entry)
 		entry.deployScatterDeadline = 0
 		entry.deployScatterMinimumCompletionMeters = 0
 		self:log("Deploy scatter complete for "..entry.groupName.." | moved="..mist.utils.round(movedDistance, 0).."m")
-		self:notifyDebug(entry.groupName .. " 散开完成，进入战斗展开")
+		self:notifyDebug(entry.groupName .. " deploy scatter complete -> deployed")
 		return true
 	end
 	if timedOut then
@@ -1656,6 +1637,21 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.state = "patrolling"
 		entry.combatMode = "harm_silent"
 		entry.noThreatSince = nil
+		if entry.nextPatrolRefreshTime and timer.getTime() >= entry.nextPatrolRefreshTime then
+			forceElementIntoPatrolDarkState(entry.element)
+			self:log("Patrol refresh reissued for "..entry.groupName.." | delayed startup refresh (harm_silent)")
+			self:issuePatrolRoute(entry)
+			table.remove(entry.patrolRefreshDelays, 1)
+			if #entry.patrolRefreshDelays > 0 then
+				entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
+			else
+				entry.nextPatrolRefreshTime = nil
+			end
+		end
+		if self:shouldReissuePatrolRoute(entry) then
+			self:log("Patrol route reissued for "..entry.groupName.." | stationary during harm_silent")
+			self:issuePatrolRoute(entry)
+		end
 		return
 	end
 
@@ -2104,9 +2100,10 @@ function SkynetIADSMobilePatrol.installHooks()
 		element.harmReactionLockUntil = now + element.harmReactionCooldownSeconds
 		element.minHarmShutdownTime = element:calculateMinimalShutdownTimeInSeconds(timeToImpact)
 		element.maxHarmShutDownTime = element:calculateMaximalShutdownTimeInSeconds(element.minHarmShutdownTime)
-		element.harmShutdownTime = element:calculateHARMShutdownTime()
+		local calculatedShutdownTime = element:calculateHARMShutdownTime()
+		element.harmShutdownTime = math.max(6, math.min(18, calculatedShutdownTime))
 		if element.iads:getDebugSettings().harmDefence then
-			element.iads:printOutputToLog("HARM DEFENCE SHUTDOWN + CONTINUE MOVING: "..element:getDCSName().." | FOR: "..element.harmShutdownTime.." seconds | TTI: "..timeToImpact)
+			element.iads:printOutputToLog("HARM DEFENCE SHUTDOWN + CONTINUE MOVING: "..element:getDCSName().." | FOR: "..element.harmShutdownTime.." seconds | RAW: "..calculatedShutdownTime.." seconds | TTI: "..timeToImpact)
 		end
 		element.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {element}, timer.getTime() + element.harmShutdownTime, 1)
 		setElementMovingSilenceState(element)
@@ -2138,7 +2135,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			entry.debugHarmActive = true
 			entry.debugLastCombatAnnouncementKey = nil
 			if shouldAnnounce and entry.manager and entry.manager.notifyDebug then
-				entry.manager:notifyDebug(entry.groupName .. " 进入HARM规避")
+				entry.manager:notifyDebug(entry.groupName .. " enter HARM evasion")
 			end
 		end
 		if result ~= false and _G.redIADSSiblingCoordination and _G.redIADSSiblingCoordination.requestImmediateEvaluation then
@@ -2162,7 +2159,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			entry.debugHarmActive = false
 			entry.debugLastCombatAnnouncementKey = nil
 			if shouldAnnounce and entry.manager and entry.manager.notifyDebug then
-				entry.manager:notifyDebug(entry.groupName .. " HARM规避结束")
+				entry.manager:notifyDebug(entry.groupName .. " HARM evasion complete")
 			end
 		end
 		if _G.redIADSSiblingCoordination and _G.redIADSSiblingCoordination.requestImmediateEvaluation then

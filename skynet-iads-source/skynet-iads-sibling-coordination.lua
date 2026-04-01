@@ -210,6 +210,9 @@ function SkynetIADSSiblingCoordination:isSuppressed(member)
 end
 
 function SkynetIADSSiblingCoordination:isEngaged(member)
+    if member and member.forcedPassive == true then
+        return false
+    end
     local element = member.element
     local entry = self:getMobilePatrolEntry(element)
     if entry ~= nil then
@@ -503,23 +506,34 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     local entry = self:getMobilePatrolEntry(member.element)
     local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
-    if entry and entry.combatCommitted == true and shouldForceDeploy ~= true and reason == "engaged" then
+    local skipEngagedFastPath = false
+    local liveDecision = nil
+    if entry and entry.combatCommitted == true and entry.manager and entry.manager.findSAMThreatContact then
+        liveDecision = entry.manager:findSAMThreatContact(entry)
+        if liveDecision and liveDecision.shouldGoLive == true then
+            skipEngagedFastPath = true
+        end
+    end
+    if entry and entry.combatCommitted == true and shouldForceDeploy ~= true and reason == "engaged" and skipEngagedFastPath ~= true then
         if switchedPrimary then
             self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
-            self:notifyDebug(family.name .. " 主战切换 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+            self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
         end
         family.activeGroupName = member.groupName
         family.activeReason = reason
         return
     end
     if entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+        if threatDecision == nil and liveDecision ~= nil then
+            threatDecision = liveDecision
+        end
         if threatDecision == nil and entry.manager.findSAMThreatContact then
             threatDecision = entry.manager:findSAMThreatContact(entry)
         end
         if threatDecision == nil and shouldForceDeploy ~= true then
             if switchedPrimary then
                 self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
-                self:notifyDebug(family.name .. " 涓绘垬鍒囨崲 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+                self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
             end
             family.activeGroupName = member.groupName
             family.activeReason = reason
@@ -576,7 +590,7 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     end
     if switchedPrimary then
         self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
-        self:notifyDebug(family.name .. " 主战切换 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+        self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
     end
     family.activeGroupName = member.groupName
     family.activeReason = reason
@@ -588,7 +602,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
         member.lastRole = "suppressed"
         member.passiveMode = "suppressed"
         if previousPassiveMode ~= "suppressed" then
-            self:notifyDebug(member.groupName .. " 受压制待机 | family=" .. family.name)
+            self:notifyDebug(member.groupName .. " suppressed standby | family=" .. family.name)
         end
         return
     end
@@ -603,7 +617,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
                 entry.manager:beginPatrol(entry)
             end
             if previousPassiveMode ~= "relocate" then
-                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+                self:notifyDebug(member.groupName .. " relocate standby | family=" .. family.name)
             end
             return
         end
@@ -613,7 +627,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
                 entry.manager:beginPatrol(entry)
             end
             if previousPassiveMode ~= "relocate" then
-                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+                self:notifyDebug(member.groupName .. " relocate standby | family=" .. family.name)
             end
             return
         end
@@ -631,7 +645,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
         end
         forceElementIntoDarkStandby(member.element)
         if previousPassiveMode ~= "standby" then
-            self:notifyDebug(member.groupName .. " 部署待机 | family=" .. family.name)
+            self:notifyDebug(member.groupName .. " deployed standby | family=" .. family.name)
         end
         return
     end
@@ -641,7 +655,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
             entry.manager:beginPatrol(entry)
         end
         if previousPassiveMode ~= "relocate" then
-            self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+            self:notifyDebug(member.groupName .. " relocate standby | family=" .. family.name)
         end
         return
     end
@@ -651,7 +665,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     end
     forceElementIntoDarkStandby(member.element)
     if previousPassiveMode ~= "hold_dark" then
-        self:notifyDebug(member.groupName .. " 黑灯待命 | family=" .. family.name)
+        self:notifyDebug(member.groupName .. " dark standby | family=" .. family.name)
     end
 end
 
@@ -669,7 +683,7 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
             entry.manager:beginPatrol(entry)
         end
         if previousRole ~= "released" then
-            self:notifyDebug(member.groupName .. " 解除兄弟约束")
+            self:notifyDebug(member.groupName .. " sibling constraint released")
         end
         return
     end
@@ -679,7 +693,7 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
         member.element:goDark()
     end
     if previousRole ~= "released" then
-        self:notifyDebug(member.groupName .. " 解除兄弟约束")
+        self:notifyDebug(member.groupName .. " sibling constraint released")
     end
 end
 

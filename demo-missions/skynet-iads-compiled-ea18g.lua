@@ -3770,6 +3770,19 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 		end
 	end
 	local directTargetGroupName = harmContact and harmContact._skynetDirectTargetGroupName or nil
+	local mobileMoveFireCapable = false
+	local mobilePatrolClass = rawget(_G, "SkynetIADSMobilePatrol")
+	if mobilePatrolClass and mobilePatrolClass.getEntryForElement then
+		local okEntry, mobileEntry = pcall(function()
+			return mobilePatrolClass.getEntryForElement(self)
+		end)
+		if okEntry and mobileEntry and mobileEntry.manager and mobileEntry.manager.isMoveFireCapable then
+			local okMoveFire, canMoveFire = pcall(function()
+				return mobileEntry.manager:isMoveFireCapable(mobileEntry)
+			end)
+			mobileMoveFireCapable = okMoveFire and canMoveFire == true
+		end
+	end
 	if directTargetGroupName ~= nil and self:getDCSName() ~= directTargetGroupName then
 		return
 	end
@@ -3792,7 +3805,7 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 			distanceNM = mist.utils.metersToNM(self:getDistanceInMetersToContact(radarReference, harmContact:getPosition().p))
 		end
 		local secondsToImpact = self:getSecondsToImpact(distanceNM, speedKT)
-		if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+		if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 			self:goSilentToEvadeHARM(secondsToImpact)
 		end
 		return
@@ -3813,14 +3826,19 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 				-- when iterating through the radars, store shortest tti and work with that value??
 				--TODO: 使用tti而不是distanceNM？
 				-- 在遍历雷达时，存储最短tti并使用该值？？
-				if ( harmToSAMAspect < SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT and distanceNM < SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM ) then
+				local withinLookahead = distanceNM < SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM
+				local aspectGatePassed = harmToSAMAspect < SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT
+				if mobileMoveFireCapable and withinLookahead then
+					aspectGatePassed = true
+				end
+				if ( aspectGatePassed and withinLookahead ) then
 					self:addObjectIdentifiedAsHARM(harmContact)
 					if ( #self:getPointDefences() > 0 and self:pointDefencesGoLive() == true and self.iads:getDebugSettings().harmDefence ) then
 							self.iads:printOutputToLog("POINT DEFENCES GOING LIVE FOR: "..self:getDCSName().." | TTI: "..secondsToImpact)
 					end
 					--self.iads:printOutputToLog("Ignore HARM shutdown: "..tostring(self:shallIgnoreHARMShutdown()))
 					--self.iads:printOutputToLog("忽略HARM关闭："..tostring(self:shallIgnoreHARMShutdown()))
-					if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+					if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 						self:goSilentToEvadeHARM(secondsToImpact)
 						break
 					end
@@ -4029,11 +4047,19 @@ function SkynetIADSContact:getTypeName()
 	if self:isIdentifiedAsHARM() then
 		return SkynetIADSContact.HARM
 	end
-	if self:getDCSRepresentation() ~= nil then
-		local category = self:getDCSRepresentation():getCategory()
-		if category == Object.Category.UNIT then
-			return self.typeName
-		end
+	local representation = nil
+	local okRepresentation = pcall(function()
+		representation = self:getDCSRepresentation()
+	end)
+	if okRepresentation ~= true or representation == nil then
+		return "UNKNOWN"
+	end
+	local category = nil
+	local okCategory = pcall(function()
+		category = representation:getCategory()
+	end)
+	if okCategory == true and category == Object.Category.UNIT then
+		return self.typeName
 	end
 	return "UNKNOWN"
 end
@@ -4697,9 +4723,6 @@ function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
 	end
 
 	local categoryId = self:getContactCategory(contact)
-	if categoryId ~= Object.Category.WEAPON then
-		return false
-	end
 
 	local typeName = ""
 	local okType, resolvedTypeName = pcall(function()
@@ -4731,7 +4754,11 @@ function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
 	end
 
 	-- Generic high-speed weapon fallback.
-	return true
+	if categoryId == Object.Category.WEAPON then
+		return true
+	end
+
+	return false
 end
 
 function SkynetIADSHARMDetection:getDirectTargetElement(contact)
@@ -5137,29 +5164,6 @@ local function isAirContact(contact)
 	if contact == nil or contact.getDesc == nil then
 		return false
 	end
-	local representation = nil
-	local okRepresentation = pcall(function()
-		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
-	end)
-	if okRepresentation ~= true or representation == nil then
-		return false
-	end
-	if representation.isExist and representation:isExist() == false then
-		return false
-	end
-	local categoryId = nil
-	if representation.getCategory ~= nil then
-		local okCategory, resolvedCategoryId = pcall(function()
-			return representation:getCategory()
-		end)
-		if okCategory ~= true then
-			return false
-		end
-		categoryId = resolvedCategoryId
-	end
-	if categoryId ~= nil and categoryId ~= Object.Category.UNIT then
-		return false
-	end
 	local okDesc, desc = pcall(function()
 		return contact:getDesc() or {}
 	end)
@@ -5520,12 +5524,12 @@ function SkynetIADSMobilePatrol:announceCombatState(entry, threatDecision)
 		return
 	end
 	entry.debugLastCombatAnnouncementKey = announcementKey
-	local action = moveFireCapable and "机动警戒" or "进入警戒模式"
+	local action = moveFireCapable and "moving alert" or "deploy alert"
 	if shouldGoLive then
 		if moveFireCapable then
-			action = shouldWeaponHold and "机动锁定待射" or "机动交战"
+			action = shouldWeaponHold and "moving track" or "moving engage"
 		else
-			action = shouldWeaponHold and "进入锁定待射" or "进入战斗模式"
+			action = shouldWeaponHold and "track hold" or "engage fire"
 		end
 	end
 	if triggerInfo.distanceNm ~= nil then
@@ -6144,7 +6148,11 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		end
 
 		local inEngageRange = effectiveDistanceMeters <= profile.engageRangeMeters
-		local hasFireQualityContact = contact ~= nil and contactDistanceMeters <= profile.engageRangeMeters
+		local hasFireQualityContact = (
+			(contact ~= nil and contactDistanceMeters <= profile.engageRangeMeters)
+			or
+			(directUnit ~= nil and directUnitDistanceMeters <= profile.engageRangeMeters)
+		)
 		local shouldGoLive = inEngageRange
 		local shouldWeaponHold = inEngageRange and hasFireQualityContact ~= true
 		local triggerInfo = nil
@@ -6159,7 +6167,7 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			triggerInfo = self:buildAircraftUnitTriggerInfo(
 				entry,
 				directUnit,
-				(inEngageRange and "direct_unit_track" or "direct_unit_alert"),
+				(inEngageRange and "direct_unit_engage" or "direct_unit_alert"),
 				profile.alertRangeMeters
 			)
 			triggerInfo.contactDistanceNm = nil
@@ -6456,7 +6464,7 @@ function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 		local targetName = triggerInfo and triggerInfo.contactName or "unknown"
 		self:notifyDebug(
 			entry.groupName
-			.. " 停车展开 | mode="
+			.. " deploy and hold | mode="
 			.. tostring(deployMode)
 			.. " | target="
 			.. tostring(targetName)
@@ -6481,7 +6489,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
 	self:issuePatrolRoute(entry)
 	if previousState ~= "patrolling" then
-		self:notifyDebug(entry.groupName .. " 恢复巡逻")
+		self:notifyDebug(entry.groupName .. " resume patrol")
 	end
 end
 
@@ -6549,7 +6557,7 @@ function SkynetIADSMobilePatrol:handleDeployScatterState(entry)
 		entry.deployScatterDeadline = 0
 		entry.deployScatterMinimumCompletionMeters = 0
 		self:log("Deploy scatter complete for "..entry.groupName.." | moved="..mist.utils.round(movedDistance, 0).."m")
-		self:notifyDebug(entry.groupName .. " 散开完成，进入战斗展开")
+		self:notifyDebug(entry.groupName .. " deploy scatter complete -> deployed")
 		return true
 	end
 	if timedOut then
@@ -6577,6 +6585,21 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.state = "patrolling"
 		entry.combatMode = "harm_silent"
 		entry.noThreatSince = nil
+		if entry.nextPatrolRefreshTime and timer.getTime() >= entry.nextPatrolRefreshTime then
+			forceElementIntoPatrolDarkState(entry.element)
+			self:log("Patrol refresh reissued for "..entry.groupName.." | delayed startup refresh (harm_silent)")
+			self:issuePatrolRoute(entry)
+			table.remove(entry.patrolRefreshDelays, 1)
+			if #entry.patrolRefreshDelays > 0 then
+				entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
+			else
+				entry.nextPatrolRefreshTime = nil
+			end
+		end
+		if self:shouldReissuePatrolRoute(entry) then
+			self:log("Patrol route reissued for "..entry.groupName.." | stationary during harm_silent")
+			self:issuePatrolRoute(entry)
+		end
 		return
 	end
 
@@ -7025,9 +7048,10 @@ function SkynetIADSMobilePatrol.installHooks()
 		element.harmReactionLockUntil = now + element.harmReactionCooldownSeconds
 		element.minHarmShutdownTime = element:calculateMinimalShutdownTimeInSeconds(timeToImpact)
 		element.maxHarmShutDownTime = element:calculateMaximalShutdownTimeInSeconds(element.minHarmShutdownTime)
-		element.harmShutdownTime = element:calculateHARMShutdownTime()
+		local calculatedShutdownTime = element:calculateHARMShutdownTime()
+		element.harmShutdownTime = math.max(6, math.min(18, calculatedShutdownTime))
 		if element.iads:getDebugSettings().harmDefence then
-			element.iads:printOutputToLog("HARM DEFENCE SHUTDOWN + CONTINUE MOVING: "..element:getDCSName().." | FOR: "..element.harmShutdownTime.." seconds | TTI: "..timeToImpact)
+			element.iads:printOutputToLog("HARM DEFENCE SHUTDOWN + CONTINUE MOVING: "..element:getDCSName().." | FOR: "..element.harmShutdownTime.." seconds | RAW: "..calculatedShutdownTime.." seconds | TTI: "..timeToImpact)
 		end
 		element.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {element}, timer.getTime() + element.harmShutdownTime, 1)
 		setElementMovingSilenceState(element)
@@ -7059,7 +7083,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			entry.debugHarmActive = true
 			entry.debugLastCombatAnnouncementKey = nil
 			if shouldAnnounce and entry.manager and entry.manager.notifyDebug then
-				entry.manager:notifyDebug(entry.groupName .. " 进入HARM规避")
+				entry.manager:notifyDebug(entry.groupName .. " enter HARM evasion")
 			end
 		end
 		if result ~= false and _G.redIADSSiblingCoordination and _G.redIADSSiblingCoordination.requestImmediateEvaluation then
@@ -7083,7 +7107,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			entry.debugHarmActive = false
 			entry.debugLastCombatAnnouncementKey = nil
 			if shouldAnnounce and entry.manager and entry.manager.notifyDebug then
-				entry.manager:notifyDebug(entry.groupName .. " HARM规避结束")
+				entry.manager:notifyDebug(entry.groupName .. " HARM evasion complete")
 			end
 		end
 		if _G.redIADSSiblingCoordination and _G.redIADSSiblingCoordination.requestImmediateEvaluation then
@@ -7313,6 +7337,9 @@ function SkynetIADSSiblingCoordination:isSuppressed(member)
 end
 
 function SkynetIADSSiblingCoordination:isEngaged(member)
+    if member and member.forcedPassive == true then
+        return false
+    end
     local element = member.element
     local entry = self:getMobilePatrolEntry(element)
     if entry ~= nil then
@@ -7606,23 +7633,34 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     local entry = self:getMobilePatrolEntry(member.element)
     local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
-    if entry and entry.combatCommitted == true and shouldForceDeploy ~= true and reason == "engaged" then
+    local skipEngagedFastPath = false
+    local liveDecision = nil
+    if entry and entry.combatCommitted == true and entry.manager and entry.manager.findSAMThreatContact then
+        liveDecision = entry.manager:findSAMThreatContact(entry)
+        if liveDecision and liveDecision.shouldGoLive == true then
+            skipEngagedFastPath = true
+        end
+    end
+    if entry and entry.combatCommitted == true and shouldForceDeploy ~= true and reason == "engaged" and skipEngagedFastPath ~= true then
         if switchedPrimary then
             self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
-            self:notifyDebug(family.name .. " 主战切换 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+            self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
         end
         family.activeGroupName = member.groupName
         family.activeReason = reason
         return
     end
     if entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+        if threatDecision == nil and liveDecision ~= nil then
+            threatDecision = liveDecision
+        end
         if threatDecision == nil and entry.manager.findSAMThreatContact then
             threatDecision = entry.manager:findSAMThreatContact(entry)
         end
         if threatDecision == nil and shouldForceDeploy ~= true then
             if switchedPrimary then
                 self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
-                self:notifyDebug(family.name .. " 涓绘垬鍒囨崲 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+                self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
             end
             family.activeGroupName = member.groupName
             family.activeReason = reason
@@ -7679,7 +7717,7 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     end
     if switchedPrimary then
         self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
-        self:notifyDebug(family.name .. " 主战切换 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+        self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
     end
     family.activeGroupName = member.groupName
     family.activeReason = reason
@@ -7691,7 +7729,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
         member.lastRole = "suppressed"
         member.passiveMode = "suppressed"
         if previousPassiveMode ~= "suppressed" then
-            self:notifyDebug(member.groupName .. " 受压制待机 | family=" .. family.name)
+            self:notifyDebug(member.groupName .. " suppressed standby | family=" .. family.name)
         end
         return
     end
@@ -7706,7 +7744,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
                 entry.manager:beginPatrol(entry)
             end
             if previousPassiveMode ~= "relocate" then
-                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+                self:notifyDebug(member.groupName .. " relocate standby | family=" .. family.name)
             end
             return
         end
@@ -7716,7 +7754,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
                 entry.manager:beginPatrol(entry)
             end
             if previousPassiveMode ~= "relocate" then
-                self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+                self:notifyDebug(member.groupName .. " relocate standby | family=" .. family.name)
             end
             return
         end
@@ -7734,7 +7772,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
         end
         forceElementIntoDarkStandby(member.element)
         if previousPassiveMode ~= "standby" then
-            self:notifyDebug(member.groupName .. " 部署待机 | family=" .. family.name)
+            self:notifyDebug(member.groupName .. " deployed standby | family=" .. family.name)
         end
         return
     end
@@ -7744,7 +7782,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
             entry.manager:beginPatrol(entry)
         end
         if previousPassiveMode ~= "relocate" then
-            self:notifyDebug(member.groupName .. " 转移待机 | family=" .. family.name)
+            self:notifyDebug(member.groupName .. " relocate standby | family=" .. family.name)
         end
         return
     end
@@ -7754,7 +7792,7 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     end
     forceElementIntoDarkStandby(member.element)
     if previousPassiveMode ~= "hold_dark" then
-        self:notifyDebug(member.groupName .. " 黑灯待命 | family=" .. family.name)
+        self:notifyDebug(member.groupName .. " dark standby | family=" .. family.name)
     end
 end
 
@@ -7772,7 +7810,7 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
             entry.manager:beginPatrol(entry)
         end
         if previousRole ~= "released" then
-            self:notifyDebug(member.groupName .. " 解除兄弟约束")
+            self:notifyDebug(member.groupName .. " sibling constraint released")
         end
         return
     end
@@ -7782,7 +7820,7 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
         member.element:goDark()
     end
     if previousRole ~= "released" then
-        self:notifyDebug(member.groupName .. " 解除兄弟约束")
+        self:notifyDebug(member.groupName .. " sibling constraint released")
     end
 end
 
@@ -7931,7 +7969,6 @@ end
 trigger.action.outText("Skynet Sibling Coordination module loaded", 10)
 
 end
-
 
 do
 

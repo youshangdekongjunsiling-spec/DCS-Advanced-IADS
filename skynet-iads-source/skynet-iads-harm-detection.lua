@@ -44,9 +44,6 @@ function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
 	end
 
 	local categoryId = self:getContactCategory(contact)
-	if categoryId ~= Object.Category.WEAPON then
-		return false
-	end
 
 	local typeName = ""
 	local okType, resolvedTypeName = pcall(function()
@@ -78,7 +75,11 @@ function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
 	end
 
 	-- Generic high-speed weapon fallback.
-	return true
+	if categoryId == Object.Category.WEAPON then
+		return true
+	end
+
+	return false
 end
 
 function SkynetIADSHARMDetection:getDirectTargetElement(contact)

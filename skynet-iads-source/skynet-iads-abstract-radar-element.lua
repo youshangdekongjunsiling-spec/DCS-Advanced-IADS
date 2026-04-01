@@ -1241,6 +1241,19 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 		end
 	end
 	local directTargetGroupName = harmContact and harmContact._skynetDirectTargetGroupName or nil
+	local mobileMoveFireCapable = false
+	local mobilePatrolClass = rawget(_G, "SkynetIADSMobilePatrol")
+	if mobilePatrolClass and mobilePatrolClass.getEntryForElement then
+		local okEntry, mobileEntry = pcall(function()
+			return mobilePatrolClass.getEntryForElement(self)
+		end)
+		if okEntry and mobileEntry and mobileEntry.manager and mobileEntry.manager.isMoveFireCapable then
+			local okMoveFire, canMoveFire = pcall(function()
+				return mobileEntry.manager:isMoveFireCapable(mobileEntry)
+			end)
+			mobileMoveFireCapable = okMoveFire and canMoveFire == true
+		end
+	end
 	if directTargetGroupName ~= nil and self:getDCSName() ~= directTargetGroupName then
 		return
 	end
@@ -1263,7 +1276,7 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 			distanceNM = mist.utils.metersToNM(self:getDistanceInMetersToContact(radarReference, harmContact:getPosition().p))
 		end
 		local secondsToImpact = self:getSecondsToImpact(distanceNM, speedKT)
-		if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+		if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 			self:goSilentToEvadeHARM(secondsToImpact)
 		end
 		return
@@ -1284,14 +1297,19 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 				-- when iterating through the radars, store shortest tti and work with that value??
 				--TODO: 使用tti而不是distanceNM？
 				-- 在遍历雷达时，存储最短tti并使用该值？？
-				if ( harmToSAMAspect < SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT and distanceNM < SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM ) then
+				local withinLookahead = distanceNM < SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM
+				local aspectGatePassed = harmToSAMAspect < SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT
+				if mobileMoveFireCapable and withinLookahead then
+					aspectGatePassed = true
+				end
+				if ( aspectGatePassed and withinLookahead ) then
 					self:addObjectIdentifiedAsHARM(harmContact)
 					if ( #self:getPointDefences() > 0 and self:pointDefencesGoLive() == true and self.iads:getDebugSettings().harmDefence ) then
 							self.iads:printOutputToLog("POINT DEFENCES GOING LIVE FOR: "..self:getDCSName().." | TTI: "..secondsToImpact)
 					end
 					--self.iads:printOutputToLog("Ignore HARM shutdown: "..tostring(self:shallIgnoreHARMShutdown()))
 					--self.iads:printOutputToLog("忽略HARM关闭："..tostring(self:shallIgnoreHARMShutdown()))
-					if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+					if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 						self:goSilentToEvadeHARM(secondsToImpact)
 						break
 					end
