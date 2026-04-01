@@ -173,6 +173,7 @@ function SkynetIADSSiblingCoordination.getFamilyForElement(element)
         role = member.lastRole or "released",
         primaryGroupName = family.activeGroupName,
         preferredPrimaryGroupName = family.preferredPrimaryGroupName,
+        denialAlertDistanceNm = family.denialAlertDistanceNm,
         reason = family.activeReason,
         passiveAction = family.passiveAction,
         passiveMode = member.passiveMode,
@@ -219,7 +220,12 @@ function SkynetIADSSiblingCoordination:isEngaged(member)
                 or element:getNumberOfMissilesInFlight() > 0
             )
         end
-        return entry.state == "deployed" or element:getNumberOfMissilesInFlight() > 0
+        return (
+            entry.combatCommitted == true
+            or element.targetsInRange == true
+            or element:isActive()
+            or element:getNumberOfMissilesInFlight() > 0
+        )
     end
     return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
 end
@@ -312,6 +318,12 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
         if currentPrimary ~= member then
             return nil, false
         end
+        if family.mode == "denial" then
+            local denialThreatDecision = self:getDenialThreatDecision(family, currentPrimary)
+            if denialThreatDecision then
+                return denialThreatDecision, true
+            end
+        end
         local entry = self:getMobilePatrolEntry(member.element)
         if entry and entry.kind == "MSAM" and entry.manager and entry.manager.findSAMThreatContact then
             return entry.manager:findSAMThreatContact(entry), true
@@ -358,22 +370,57 @@ function SkynetIADSSiblingCoordination:getDenialThreatDecision(family, member)
     if entry == nil or entry.kind ~= "MSAM" or entry.manager == nil then
         return nil
     end
+    local moveFireCapable = entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local alertRangeMeters = mist.utils.NMToMeters(family.denialAlertDistanceNm or self.defaultDenialAlertDistanceNm)
-    local contact, distanceMeters = entry.manager:findNearestEligibleContact(entry, alertRangeMeters)
-    if contact == nil then
+    local directUnit = nil
+    local directUnitDistanceMeters = math.huge
+    if entry.manager.findNearestEnemyAircraftUnit then
+        directUnit, directUnitDistanceMeters = entry.manager:findNearestEnemyAircraftUnit(entry, alertRangeMeters)
+    end
+
+    local contact = nil
+    local contactDistanceMeters = math.huge
+    if entry.manager.findNearestEligibleContact then
+        contact, contactDistanceMeters = entry.manager:findNearestEligibleContact(entry, alertRangeMeters)
+    end
+
+    if directUnit == nil and contact == nil then
         return nil
     end
-    local triggerInfo = entry.manager:buildDeployTriggerInfo(entry, contact, "sibling_denial_alert")
-    triggerInfo.combatMode = "sibling_denial_alert"
+
+    local canGoLive = moveFireCapable or contact ~= nil
+    local combatMode = canGoLive and "sibling_denial_alert" or "sibling_denial_deploy"
+    local triggerInfo = nil
+    if directUnit ~= nil and entry.manager.buildAircraftUnitTriggerInfo then
+        triggerInfo = entry.manager:buildAircraftUnitTriggerInfo(entry, directUnit, "sibling_denial_alert", alertRangeMeters)
+    else
+        triggerInfo = entry.manager:buildDeployTriggerInfo(entry, contact, "sibling_denial_alert")
+        triggerInfo.distanceNm = mist.utils.round(mist.utils.metersToNM(contactDistanceMeters), 1)
+    end
+
+    triggerInfo.combatMode = combatMode
     triggerInfo.familyMode = family.mode
-    triggerInfo.distanceNm = mist.utils.round(mist.utils.metersToNM(distanceMeters), 1)
+    triggerInfo.denialAlertDistanceNm = family.denialAlertDistanceNm or self.defaultDenialAlertDistanceNm
+    triggerInfo.engageRangeNm = mist.utils.round(mist.utils.metersToNM(alertRangeMeters), 1)
+    if contact ~= nil and contactDistanceMeters < math.huge then
+        triggerInfo.contactDistanceNm = mist.utils.round(mist.utils.metersToNM(contactDistanceMeters), 1)
+    end
+    if directUnit ~= nil and directUnitDistanceMeters < math.huge then
+        triggerInfo.directDistanceNm = mist.utils.round(mist.utils.metersToNM(directUnitDistanceMeters), 1)
+        triggerInfo.effectiveDistanceNm = triggerInfo.directDistanceNm
+        triggerInfo.distanceNm = triggerInfo.directDistanceNm
+    elseif contactDistanceMeters < math.huge then
+        triggerInfo.effectiveDistanceNm = mist.utils.round(mist.utils.metersToNM(contactDistanceMeters), 1)
+        triggerInfo.distanceNm = triggerInfo.contactDistanceNm or triggerInfo.distanceNm
+    end
+
     return {
         contact = contact,
         triggerInfo = triggerInfo,
-        shouldDeploy = true,
-        shouldGoLive = true,
+        shouldDeploy = not moveFireCapable,
+        shouldGoLive = canGoLive,
         shouldWeaponHold = false,
-        combatMode = "sibling_denial_alert",
+        combatMode = combatMode,
     }
 end
 
@@ -466,26 +513,47 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
         return
     end
     if entry and entry.manager and entry.manager.applyMSAMThreatDecision then
+        if threatDecision == nil and entry.manager.findSAMThreatContact then
+            threatDecision = entry.manager:findSAMThreatContact(entry)
+        end
+        if threatDecision == nil and shouldForceDeploy ~= true then
+            if switchedPrimary then
+                self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
+                self:notifyDebug(family.name .. " 涓绘垬鍒囨崲 -> " .. member.groupName .. " | reason=" .. tostring(reason))
+            end
+            family.activeGroupName = member.groupName
+            family.activeReason = reason
+            return
+        end
         if threatDecision == nil then
             local preferredTargetName = family.activeGroupName or family.name
             if entry.lastDeployTrigger and entry.lastDeployTrigger.contactName then
                 preferredTargetName = entry.lastDeployTrigger.contactName
+            end
+            local syntheticTriggerInfo = entry.lastDeployTrigger and mist.utils.deepCopy(entry.lastDeployTrigger) or nil
+            if syntheticTriggerInfo == nil and entry.manager.findSAMThreatContact then
+                local inferredThreatDecision = entry.manager:findSAMThreatContact(entry)
+                if inferredThreatDecision and inferredThreatDecision.triggerInfo then
+                    syntheticTriggerInfo = mist.utils.deepCopy(inferredThreatDecision.triggerInfo)
+                end
             end
             threatDecision = {
                 shouldDeploy = moveFireCapable ~= true,
                 shouldGoLive = true,
                 shouldWeaponHold = false,
                 combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
-                triggerInfo = {
+                triggerInfo = syntheticTriggerInfo or {
                     source = "sibling_coord",
                     contactName = preferredTargetName,
                     contactType = shouldForceDeploy and "sibling_cover" or "sibling_primary",
-                    distanceNm = 0,
-                    threatRangeNm = 0,
                     time = timer.getTime(),
                     combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary",
                 },
             }
+            threatDecision.triggerInfo.source = threatDecision.triggerInfo.source or "sibling_coord"
+            threatDecision.triggerInfo.contactName = threatDecision.triggerInfo.contactName or preferredTargetName
+            threatDecision.triggerInfo.contactType = threatDecision.triggerInfo.contactType or (shouldForceDeploy and "sibling_cover" or "sibling_primary")
+            threatDecision.triggerInfo.combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary"
         end
         entry.manager:applyMSAMThreatDecision(entry, threatDecision)
     else

@@ -18,10 +18,65 @@ function SkynetIADSHARMDetection:setContacts(contacts)
 	self.contacts = contacts
 end
 
+function SkynetIADSHARMDetection:getDirectTargetElement(contact)
+	local representation = nil
+	local okRepresentation = pcall(function()
+		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+	end)
+	if okRepresentation ~= true or representation == nil or representation.getTarget == nil then
+		return nil
+	end
+
+	local target = nil
+	local okTarget = pcall(function()
+		target = representation:getTarget()
+	end)
+	if okTarget ~= true or target == nil then
+		return nil
+	end
+
+	local group = nil
+	local okGroup = pcall(function()
+		group = target.getGroup and target:getGroup() or nil
+	end)
+	if okGroup == true and group and group.getName then
+		local okGroupName, groupName = pcall(function()
+			return group:getName()
+		end)
+		if okGroupName and groupName then
+			local samSite = self.iads:getSAMSiteByGroupName(groupName)
+			if samSite then
+				return samSite
+			end
+		end
+	end
+
+	local targetName = nil
+	local okTargetName = pcall(function()
+		targetName = target.getName and target:getName() or nil
+	end)
+	if okTargetName == true and targetName then
+		local ewRadar = self.iads:getEarlyWarningRadarByUnitName(targetName)
+		if ewRadar then
+			return ewRadar
+		end
+	end
+
+	return nil
+end
+
 function SkynetIADSHARMDetection:evaluateContacts()
 	self:cleanAgedContacts()
 	for i = 1, #self.contacts do
-		local contact = self.contacts[i]	
+		local contact = self.contacts[i]
+		local directTargetElement = self:getDirectTargetElement(contact)
+		local hasDirectTarget = directTargetElement ~= nil
+		if hasDirectTarget then
+			contact._skynetDirectTargetGroupName = directTargetElement:getDCSName()
+			contact:setHARMState(SkynetIADSContact.HARM)
+		else
+			contact._skynetDirectTargetGroupName = nil
+		end
 		local groundSpeed  = contact:getGroundSpeedInKnots(0)
 		--if a contact has only been hit by a radar once it's speed is 0
 		--如果接触只被雷达击中一次，其速度为0
@@ -34,7 +89,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		--self.iads:printOutputToLog(contact:getName().." ground speed: "..groundSpeed)
 		--self.iads:printOutputToLog(contact:getName().." 要评估的新雷达："..#newRadarsToEvaluate)
 		--self.iads:printOutputToLog(contact:getName().." 地面速度："..groundSpeed)
-		if ( #newRadarsToEvaluate > 0 and contact:isIdentifiedAsHARM() == false and ( groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS and #simpleAltitudeProfile <= 2 ) ) then
+		if ( hasDirectTarget == false and #newRadarsToEvaluate > 0 and contact:isIdentifiedAsHARM() == false and ( groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS and #simpleAltitudeProfile <= 2 ) ) then
 			local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
 			--self.iads:printOutputToLog("DETECTION PROB: "..detectionProbability)
 			--self.iads:printOutputToLog("检测概率："..detectionProbability)
@@ -51,7 +106,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			end
 		end
 		
-		if ( #simpleAltitudeProfile > 2 and contact:isIdentifiedAsHARM() ) then
+		if ( hasDirectTarget == false and #simpleAltitudeProfile > 2 and contact:isIdentifiedAsHARM() ) then
 			contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
 			if (self.iads:getDebugSettings().harmDefence ) then
 				self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())

@@ -220,13 +220,23 @@ local function isAirContact(contact)
 	local okRepresentation = pcall(function()
 		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
 	end)
-	if okRepresentation ~= true or representation == nil or representation.getCategory == nil then
+	if okRepresentation ~= true or representation == nil then
 		return false
 	end
-	local okCategory, categoryId = pcall(function()
-		return representation:getCategory()
-	end)
-	if okCategory ~= true or categoryId ~= Object.Category.UNIT then
+	if representation.isExist and representation:isExist() == false then
+		return false
+	end
+	local categoryId = nil
+	if representation.getCategory ~= nil then
+		local okCategory, resolvedCategoryId = pcall(function()
+			return representation:getCategory()
+		end)
+		if okCategory ~= true then
+			return false
+		end
+		categoryId = resolvedCategoryId
+	end
+	if categoryId ~= nil and categoryId ~= Object.Category.UNIT then
 		return false
 	end
 	local okDesc, desc = pcall(function()
@@ -487,7 +497,7 @@ local function forceElementIntoPatrolDarkState(element)
 		end)
 		applyPatrolOptionsToRepresentation(representation)
 	end
-	local controller = element:getController and element:getController() or nil
+	local controller = element.getController and element:getController() or nil
 	if controller then
 		pcall(function()
 			controller:setOnOff(true)
@@ -541,6 +551,43 @@ function SkynetIADSMobilePatrol:announceCombatState(entry, threatDecision)
 	local shouldGoLive = threatDecision.shouldGoLive == true
 	local shouldWeaponHold = threatDecision.shouldWeaponHold == true
 	local moveFireCapable = self:isMoveFireCapable(entry)
+	if entry.kind == "MSAM" then
+		local debugRangeMeters = self:getDeployTriggerRangeMeters(entry)
+		if triggerInfo.engageRangeNm == nil then
+			local combatRangeMeters = self:getCombatRangeMeters(entry)
+			if combatRangeMeters and combatRangeMeters > 0 then
+				triggerInfo.engageRangeNm = mist.utils.round(mist.utils.metersToNM(combatRangeMeters), 1)
+			end
+		end
+		if triggerInfo.directDistanceNm == nil and debugRangeMeters and debugRangeMeters > 0 then
+			local directUnit, directUnitDistanceMeters = self:findNearestEnemyAircraftUnit(entry, debugRangeMeters)
+			if directUnit ~= nil and directUnitDistanceMeters < math.huge then
+				triggerInfo.directDistanceNm = mist.utils.round(mist.utils.metersToNM(directUnitDistanceMeters), 1)
+				if triggerInfo.contactName == nil or triggerInfo.contactName == "unknown" then
+					local okDirectName, directName = pcall(function()
+						return directUnit:getName()
+					end)
+					if okDirectName and directName then
+						triggerInfo.contactName = directName
+						targetName = directName
+					end
+				end
+			end
+		end
+		if triggerInfo.distanceNm == nil and debugRangeMeters and debugRangeMeters > 0 then
+			local debugContact, contactDistanceMeters = self:findNearestEligibleContact(entry, debugRangeMeters)
+			if debugContact ~= nil and contactDistanceMeters < math.huge then
+				triggerInfo.distanceNm = mist.utils.round(mist.utils.metersToNM(contactDistanceMeters), 1)
+				if triggerInfo.contactName == nil or triggerInfo.contactName == "unknown" then
+					triggerInfo.contactName = self:getContactName(debugContact)
+					targetName = triggerInfo.contactName
+				end
+			end
+		end
+		if triggerInfo.effectiveDistanceNm == nil then
+			triggerInfo.effectiveDistanceNm = triggerInfo.directDistanceNm or triggerInfo.distanceNm
+		end
+	end
 	local announcementKey = table.concat({
 		tostring(mode),
 		tostring(shouldGoLive),
@@ -571,6 +618,9 @@ function SkynetIADSMobilePatrol:announceCombatState(entry, threatDecision)
 	end
 	if triggerInfo.engageRangeNm ~= nil then
 		distanceDetails = distanceDetails .. " | engage=" .. tostring(triggerInfo.engageRangeNm) .. "nm"
+	end
+	if triggerInfo.source ~= nil then
+		distanceDetails = distanceDetails .. " | source=" .. tostring(triggerInfo.source)
 	end
 	self:notifyDebug(
 		entry.groupName
@@ -1030,7 +1080,13 @@ end
 
 function SkynetIADSMobilePatrol:getContactDistanceMeters(entry, contact)
 	local radarPoint = self:getPatrolReferencePoint(entry)
-	local targetPoint = contact and contact.getPosition and contact:getPosition().p or nil
+	local targetPoint = nil
+	if contact and contact.getPosition then
+		pcall(function()
+			local position = contact:getPosition()
+			targetPoint = position and position.p or nil
+		end)
+	end
 	if radarPoint and targetPoint then
 		return mist.utils.get2DDist(radarPoint, targetPoint)
 	end
@@ -1075,7 +1131,13 @@ end
 
 function SkynetIADSMobilePatrol:buildDeployTriggerInfo(entry, contact, source)
 	local radarPoint = self:getPatrolReferencePoint(entry)
-	local targetPoint = contact and contact.getPosition and contact:getPosition().p or nil
+	local targetPoint = nil
+	if contact and contact.getPosition then
+		pcall(function()
+			local position = contact:getPosition()
+			targetPoint = position and position.p or nil
+		end)
+	end
 	local distanceNm = 0
 	local threatRangeNm = 0
 	if radarPoint and targetPoint then
@@ -1144,26 +1206,44 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 	local moveFireCapable = self:isMoveFireCapable(entry)
 	local profile = self:getMSAMCombatProfile(entry)
 	if profile then
-		local contact, distanceMeters = self:findNearestEligibleContact(entry, profile.alertRangeMeters)
-		if contact == nil then
+		local contact, contactDistanceMeters = self:findNearestEligibleContact(entry, profile.alertRangeMeters)
+		local directUnit, directUnitDistanceMeters = self:findNearestEnemyAircraftUnit(entry, profile.alertRangeMeters)
+		if contact == nil and directUnit == nil then
 			return nil
 		end
-		local effectiveDistanceMeters = distanceMeters
-		local directUnit = nil
-		local directUnitDistanceMeters = math.huge
-		if entry.state ~= "patrolling" then
-			directUnit, directUnitDistanceMeters = self:findNearestEnemyAircraftUnit(entry, profile.engageRangeMeters)
-			if directUnit ~= nil and directUnitDistanceMeters < effectiveDistanceMeters then
-				effectiveDistanceMeters = directUnitDistanceMeters
-			end
+		local effectiveDistanceMeters = math.huge
+		if contact ~= nil and contactDistanceMeters < effectiveDistanceMeters then
+			effectiveDistanceMeters = contactDistanceMeters
 		end
-		local shouldGoLive = effectiveDistanceMeters <= profile.engageRangeMeters
-		local triggerInfo = self:buildDeployTriggerInfo(
-			entry,
-			contact,
-			shouldGoLive and "contact_scan_engage" or "contact_scan_alert"
-		)
-		triggerInfo.contactDistanceNm = triggerInfo.distanceNm
+		if directUnit ~= nil and directUnitDistanceMeters < effectiveDistanceMeters then
+			effectiveDistanceMeters = directUnitDistanceMeters
+		end
+		if effectiveDistanceMeters == math.huge then
+			return nil
+		end
+
+		local inEngageRange = effectiveDistanceMeters <= profile.engageRangeMeters
+		local hasFireQualityContact = contact ~= nil and contactDistanceMeters <= profile.engageRangeMeters
+		local shouldGoLive = inEngageRange
+		local shouldWeaponHold = inEngageRange and hasFireQualityContact ~= true
+		local triggerInfo = nil
+		if contact ~= nil then
+			triggerInfo = self:buildDeployTriggerInfo(
+				entry,
+				contact,
+				(hasFireQualityContact and "contact_scan_engage" or "contact_scan_alert")
+			)
+			triggerInfo.contactDistanceNm = triggerInfo.distanceNm
+		else
+			triggerInfo = self:buildAircraftUnitTriggerInfo(
+				entry,
+				directUnit,
+				(inEngageRange and "direct_unit_track" or "direct_unit_alert"),
+				profile.alertRangeMeters
+			)
+			triggerInfo.contactDistanceNm = nil
+		end
+
 		triggerInfo.directDistanceNm = nil
 		if directUnit ~= nil and directUnitDistanceMeters < math.huge then
 			triggerInfo.directDistanceNm = mist.utils.round(mist.utils.metersToNM(directUnitDistanceMeters), 1)
@@ -1176,13 +1256,17 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		end
 		triggerInfo.effectiveDistanceNm = mist.utils.round(mist.utils.metersToNM(effectiveDistanceMeters), 1)
 		triggerInfo.engageRangeNm = mist.utils.round(mist.utils.metersToNM(profile.engageRangeMeters), 1)
-		triggerInfo.combatMode = shouldGoLive and "engage_fire" or "alert_hold"
+		if inEngageRange then
+			triggerInfo.combatMode = hasFireQualityContact and "engage_fire" or "engage_track"
+		else
+			triggerInfo.combatMode = "alert_hold"
+		end
 		return {
 			contact = contact,
 			triggerInfo = triggerInfo,
 			shouldDeploy = moveFireCapable ~= true,
 			shouldGoLive = shouldGoLive,
-			shouldWeaponHold = false,
+			shouldWeaponHold = shouldWeaponHold,
 			combatMode = triggerInfo.combatMode,
 		}
 	end
@@ -1325,6 +1409,38 @@ function SkynetIADSMobilePatrol:hasSAMCombatThreat(entry)
 	local combatRangeMeters = self:getCombatRangeMeters(entry)
 	if combatRangeMeters <= 0 then
 		return false
+	end
+
+	local siblingInfo = self:getSiblingInfo(entry)
+	if siblingInfo ~= nil and siblingInfo.mode == "denial" and siblingInfo.role == "primary" then
+		local denialRangeMeters = mist.utils.NMToMeters(
+			siblingInfo.denialAlertDistanceNm
+			or self.sa11MSAMAlertDistanceNm
+			or SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ALERT_DISTANCE_NM
+		)
+		local directUnit = self:findNearestEnemyAircraftUnit(entry, denialRangeMeters)
+		if directUnit ~= nil then
+			return true
+		end
+		local contacts = self.iads:getContacts()
+		for i = 1, #contacts do
+			local contact = contacts[i]
+			if contact
+				and isAirContact(contact)
+				and contact:isIdentifiedAsHARM() == false
+				and entry.element:areGoLiveConstraintsSatisfied(contact)
+				and self:getContactDistanceMeters(entry, contact) <= denialRangeMeters then
+				return true
+			end
+		end
+	end
+
+	local profile = self:getMSAMCombatProfile(entry)
+	if profile then
+		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
+		if directUnit ~= nil then
+			return true
+		end
 	end
 
 	if self:isMoveFireCapable(entry) then
@@ -1891,18 +2007,26 @@ function SkynetIADSMobilePatrol.installHooks()
 		local hadTargetInRange = self.targetsInRange == true
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
+		if entry and entry.kind == "MSAM" and isAirContact(contact) == false then
+			return nil
+		end
 		if entry and entry.kind == "MSAM" then
 			local profile = entry.manager:getMSAMCombatProfile(entry)
 			if profile and isAirContact(contact) and contact:isIdentifiedAsHARM() == false and self:areGoLiveConstraintsSatisfied(contact) == true then
-				local distanceMeters = entry.manager:getContactDistanceMeters(entry, contact)
-				if distanceMeters <= profile.alertRangeMeters then
+				local contactDistanceMeters = entry.manager:getContactDistanceMeters(entry, contact)
+				local directUnit, directUnitDistanceMeters = entry.manager:findNearestEnemyAircraftUnit(entry, profile.alertRangeMeters)
+				local effectiveDistanceMeters = contactDistanceMeters
+				if directUnit ~= nil and directUnitDistanceMeters < effectiveDistanceMeters then
+					effectiveDistanceMeters = directUnitDistanceMeters
+				end
+				if effectiveDistanceMeters <= profile.alertRangeMeters then
 					if entry.state == "patrolling" and moveFireCapable ~= true then
 						entry.manager:pausePatrolForDeployment(
 							entry,
 							entry.manager:buildDeployTriggerInfo(entry, contact, "inform_of_contact_alert")
 						)
 					end
-					if distanceMeters <= profile.engageRangeMeters then
+					if effectiveDistanceMeters <= profile.engageRangeMeters then
 						return originalSAMInformOfContact(self, contact)
 					end
 					return

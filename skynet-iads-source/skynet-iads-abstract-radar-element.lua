@@ -1240,7 +1240,35 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 			return
 		end
 	end
+	local directTargetGroupName = harmContact and harmContact._skynetDirectTargetGroupName or nil
+	if directTargetGroupName ~= nil and self:getDCSName() ~= directTargetGroupName then
+		return
+	end
 	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
+		return
+	end
+	if directTargetGroupName ~= nil and self:getDCSName() == directTargetGroupName then
+		self:addObjectIdentifiedAsHARM(harmContact)
+		local speedKT = harmContact:getGroundSpeedInKnots(0)
+		local radarReference = nil
+		local radars = self:getRadars()
+		for i = 1, #radars do
+			if radars[i]:isExist() then
+				radarReference = radars[i]
+				break
+			end
+		end
+		if radarReference == nil then
+			radarReference = self:getDCSRepresentation()
+		end
+		local distanceNM = 0
+		if radarReference and radarReference.isExist and radarReference:isExist() then
+			distanceNM = mist.utils.metersToNM(self:getDistanceInMetersToContact(radarReference, harmContact:getPosition().p))
+		end
+		local secondsToImpact = self:getSecondsToImpact(distanceNM, speedKT)
+		if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+			self:goSilentToEvadeHARM(secondsToImpact)
+		end
 		return
 	end
 	local radars = self:getRadars()
