@@ -3773,9 +3773,6 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 	if directTargetGroupName ~= nil and self:getDCSName() ~= directTargetGroupName then
 		return
 	end
-	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
-		return
-	end
 	if directTargetGroupName ~= nil and self:getDCSName() == directTargetGroupName then
 		self:addObjectIdentifiedAsHARM(harmContact)
 		local speedKT = harmContact:getGroundSpeedInKnots(0)
@@ -3798,6 +3795,9 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 		if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 			self:goSilentToEvadeHARM(secondsToImpact)
 		end
+		return
+	end
+	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
 		return
 	end
 	local radars = self:getRadars()
@@ -4671,6 +4671,69 @@ function SkynetIADSHARMDetection:setContacts(contacts)
 	self.contacts = contacts
 end
 
+function SkynetIADSHARMDetection:getContactCategory(contact)
+	local representation = nil
+	local okRepresentation = pcall(function()
+		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+	end)
+	if okRepresentation ~= true or representation == nil or representation.getCategory == nil then
+		return nil
+	end
+	local okCategory, categoryId = pcall(function()
+		return representation:getCategory()
+	end)
+	if okCategory ~= true then
+		return nil
+	end
+	return categoryId
+end
+
+function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
+	if contact == nil then
+		return false
+	end
+	if groundSpeed == nil or groundSpeed <= SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS then
+		return false
+	end
+
+	local categoryId = self:getContactCategory(contact)
+	if categoryId ~= Object.Category.WEAPON then
+		return false
+	end
+
+	local typeName = ""
+	local okType, resolvedTypeName = pcall(function()
+		return contact.getTypeName and contact:getTypeName() or ""
+	end)
+	if okType == true and resolvedTypeName ~= nil then
+		typeName = string.upper(resolvedTypeName)
+	end
+
+	local threatPatterns = {
+		"HARM",
+		"AARGM",
+		"ALARM",
+		"KH%-31P",
+		"KH31P",
+		"KH%-58",
+		"KH58",
+		"JSOW",
+		"JDAM",
+		"GBU%-31",
+		"GBU%-32",
+		"GBU%-38",
+		"GBU%-54",
+	}
+	for i = 1, #threatPatterns do
+		if string.find(typeName, threatPatterns[i]) then
+			return true
+		end
+	end
+
+	-- Generic high-speed weapon fallback.
+	return true
+end
+
 function SkynetIADSHARMDetection:getDirectTargetElement(contact)
 	local representation = nil
 	local okRepresentation = pcall(function()
@@ -4722,6 +4785,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 	self:cleanAgedContacts()
 	for i = 1, #self.contacts do
 		local contact = self.contacts[i]
+		if contact ~= nil then
 		local directTargetElement = self:getDirectTargetElement(contact)
 		local hasDirectTarget = directTargetElement ~= nil
 		if hasDirectTarget then
@@ -4731,6 +4795,13 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			contact._skynetDirectTargetGroupName = nil
 		end
 		local groundSpeed  = contact:getGroundSpeedInKnots(0)
+		local likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed)
+		if hasDirectTarget == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
+			contact:setHARMState(SkynetIADSContact.HARM)
+			if (self.iads:getDebugSettings().harmDefence ) then
+				self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
+			end
+		end
 		--if a contact has only been hit by a radar once it's speed is 0
 		--如果接触只被雷达击中一次，其速度为0
 		if groundSpeed == 0 then
@@ -4742,7 +4813,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		--self.iads:printOutputToLog(contact:getName().." ground speed: "..groundSpeed)
 		--self.iads:printOutputToLog(contact:getName().." 要评估的新雷达："..#newRadarsToEvaluate)
 		--self.iads:printOutputToLog(contact:getName().." 地面速度："..groundSpeed)
-		if ( hasDirectTarget == false and #newRadarsToEvaluate > 0 and contact:isIdentifiedAsHARM() == false and ( groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS and #simpleAltitudeProfile <= 2 ) ) then
+		if ( hasDirectTarget == false and likelyWeaponThreat == false and #newRadarsToEvaluate > 0 and contact:isIdentifiedAsHARM() == false and ( groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS and #simpleAltitudeProfile <= 2 ) ) then
 			local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
 			--self.iads:printOutputToLog("DETECTION PROB: "..detectionProbability)
 			--self.iads:printOutputToLog("检测概率："..detectionProbability)
@@ -4759,7 +4830,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			end
 		end
 		
-		if ( hasDirectTarget == false and #simpleAltitudeProfile > 2 and contact:isIdentifiedAsHARM() ) then
+		if ( hasDirectTarget == false and likelyWeaponThreat == false and #simpleAltitudeProfile > 2 and contact:isIdentifiedAsHARM() ) then
 			contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
 			if (self.iads:getDebugSettings().harmDefence ) then
 				self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
@@ -4768,6 +4839,7 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		
 		if ( contact:isIdentifiedAsHARM() ) then
 			self:informRadarsOfHARM(contact)
+		end
 		end
 	end
 end
@@ -6071,20 +6143,23 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			return nil
 		end
 
-		local shouldGoLive = contact ~= nil and effectiveDistanceMeters <= profile.engageRangeMeters
+		local inEngageRange = effectiveDistanceMeters <= profile.engageRangeMeters
+		local hasFireQualityContact = contact ~= nil and contactDistanceMeters <= profile.engageRangeMeters
+		local shouldGoLive = inEngageRange
+		local shouldWeaponHold = inEngageRange and hasFireQualityContact ~= true
 		local triggerInfo = nil
 		if contact ~= nil then
 			triggerInfo = self:buildDeployTriggerInfo(
 				entry,
 				contact,
-				shouldGoLive and "contact_scan_engage" or "contact_scan_alert"
+				(hasFireQualityContact and "contact_scan_engage" or "contact_scan_alert")
 			)
 			triggerInfo.contactDistanceNm = triggerInfo.distanceNm
 		else
 			triggerInfo = self:buildAircraftUnitTriggerInfo(
 				entry,
 				directUnit,
-				shouldGoLive and "direct_unit_engage" or "direct_unit_alert",
+				(inEngageRange and "direct_unit_track" or "direct_unit_alert"),
 				profile.alertRangeMeters
 			)
 			triggerInfo.contactDistanceNm = nil
@@ -6102,13 +6177,17 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		end
 		triggerInfo.effectiveDistanceNm = mist.utils.round(mist.utils.metersToNM(effectiveDistanceMeters), 1)
 		triggerInfo.engageRangeNm = mist.utils.round(mist.utils.metersToNM(profile.engageRangeMeters), 1)
-		triggerInfo.combatMode = shouldGoLive and "engage_fire" or "alert_hold"
+		if inEngageRange then
+			triggerInfo.combatMode = hasFireQualityContact and "engage_fire" or "engage_track"
+		else
+			triggerInfo.combatMode = "alert_hold"
+		end
 		return {
 			contact = contact,
 			triggerInfo = triggerInfo,
 			shouldDeploy = moveFireCapable ~= true,
 			shouldGoLive = shouldGoLive,
-			shouldWeaponHold = false,
+			shouldWeaponHold = shouldWeaponHold,
 			combatMode = triggerInfo.combatMode,
 		}
 	end
@@ -6277,17 +6356,17 @@ function SkynetIADSMobilePatrol:hasSAMCombatThreat(entry)
 		end
 	end
 
-	if self:isMoveFireCapable(entry) then
-		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
-		return directUnit ~= nil
-	end
-
 	local profile = self:getMSAMCombatProfile(entry)
 	if profile then
 		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
 		if directUnit ~= nil then
 			return true
 		end
+	end
+
+	if self:isMoveFireCapable(entry) then
+		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
+		return directUnit ~= nil
 	end
 	local contacts = self.iads:getContacts()
 	for i = 1, #contacts do

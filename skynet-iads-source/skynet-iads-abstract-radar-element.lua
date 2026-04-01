@@ -1244,9 +1244,6 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 	if directTargetGroupName ~= nil and self:getDCSName() ~= directTargetGroupName then
 		return
 	end
-	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
-		return
-	end
 	if directTargetGroupName ~= nil and self:getDCSName() == directTargetGroupName then
 		self:addObjectIdentifiedAsHARM(harmContact)
 		local speedKT = harmContact:getGroundSpeedInKnots(0)
@@ -1269,6 +1266,9 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 		if ( self:getIsAPointDefence() == false and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
 			self:goSilentToEvadeHARM(secondsToImpact)
 		end
+		return
+	end
+	if self:isActive() == false and self.harmSilenceID == nil and self.harmRelocationInProgress ~= true then
 		return
 	end
 	local radars = self:getRadars()

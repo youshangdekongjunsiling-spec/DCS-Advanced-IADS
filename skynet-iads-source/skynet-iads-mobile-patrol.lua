@@ -1447,14 +1447,6 @@ function SkynetIADSMobilePatrol:hasSAMCombatThreat(entry)
 		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
 		return directUnit ~= nil
 	end
-
-	local profile = self:getMSAMCombatProfile(entry)
-	if profile then
-		local directUnit = self:findNearestEnemyAircraftUnit(entry, combatRangeMeters)
-		if directUnit ~= nil then
-			return true
-		end
-	end
 	local contacts = self.iads:getContacts()
 	for i = 1, #contacts do
 		local contact = contacts[i]
