@@ -37,6 +37,10 @@ function SkynetIADS:create(name)
 	iads.name = name                       -- IADS 系统名称
 	iads.harmDetection = SkynetIADSHARMDetection:create(iads)  -- HARM检测模块
 	iads.logger = SkynetIADSLogger:create(iads)               -- 日志记录模块
+	iads.orderTrace = nil
+	if SkynetIADSOrderTrace and SkynetIADSOrderTrace.create then
+		iads.orderTrace = SkynetIADSOrderTrace:create(iads)
+	end
 	iads.contactUpdateInterval = 5         -- 目标更新间隔（秒）
 	
 	-- 确保名称不为空
@@ -708,6 +712,43 @@ end
 
 function SkynetIADS:printOutputToLog(output)
 	self.logger:printOutputToLog(output)
+end
+
+function SkynetIADS:getOrderTrace()
+	return self.orderTrace
+end
+
+function SkynetIADS:setOrderTraceContext(element, context)
+	if self.orderTrace and self.orderTrace.setElementContext then
+		self.orderTrace:setElementContext(element, context)
+	end
+end
+
+function SkynetIADS:clearOrderTraceContext(element)
+	if self.orderTrace and self.orderTrace.clearElementContext then
+		self.orderTrace:clearElementContext(element)
+	end
+end
+
+function SkynetIADS:traceCommand(details)
+	if self.orderTrace and self.orderTrace.traceCommand then
+		return self.orderTrace:traceCommand(details)
+	end
+	return false
+end
+
+function SkynetIADS:traceEntryCommand(entry, command, details)
+	if self.orderTrace and self.orderTrace.traceEntryCommand then
+		return self.orderTrace:traceEntryCommand(entry, command, details)
+	end
+	return false
+end
+
+function SkynetIADS:traceElementCommand(element, command, details)
+	if self.orderTrace and self.orderTrace.traceElementCommand then
+		return self.orderTrace:traceElementCommand(element, command, details)
+	end
+	return false
 end
 
 -- ============================================================================

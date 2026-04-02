@@ -197,6 +197,40 @@ function SkynetIADSSiblingCoordination:notifyDebug(message)
     end
 end
 
+function SkynetIADSSiblingCoordination:withOrderTraceOrigin(details, functionName)
+    local payload = {}
+    if details then
+        for key, value in pairs(details) do
+            payload[key] = value
+        end
+    end
+    payload.originModule = payload.originModule or "skynet-iads-sibling-coordination.lua"
+    payload.originFunction = payload.originFunction or functionName
+    return payload
+end
+
+function SkynetIADSSiblingCoordination:setOrderTraceContext(element, reason, details, functionName)
+    if self.iads and self.iads.setOrderTraceContext then
+        local context = {
+            reason = reason,
+        }
+        local payload = self:withOrderTraceOrigin(details, functionName)
+        if payload then
+            for key, value in pairs(payload) do
+                context[key] = value
+            end
+        end
+        self.iads:setOrderTraceContext(element, context)
+    end
+end
+
+function SkynetIADSSiblingCoordination:traceElementCommand(element, command, details, functionName)
+    if self.iads and self.iads.traceElementCommand then
+        return self.iads:traceElementCommand(element, command, self:withOrderTraceOrigin(details, functionName))
+    end
+    return false
+end
+
 function SkynetIADSSiblingCoordination:getMobilePatrolEntry(element)
     if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
         return SkynetIADSMobilePatrol.getEntryForElement(element)
@@ -585,6 +619,13 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
         if member.element.targetsInRange ~= nil then
             member.element.targetsInRange = true
         end
+        self:setOrderTraceContext(member.element, "sibling_activate", {
+            source = "sibling_coord",
+            family = family.name,
+            familyMode = family.mode,
+            familyRole = "primary",
+            note = reason,
+        }, "activateMember")
         member.element:goLive()
         setElementCombatROE(member.element, false)
     end
@@ -661,9 +702,23 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     end
     member.passiveMode = "hold_dark"
     if entry and entry.manager and entry.manager.issueHold then
+        entry.manager:setOrderTraceContext(entry, "sibling_passive_hold", {
+            source = "sibling_coord",
+            family = family.name,
+            familyMode = family.mode,
+            familyRole = "passive",
+        }, "setPassiveMember")
         entry.manager:issueHold(entry)
     end
     forceElementIntoDarkStandby(member.element)
+    self:traceElementCommand(member.element, "sibling_dark_standby", {
+        outcome = "issued",
+        reason = "sibling_passive_hold",
+        source = "sibling_coord",
+        family = family.name,
+        familyMode = family.mode,
+        familyRole = "passive",
+    }, "setPassiveMember")
     if previousPassiveMode ~= "hold_dark" then
         self:notifyDebug(member.groupName .. " dark standby | family=" .. family.name)
     end
@@ -690,6 +745,9 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
     if member.element.setToCorrectAutonomousState then
         member.element:setToCorrectAutonomousState()
     else
+        self:setOrderTraceContext(member.element, "sibling_release", {
+            source = "sibling_coord",
+        }, "releaseMember")
         member.element:goDark()
     end
     if previousRole ~= "released" then

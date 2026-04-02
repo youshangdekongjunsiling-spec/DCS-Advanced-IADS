@@ -35,7 +35,7 @@ function SkynetIADSHARMDetection:getContactCategory(contact)
 	return categoryId
 end
 
-function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
+function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
 	if contact == nil then
 		return false
 	end
@@ -43,7 +43,13 @@ function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
 		return false
 	end
 
-	local categoryId = self:getContactCategory(contact)
+	local resolvedCategoryId = categoryId
+	if resolvedCategoryId == nil then
+		resolvedCategoryId = self:getContactCategory(contact)
+	end
+	if resolvedCategoryId ~= Object.Category.WEAPON then
+		return false
+	end
 
 	local typeName = ""
 	local okType, resolvedTypeName = pcall(function()
@@ -75,11 +81,7 @@ function SkynetIADSHARMDetection:isLikelySEADThreatContact(contact, groundSpeed)
 	end
 
 	-- Generic high-speed weapon fallback.
-	if categoryId == Object.Category.WEAPON then
-		return true
-	end
-
-	return false
+	return true
 end
 
 function SkynetIADSHARMDetection:getDirectTargetElement(contact)
@@ -134,67 +136,78 @@ function SkynetIADSHARMDetection:evaluateContacts()
 	for i = 1, #self.contacts do
 		local contact = self.contacts[i]
 		if contact ~= nil then
-		local directTargetElement = self:getDirectTargetElement(contact)
-		local hasDirectTarget = directTargetElement ~= nil
-		if hasDirectTarget then
-			contact._skynetDirectTargetGroupName = directTargetElement:getDCSName()
-			contact:setHARMState(SkynetIADSContact.HARM)
-		else
-			contact._skynetDirectTargetGroupName = nil
-		end
-		local groundSpeed  = contact:getGroundSpeedInKnots(0)
-		local likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed)
-		if hasDirectTarget == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
-			contact:setHARMState(SkynetIADSContact.HARM)
-			if (self.iads:getDebugSettings().harmDefence ) then
-				self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
-			end
-		end
-		--if a contact has only been hit by a radar once it's speed is 0
-		--如果接触只被雷达击中一次，其速度为0
-		if groundSpeed == 0 then
-			-- Ignore this incomplete contact and continue evaluating the rest.
-		end
-		local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
-		local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
-		--self.iads:printOutputToLog(contact:getName().." new Radars to evaluate: "..#newRadarsToEvaluate)
-		--self.iads:printOutputToLog(contact:getName().." ground speed: "..groundSpeed)
-		--self.iads:printOutputToLog(contact:getName().." 要评估的新雷达："..#newRadarsToEvaluate)
-		--self.iads:printOutputToLog(contact:getName().." 地面速度："..groundSpeed)
-		if ( hasDirectTarget == false and likelyWeaponThreat == false and #newRadarsToEvaluate > 0 and contact:isIdentifiedAsHARM() == false and ( groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS and #simpleAltitudeProfile <= 2 ) ) then
-			local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
-			--self.iads:printOutputToLog("DETECTION PROB: "..detectionProbability)
-			--self.iads:printOutputToLog("检测概率："..detectionProbability)
-			if ( self:shallReactToHARM(detectionProbability) ) then
+			local categoryId = self:getContactCategory(contact)
+			local isWeaponContact = categoryId == Object.Category.WEAPON
+			local directTargetElement = isWeaponContact and self:getDirectTargetElement(contact) or nil
+			local hasDirectTarget = directTargetElement ~= nil
+
+			if hasDirectTarget then
+				contact._skynetDirectTargetGroupName = directTargetElement:getDCSName()
 				contact:setHARMState(SkynetIADSContact.HARM)
-				if (self.iads:getDebugSettings().harmDefence ) then
-					self.iads:printOutputToLog("HARM IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
-				end
 			else
-				contact:setHARMState(SkynetIADSContact.NOT_HARM)
-				if (self.iads:getDebugSettings().harmDefence ) then
-					self.iads:printOutputToLog("HARM NOT IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+				contact._skynetDirectTargetGroupName = nil
+				if isWeaponContact ~= true and contact:isIdentifiedAsHARM() == true then
+					contact:setHARMState(SkynetIADSContact.NOT_HARM)
+					if self.iads:getDebugSettings().harmDefence then
+						self.iads:printOutputToLog("HARM FILTERED (NON-WEAPON): "..contact:getTypeName())
+					end
 				end
 			end
-		end
-		
-		if ( hasDirectTarget == false and likelyWeaponThreat == false and #simpleAltitudeProfile > 2 and contact:isIdentifiedAsHARM() ) then
-			contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
-			if (self.iads:getDebugSettings().harmDefence ) then
-				self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
+
+			local groundSpeed = contact:getGroundSpeedInKnots(0)
+			local likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
+			if hasDirectTarget == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
+				contact:setHARMState(SkynetIADSContact.HARM)
+				if self.iads:getDebugSettings().harmDefence then
+					self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
+				end
 			end
-		end
-		
-		if ( contact:isIdentifiedAsHARM() ) then
-			self:informRadarsOfHARM(contact)
-		end
+
+			-- If a contact has only been hit by a radar once its speed is often 0, so skip probabilistic checks this cycle.
+			if groundSpeed > 0 then
+				local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
+				local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
+				if hasDirectTarget == false
+					and likelyWeaponThreat == false
+					and #newRadarsToEvaluate > 0
+					and contact:isIdentifiedAsHARM() == false
+					and groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS
+					and #simpleAltitudeProfile <= 2 then
+					local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
+					if self:shallReactToHARM(detectionProbability) then
+						contact:setHARMState(SkynetIADSContact.HARM)
+						if self.iads:getDebugSettings().harmDefence then
+							self.iads:printOutputToLog("HARM IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+						end
+					else
+						contact:setHARMState(SkynetIADSContact.NOT_HARM)
+						if self.iads:getDebugSettings().harmDefence then
+							self.iads:printOutputToLog("HARM NOT IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+						end
+					end
+				end
+
+				if hasDirectTarget == false
+					and likelyWeaponThreat == false
+					and #simpleAltitudeProfile > 2
+					and contact:isIdentifiedAsHARM() then
+					contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
+					if self.iads:getDebugSettings().harmDefence then
+						self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
+					end
+				end
+			end
+
+			if contact:isIdentifiedAsHARM() then
+				self:informRadarsOfHARM(contact)
+			end
 		end
 	end
 end
 
 function SkynetIADSHARMDetection:cleanAgedContacts()
 	local activeContactRadars = {}
-	for contact, radars in pairs (self.contactRadarsEvaluated) do
+	for contact, radars in pairs(self.contactRadarsEvaluated) do
 		if contact:getAge() < 32 then
 			activeContactRadars[contact] = radars
 		end
@@ -233,7 +246,7 @@ end
 function SkynetIADSHARMDetection:informRadarsOfHARM(contact)
 	local samSites = self.iads:getUsableSAMSites()
 	self:updateRadarsOfSites(samSites, contact)
-	
+
 	local ewRadars = self.iads:getUsableEarlyWarningRadars()
 	self:updateRadarsOfSites(ewRadars, contact)
 end
@@ -246,7 +259,7 @@ function SkynetIADSHARMDetection:updateRadarsOfSites(sites, contact)
 end
 
 function SkynetIADSHARMDetection:shallReactToHARM(chance)
-	return chance >=  math.random(1, 100)
+	return chance >= math.random(1, 100)
 end
 
 function SkynetIADSHARMDetection:getDetectionProbability(radars)
@@ -255,11 +268,11 @@ function SkynetIADSHARMDetection:getDetectionProbability(radars)
 	local detection = 0
 	for i = 1, #radars do
 		detection = radars[i]:getHARMDetectionChance()
-		if ( detectionChance == 0 ) then
+		if detectionChance == 0 then
 			detectionChance = detection
 		else
 			detectionChance = detectionChance + (detection * (missChance / 100))
-		end	
+		end
 		missChance = 100 - detection
 	end
 	return detectionChance

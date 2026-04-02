@@ -216,6 +216,24 @@ local function isAirContact(contact)
 	if contact == nil or contact.getDesc == nil then
 		return false
 	end
+	local representation = nil
+	local okRepresentation = pcall(function()
+		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+	end)
+	if okRepresentation ~= true or representation == nil then
+		return false
+	end
+	if representation.isExist and representation:isExist() == false then
+		return false
+	end
+	if representation.getCategory ~= nil then
+		local okCategory, categoryId = pcall(function()
+			return representation:getCategory()
+		end)
+		if okCategory ~= true or categoryId ~= Object.Category.UNIT then
+			return false
+		end
+	end
 	local okDesc, desc = pcall(function()
 		return contact:getDesc() or {}
 	end)
@@ -508,6 +526,117 @@ function SkynetIADSMobilePatrol:notifyDebug(message)
 	end
 end
 
+function SkynetIADSMobilePatrol:withOrderTraceOrigin(details, functionName)
+	local payload = {}
+	if details then
+		for key, value in pairs(details) do
+			payload[key] = value
+		end
+	end
+	payload.originModule = payload.originModule or "skynet-iads-mobile-patrol.lua"
+	payload.originFunction = payload.originFunction or functionName
+	return payload
+end
+
+function SkynetIADSMobilePatrol:buildOrderTraceContext(entry, reason, details)
+	local context = {
+		reason = reason,
+	}
+	if details == nil then
+		return context
+	end
+	if details.source ~= nil then
+		context.source = details.source
+	end
+	if details.note ~= nil then
+		context.note = details.note
+	end
+	if details.originModule ~= nil then
+		context.originModule = details.originModule
+	end
+	if details.originFunction ~= nil then
+		context.originFunction = details.originFunction
+	end
+	if details.destination ~= nil then
+		context.destination = details.destination
+	end
+	if details.triggerInfo ~= nil then
+		context.triggerInfo = details.triggerInfo
+	end
+	if details.threatDecision ~= nil then
+		local threatDecision = details.threatDecision
+		context.shouldDeploy = threatDecision.shouldDeploy == true and "Y" or "N"
+		context.shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N"
+		context.weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N"
+		context.combatMode = threatDecision.combatMode or context.combatMode
+		if threatDecision.triggerInfo ~= nil then
+			context.triggerInfo = threatDecision.triggerInfo
+		end
+	end
+	return context
+end
+
+function SkynetIADSMobilePatrol:setOrderTraceContext(entry, reason, details, functionName)
+	if entry == nil then
+		return
+	end
+	local context = self:buildOrderTraceContext(entry, reason, self:withOrderTraceOrigin(details, functionName))
+	entry._skynetOrderTraceContext = context
+	if self.iads and self.iads.setOrderTraceContext then
+		self.iads:setOrderTraceContext(entry.element, context)
+	end
+end
+
+function SkynetIADSMobilePatrol:traceEntryCommand(entry, command, details, functionName)
+	if self.iads and self.iads.traceEntryCommand then
+		return self.iads:traceEntryCommand(entry, command, self:withOrderTraceOrigin(details, functionName))
+	end
+	return false
+end
+
+function SkynetIADSMobilePatrol:traceStateSnapshot(entry, reason, details, functionName)
+	if entry == nil then
+		return false
+	end
+	local siblingInfo = self:getSiblingInfo(entry)
+	local key = table.concat({
+		tostring(entry.state),
+		tostring(entry.combatMode),
+		tostring(reason),
+		tostring(entry.combatCommitted == true),
+		tostring(entry.mobileLockUntil and entry.mobileLockUntil > timer.getTime()),
+		tostring(siblingInfo and siblingInfo.role or "none"),
+		tostring(siblingInfo and siblingInfo.passiveMode or "none"),
+		tostring(entry.element and (entry.element.harmSilenceID ~= nil or entry.element.harmRelocationInProgress == true) or false),
+	}, "|")
+	if entry.debugLastStateTraceKey == key then
+		return false
+	end
+	entry.debugLastStateTraceKey = key
+	local payload = {
+		event = "state_change",
+		command = "state_eval",
+		outcome = "entered",
+		reason = reason,
+	}
+	if siblingInfo then
+		payload.family = siblingInfo.name
+		payload.familyMode = siblingInfo.mode
+		payload.familyRole = siblingInfo.role
+		payload.familyReason = siblingInfo.reason
+		payload.passiveMode = siblingInfo.passiveMode
+	end
+	if entry.mobileLockUntil and entry.mobileLockUntil > timer.getTime() then
+		payload.note = "mobileLockUntil=" .. tostring(mist.utils.round(entry.mobileLockUntil - timer.getTime(), 1)) .. "s"
+	end
+	if details then
+		for keyName, value in pairs(details) do
+			payload[keyName] = value
+		end
+	end
+	return self:traceEntryCommand(entry, "state_eval", payload, functionName or "traceStateSnapshot")
+end
+
 function SkynetIADSMobilePatrol:announceCombatState(entry, threatDecision)
 	if entry == nil or threatDecision == nil then
 		return
@@ -744,11 +873,21 @@ end
 function SkynetIADSMobilePatrol:issueRoadMove(entry, destination)
 	if entry.group == nil or entry.group:isExist() == false or destination == nil then
 		self:log("Road move skipped for "..tostring(entry.groupName).." | missing group or destination")
+		self:traceEntryCommand(entry, "road_move", {
+			outcome = "skipped",
+			destination = destination,
+			note = "missing group or destination",
+		}, "issueRoadMove")
 		return false
 	end
 	local startPoint = self:getPatrolReferencePoint(entry)
 	if startPoint == nil then
 		self:log("Road move skipped for "..tostring(entry.groupName).." | missing start point")
+		self:traceEntryCommand(entry, "road_move", {
+			outcome = "skipped",
+			destination = destination,
+			note = "missing start point",
+		}, "issueRoadMove")
 		return false
 	end
 	local ok = pcall(function()
@@ -765,12 +904,21 @@ function SkynetIADSMobilePatrol:issueRoadMove(entry, destination)
 	else
 		self:log("Road move failed for "..entry.groupName)
 	end
+	self:traceEntryCommand(entry, "road_move", {
+		outcome = ok and "issued" or "failed",
+		destination = destination,
+		speedKmph = entry.patrolSpeedKmph,
+	}, "issueRoadMove")
 	return ok
 end
 
 function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
 	if entry.group == nil or entry.group:isExist() == false then
 		self:log("Patrol route skipped for "..tostring(entry.groupName).." | missing group")
+		self:traceEntryCommand(entry, "patrol_route", {
+			outcome = "skipped",
+			note = "missing group",
+		}, "issuePatrolRoute")
 		return false
 	end
 	local ok = pcall(function()
@@ -789,6 +937,10 @@ function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
 	else
 		self:log("Patrol route failed for "..entry.groupName)
 	end
+	self:traceEntryCommand(entry, "patrol_route", {
+		outcome = ok and "issued" or "failed",
+		speedKmph = entry.patrolSpeedKmph,
+	}, "issuePatrolRoute")
 	return ok
 end
 
@@ -810,6 +962,11 @@ end
 function SkynetIADSMobilePatrol:issueHold(entry)
 	local holdPoint = self:getPatrolReferencePoint(entry)
 	if entry.group == nil or entry.group:isExist() == false or holdPoint == nil then
+		self:traceEntryCommand(entry, "hold", {
+			outcome = "skipped",
+			destination = holdPoint,
+			note = "missing group or hold point",
+		}, "issueHold")
 		return false
 	end
 	local ok = pcall(function()
@@ -820,6 +977,10 @@ function SkynetIADSMobilePatrol:issueHold(entry)
 	if ok then
 		entry.currentDestination = nil
 	end
+	self:traceEntryCommand(entry, "hold", {
+		outcome = ok and "issued" or "failed",
+		destination = holdPoint,
+	}, "issueHold")
 	return ok
 end
 
@@ -934,10 +1095,18 @@ end
 
 function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 	if entry.group == nil or entry.group:isExist() == false then
+		self:traceEntryCommand(entry, "deploy_scatter", {
+			outcome = "skipped",
+			note = "missing group",
+		}, "issueDeployScatter")
 		return false
 	end
 	local destination, distanceMeters, startPoint = self:calculateDeployScatterPoint(entry)
 	if destination == nil then
+		self:traceEntryCommand(entry, "deploy_scatter", {
+			outcome = "skipped",
+			note = "no valid destination",
+		}, "issueDeployScatter")
 		return false
 	end
 	local speedKmph = self:getDeployScatterSpeedKmph(entry)
@@ -955,6 +1124,12 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		)
 		self:log("Deploy scatter issued for "..entry.groupName.." | speed="..speedKmph.."km/h | distance="..distanceMeters.."m")
 	end
+	self:traceEntryCommand(entry, "deploy_scatter", {
+		outcome = ok and "issued" or "failed",
+		destination = destination,
+		speedKmph = speedKmph,
+		note = distanceMeters and ("distance=" .. tostring(distanceMeters) .. "m") or nil,
+	}, "issueDeployScatter")
 	return ok
 end
 
@@ -1325,6 +1500,11 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			if entry.element.targetsInRange ~= nil then
 				entry.element.targetsInRange = true
 			end
+			self:setOrderTraceContext(entry, "msam_threat_decision", {
+				source = triggerInfo and triggerInfo.source or "deploy_scattering",
+				triggerInfo = triggerInfo,
+				threatDecision = threatDecision,
+			}, "applyMSAMThreatDecision")
 			entry.element:goLive()
 			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
 			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
@@ -1347,8 +1527,22 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			entry.element.targetsInRange = true
 		end
 		if moveFireCapable then
+			self:traceEntryCommand(entry, "moving_combat_state", {
+				outcome = "issued",
+				reason = "msam_threat_decision",
+				source = triggerInfo and triggerInfo.source or "move_fire",
+				triggerInfo = triggerInfo,
+				shouldDeploy = threatDecision.shouldDeploy == true and "Y" or "N",
+				shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
+				weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
+			}, "applyMSAMThreatDecision")
 			setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
 		else
+			self:setOrderTraceContext(entry, "msam_threat_decision", {
+				source = triggerInfo and triggerInfo.source or "go_live",
+				triggerInfo = triggerInfo,
+				threatDecision = threatDecision,
+			}, "applyMSAMThreatDecision")
 			entry.element:goLive()
 			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
 			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
@@ -1358,6 +1552,15 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			end
 		end
 	else
+		self:traceEntryCommand(entry, "patrol_dark_state", {
+			outcome = "issued",
+			reason = "msam_threat_decision_dark",
+			source = triggerInfo and triggerInfo.source or "threat_hold",
+			triggerInfo = triggerInfo,
+			shouldDeploy = threatDecision.shouldDeploy == true and "Y" or "N",
+			shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
+			weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
+		}, "applyMSAMThreatDecision")
 		forceElementIntoPatrolDarkState(entry.element)
 	end
 
@@ -1373,6 +1576,13 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	end
 	entry.lastThreatTime = now
 	entry.noThreatSince = nil
+	self:traceStateSnapshot(entry, "msam_threat_decision", {
+		source = triggerInfo and triggerInfo.source or "threat_decision",
+		triggerInfo = triggerInfo,
+		shouldDeploy = threatDecision.shouldDeploy == true and "Y" or "N",
+		shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
+		weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
+	}, "applyMSAMThreatDecision")
 	self:announceCombatState(entry, threatDecision)
 	if wasCombatCommitted ~= true and entry.combatCommitted == true and _G.redIADSSiblingCoordination and _G.redIADSSiblingCoordination.requestImmediateEvaluation then
 		pcall(function()
@@ -1484,8 +1694,17 @@ end
 function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 	local wasDeployed = entry.state == "deployed"
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS)
+	self:setOrderTraceContext(entry, "pause_for_deployment", {
+		source = triggerInfo and triggerInfo.source or "deployment_trigger",
+		triggerInfo = triggerInfo,
+	}, "pausePatrolForDeployment")
 	local scatterIssued = self:issueDeployScatter(entry) == true
 	if scatterIssued ~= true then
+		self:setOrderTraceContext(entry, "deploy_hold_fallback", {
+			source = triggerInfo and triggerInfo.source or "deployment_trigger",
+			triggerInfo = triggerInfo,
+			note = "scatter route unavailable",
+		}, "pausePatrolForDeployment")
 		self:issueHold(entry)
 		entry.deployScatterStartPoint = nil
 		entry.deployScatterDestination = nil
@@ -1498,6 +1717,10 @@ function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 	entry.noThreatSince = nil
 	entry.lastThreatTime = timer.getTime()
 	entry.debugLastCombatAnnouncementKey = nil
+	self:traceStateSnapshot(entry, scatterIssued == true and "pause_for_deployment_scatter" or "pause_for_deployment_hold", {
+		source = triggerInfo and triggerInfo.source or "deployment_trigger",
+		triggerInfo = triggerInfo,
+	}, "pausePatrolForDeployment")
 	if triggerInfo then
 		entry.lastDeployTrigger = triggerInfo
 		self:log(
@@ -1533,12 +1756,19 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.noThreatSince = nil
 	entry.lastThreatTime = 0
 	entry.contactKinematics = {}
+	entry.debugHarmActive = false
 	entry.debugLastCombatAnnouncementKey = nil
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
 	entry.patrolRefreshDelays = mist.utils.deepCopy(self.defaultPatrolRefreshDelays)
 	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
+	self:setOrderTraceContext(entry, "begin_patrol", {
+		source = previousState or "startup",
+	}, "beginPatrol")
+	self:traceStateSnapshot(entry, "begin_patrol", {
+		source = previousState or "startup",
+	}, "beginPatrol")
 	self:issuePatrolRoute(entry)
 	if previousState ~= "patrolling" then
 		self:notifyDebug(entry.groupName .. " resume patrol")
@@ -1574,6 +1804,13 @@ function SkynetIADSMobilePatrol:advancePatrol(entry, force)
 			entry.lastRouteIssueTime = timer.getTime()
 			entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
 			self:log("Road patrol issued for "..entry.groupName.." | wp="..tostring(startIndex).." | speed="..entry.patrolSpeedKmph.."km/h")
+			self:traceEntryCommand(entry, "road_patrol_resume", {
+				outcome = "issued",
+				reason = "advance_patrol",
+				speedKmph = entry.patrolSpeedKmph,
+				waypoint = startIndex,
+				destination = nextPoint,
+			}, "advancePatrol")
 			entry.currentWaypointIndex = (entry.currentWaypointIndex % #entry.routePoints) + 1
 			return true
 		end
@@ -1610,6 +1847,10 @@ function SkynetIADSMobilePatrol:handleDeployScatterState(entry)
 		entry.deployScatterMinimumCompletionMeters = 0
 		self:log("Deploy scatter complete for "..entry.groupName.." | moved="..mist.utils.round(movedDistance, 0).."m")
 		self:notifyDebug(entry.groupName .. " deploy scatter complete -> deployed")
+		self:traceStateSnapshot(entry, "deploy_scatter_complete", {
+			source = "deploy_scatter",
+			note = "moved=" .. tostring(mist.utils.round(movedDistance, 0)) .. "m",
+		}, "handleDeployScatterState")
 		return true
 	end
 	if timedOut then
@@ -1640,6 +1881,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		if entry.nextPatrolRefreshTime and timer.getTime() >= entry.nextPatrolRefreshTime then
 			forceElementIntoPatrolDarkState(entry.element)
 			self:log("Patrol refresh reissued for "..entry.groupName.." | delayed startup refresh (harm_silent)")
+			self:setOrderTraceContext(entry, "patrol_refresh_harm_silent", {
+				source = "harm_silent_refresh",
+			}, "updateEntry")
 			self:issuePatrolRoute(entry)
 			table.remove(entry.patrolRefreshDelays, 1)
 			if #entry.patrolRefreshDelays > 0 then
@@ -1650,14 +1894,23 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		end
 		if self:shouldReissuePatrolRoute(entry) then
 			self:log("Patrol route reissued for "..entry.groupName.." | stationary during harm_silent")
+			self:setOrderTraceContext(entry, "patrol_reissue_harm_silent", {
+				source = "harm_silent_stationary",
+			}, "updateEntry")
 			self:issuePatrolRoute(entry)
 		end
+		self:traceStateSnapshot(entry, "harm_silent", {
+			source = "harm_detected",
+		}, "updateEntry")
 		return
 	end
 
 	if self:isHarmEvading(entry) then
 		entry.state = "harm_evading"
 		entry.noThreatSince = nil
+		self:traceStateSnapshot(entry, "harm_evading", {
+			source = "harm_detected",
+		}, "updateEntry")
 		return
 	end
 
@@ -1671,6 +1924,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			end
 			entry.noThreatSince = nil
 			entry.lastThreatTime = timer.getTime()
+			self:traceStateSnapshot(entry, "deploy_scattering", {
+				source = "deploy_scatter",
+			}, "updateEntry")
 			return
 		end
 	end
@@ -1688,6 +1944,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			entry.state = "patrolling"
 			entry.combatMode = "patrolling"
 		end
+		self:traceStateSnapshot(entry, "sibling_passive_hold", {
+			source = "sibling_coord",
+		}, "updateEntry")
 		return
 	end
 
@@ -1700,6 +1959,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			entry.state = "deployed"
 			entry.combatMode = "sibling_standby"
 		end
+		self:traceStateSnapshot(entry, "sibling_passive_standby", {
+			source = "sibling_coord",
+		}, "updateEntry")
 		return
 	end
 
@@ -1714,6 +1976,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		end
 		entry.noThreatSince = nil
 		entry.combatNoTargetSince = nil
+		self:traceStateSnapshot(entry, "mobile_lock", {
+			source = "post_combat_mobile",
+		}, "updateEntry")
 		return
 	end
 	entry.mobileLockUntil = 0
@@ -1782,14 +2047,35 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			self:applyMSAMThreatDecision(entry, threatDecision)
 			return
 		elseif self:isMoveFireCapable(entry) and entry.combatMode ~= "patrolling" then
+			self:traceEntryCommand(entry, "patrol_dark_state", {
+				outcome = "issued",
+				reason = "move_fire_reset_to_patrol",
+				source = "no_threat",
+			}, "updateEntry")
 			forceElementIntoPatrolDarkState(entry.element)
 			entry.combatMode = "patrolling"
 			entry.debugLastCombatAnnouncementKey = nil
+			local resumedRoute = false
+			pcall(function()
+				resumedRoute = self:advancePatrol(entry, true)
+			end)
+			if resumedRoute ~= true then
+				self:setOrderTraceContext(entry, "move_fire_resume_patrol", {
+					source = "move_fire_reset",
+				}, "updateEntry")
+				self:issuePatrolRoute(entry)
+			end
+			self:traceStateSnapshot(entry, "move_fire_reset_to_patrol", {
+				source = "no_threat",
+			}, "updateEntry")
 		end
 	elseif entry.kind ~= "MSAM" then
 		threatPresent = self:findMEWThreat(entry)
 		if threatPresent and entry.state ~= "deployed" then
 			self:pausePatrolForDeployment(entry)
+			self:setOrderTraceContext(entry, "mew_threat_detected", {
+				source = "mew_threat_scan",
+			}, "updateEntry")
 			entry.element:goLive()
 			entry.combatMode = "default_fire"
 		end
@@ -1799,6 +2085,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.state = "deployed"
 		entry.lastThreatTime = timer.getTime()
 		entry.noThreatSince = nil
+		self:traceStateSnapshot(entry, "threat_present", {
+			source = entry.kind == "MSAM" and "sam_threat_scan" or "mew_threat_scan",
+		}, "updateEntry")
 		return
 	end
 
@@ -1809,6 +2098,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		else
 			entry.state = "deployed"
 		end
+		self:traceStateSnapshot(entry, "harm_state_recovered", {
+			source = "harm_recovery",
+		}, "updateEntry")
 	end
 
 	if entry.state == "deployed" then
@@ -1824,6 +2116,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 	if entry.nextPatrolRefreshTime and timer.getTime() >= entry.nextPatrolRefreshTime then
 		forceElementIntoPatrolDarkState(entry.element)
 		self:log("Patrol refresh reissued for "..entry.groupName.." | delayed startup refresh")
+		self:setOrderTraceContext(entry, "patrol_refresh", {
+			source = "startup_refresh",
+		}, "updateEntry")
 		self:issuePatrolRoute(entry)
 		table.remove(entry.patrolRefreshDelays, 1)
 		if #entry.patrolRefreshDelays > 0 then
@@ -1835,8 +2130,14 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 	if self:shouldReissuePatrolRoute(entry) then
 		self:log("Patrol route reissued for "..entry.groupName.." | group appears stationary")
+		self:setOrderTraceContext(entry, "patrol_reissue_stationary", {
+			source = "stationary_recovery",
+		}, "updateEntry")
 		self:issuePatrolRoute(entry)
 	end
+	self:traceStateSnapshot(entry, "patrolling", {
+		source = "patrol_tick",
+	}, "updateEntry")
 end
 
 function SkynetIADSMobilePatrol:tick(_, time)
@@ -1916,6 +2217,7 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		deployScatterMinimumCompletionMeters = 0,
 		patrolRefreshDelays = {},
 		nextPatrolRefreshTime = nil,
+		debugHarmActive = false,
 		manager = self,
 	}
 	entry.currentWaypointIndex = self:selectStartingWaypointIndex(entry)
@@ -1989,6 +2291,64 @@ function SkynetIADSMobilePatrol.installHooks()
 		return
 	end
 	SkynetIADSMobilePatrol._hooksInstalled = true
+
+	local function shouldSuppressManagedTargetCycleAutoDark(entry)
+		if entry == nil or entry.manager == nil then
+			return false
+		end
+		local siblingInfo = entry.manager.getSiblingInfo and entry.manager:getSiblingInfo(entry) or nil
+		if siblingInfo and siblingInfo.role == "passive" then
+			if siblingInfo.passiveMode == "standby" or siblingInfo.passiveMode == "hold_dark" then
+				return false
+			end
+		end
+		if entry.element and (entry.element.harmSilenceID ~= nil or entry.element.harmRelocationInProgress == true) then
+			return true
+		end
+		if entry.combatCommitted == true then
+			return true
+		end
+		if entry.state == "deployed" or entry.state == "deploy_scattering" or entry.state == "harm_evading" then
+			return true
+		end
+		if entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true and entry.combatMode ~= "patrolling" then
+			return true
+		end
+		if siblingInfo and siblingInfo.role == "passive" and siblingInfo.passiveMode == "relocate" then
+			return true
+		end
+		return false
+	end
+
+	local originalSAMTargetCycleUpdateEnd = SkynetIADSSamSite.targetCycleUpdateEnd
+	function SkynetIADSSamSite:targetCycleUpdateEnd()
+		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
+		local autoDarkWouldTrigger =
+			self.targetsInRange == false
+			and self.actAsEW == false
+			and self:getAutonomousState() == false
+			and self:getAutonomousBehaviour() == SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DCS_AI
+
+		if entry and autoDarkWouldTrigger then
+			if shouldSuppressManagedTargetCycleAutoDark(entry) then
+				if entry.manager and entry.manager.traceStateSnapshot then
+					entry.manager:traceStateSnapshot(entry, "target_cycle_hold_live", {
+						source = "target_cycle_update_end",
+						note = "auto_dark_suppressed",
+					}, "SkynetIADSSamSite:targetCycleUpdateEnd")
+				end
+				return
+			end
+			if entry.manager and entry.manager.setOrderTraceContext then
+				entry.manager:setOrderTraceContext(entry, "target_cycle_auto_dark", {
+					source = "target_cycle_update_end",
+					note = "targetsInRange=N",
+				}, "SkynetIADSSamSite:targetCycleUpdateEnd")
+			end
+		end
+
+		return originalSAMTargetCycleUpdateEnd(self)
+	end
 
 	local originalSAMInformOfContact = SkynetIADSSamSite.informOfContact
 	function SkynetIADSSamSite:informOfContact(contact)
@@ -2107,6 +2467,16 @@ function SkynetIADSMobilePatrol.installHooks()
 		end
 		element.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {element}, timer.getTime() + element.harmShutdownTime, 1)
 		setElementMovingSilenceState(element)
+		if element.iads and element.iads.traceElementCommand then
+			element.iads:traceElementCommand(element, "harm_silent_continue_moving", {
+				outcome = "issued",
+				reason = "harm_detected",
+				harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+				harmShutdown = element.harmShutdownTime and mist.utils.round(element.harmShutdownTime, 1) or nil,
+				originModule = "skynet-iads-mobile-patrol.lua",
+				originFunction = "goSilentToEvadeHARMWhileMoving",
+			})
+		end
 		return true
 	end
 
@@ -2128,12 +2498,37 @@ function SkynetIADSMobilePatrol.installHooks()
 			if moveFireCapable then
 				entry.state = "patrolling"
 				entry.combatMode = "harm_silent"
+				if entry.manager and entry.manager.advancePatrol then
+					local resumedRoute = false
+					pcall(function()
+						resumedRoute = entry.manager:advancePatrol(entry, true)
+					end)
+					if resumedRoute ~= true and entry.manager.issuePatrolRoute then
+						pcall(function()
+							entry.manager:issuePatrolRoute(entry)
+						end)
+					end
+				end
 			else
 				entry.state = "harm_evading"
 			end
 			entry.noThreatSince = nil
 			entry.debugHarmActive = true
 			entry.debugLastCombatAnnouncementKey = nil
+			if entry.manager and entry.manager.setOrderTraceContext then
+				entry.manager:setOrderTraceContext(entry, "harm_evasion_start", {
+					source = "harm_detected",
+					harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+					harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
+				}, "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
+			end
+			if entry.manager and entry.manager.traceStateSnapshot then
+				entry.manager:traceStateSnapshot(entry, "harm_evasion_start", {
+					source = "harm_detected",
+					harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+					harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
+				}, "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
+			end
 			if shouldAnnounce and entry.manager and entry.manager.notifyDebug then
 				entry.manager:notifyDebug(entry.groupName .. " enter HARM evasion")
 			end
@@ -2155,9 +2550,36 @@ function SkynetIADSMobilePatrol.installHooks()
 			if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
 				entry.state = "patrolling"
 				entry.combatMode = "patrolling"
+				if entry.manager.advancePatrol then
+					local resumedRoute = false
+					pcall(function()
+						resumedRoute = entry.manager:advancePatrol(entry, true)
+					end)
+					if resumedRoute ~= true and entry.manager.issuePatrolRoute then
+						if entry.manager.setOrderTraceContext then
+							entry.manager:setOrderTraceContext(entry, "harm_resume_patrol", {
+								source = "harm_silence_expired",
+							}, "SkynetIADSAbstractRadarElement.finishHarmDefence")
+						end
+						pcall(function()
+							entry.manager:issuePatrolRoute(entry)
+						end)
+					end
+				end
 			end
 			entry.debugHarmActive = false
 			entry.debugLastCombatAnnouncementKey = nil
+			if entry.manager and entry.manager.traceEntryCommand then
+				entry.manager:traceEntryCommand(entry, "harm_evasion_complete", {
+					outcome = "completed",
+					reason = "harm_silence_expired",
+				}, "SkynetIADSAbstractRadarElement.finishHarmDefence")
+			end
+			if entry.manager and entry.manager.traceStateSnapshot then
+				entry.manager:traceStateSnapshot(entry, "harm_evasion_complete", {
+					source = "harm_silence_expired",
+				}, "SkynetIADSAbstractRadarElement.finishHarmDefence")
+			end
 			if shouldAnnounce and entry.manager and entry.manager.notifyDebug then
 				entry.manager:notifyDebug(entry.groupName .. " HARM evasion complete")
 			end

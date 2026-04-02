@@ -909,6 +909,14 @@ function SkynetIADSAbstractRadarElement:goLive()
 		if  self.iads:getDebugSettings().radarWentLive then
 			self.iads:printOutputToLog("GOING LIVE: "..self:getDescription())
 		end
+		if self.iads and self.iads.traceElementCommand then
+			self.iads:traceElementCommand(self, "go_live", {
+				outcome = "issued",
+				reason = "radar_activation",
+				originModule = "skynet-iads-abstract-radar-element.lua",
+				originFunction = "goLive",
+			})
+		end
 		self:scanForHarms()
 	end
 end
@@ -956,6 +964,14 @@ function SkynetIADSAbstractRadarElement:goDark()
 		self.cachedTargets = {}
 		if self.iads:getDebugSettings().radarWentDark then
 			self.iads:printOutputToLog("GOING DARK: "..self:getDescription())
+		end
+		if self.iads and self.iads.traceElementCommand then
+			self.iads:traceElementCommand(self, "go_dark", {
+				outcome = "issued",
+				reason = self.harmSilenceID ~= nil and "harm_silence" or "radar_deactivation",
+				originModule = "skynet-iads-abstract-radar-element.lua",
+				originFunction = "goDark",
+			})
 		end
 	end
 end
@@ -1124,6 +1140,17 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 			self.harmRelocationCheckInterval
 		)
 		self:enterHARMRelocationDarkState()
+		if self.iads and self.iads.traceElementCommand then
+			self.iads:traceElementCommand(self, "harm_relocate", {
+				outcome = "issued",
+				reason = "harm_detected",
+				harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+				harmShutdown = travelTime and mist.utils.round(travelTime, 1) or nil,
+				destination = self.harmRelocationDestination,
+				originModule = "skynet-iads-abstract-radar-element.lua",
+				originFunction = "goSilentToEvadeHARM",
+			})
+		end
 		return true
 	end
 
@@ -1135,6 +1162,16 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 		self.iads:printOutputToLog("HARM DEFENCE SHUTTING DOWN: "..self:getDCSName().." | FOR: "..self.harmShutdownTime.." seconds | TTI: "..timeToImpact)
 	end
 	self.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {self}, timer.getTime() + self.harmShutdownTime, 1)
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_shutdown", {
+			outcome = "issued",
+			reason = "harm_detected",
+			harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+			harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "goSilentToEvadeHARM",
+		})
+	end
 	self:goDark()
 	return true
 end
@@ -1160,6 +1197,14 @@ function SkynetIADSAbstractRadarElement.finishHarmDefence(self)
 	self.harmRelocationMinimumCompletionMeters = 0
 	self.harmReactionLockUntil = timer.getTime() + self.harmReactionCooldownSeconds
 
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_defence_complete", {
+			outcome = "completed",
+			reason = "harm_silence_expired",
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "finishHarmDefence",
+		})
+	end
 	self:setToCorrectAutonomousState()
 end
 
