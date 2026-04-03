@@ -285,6 +285,109 @@ function SkynetIADSSiblingCoordination:cacheFamilyThreat(family, member, threatD
     end
 end
 
+function SkynetIADSSiblingCoordination:cloneThreatDecision(threatDecision)
+    if threatDecision == nil then
+        return nil
+    end
+    local cloned = {}
+    for key, value in pairs(threatDecision) do
+        if key == "triggerInfo" and type(value) == "table" then
+            cloned[key] = mist.utils.deepCopy(value)
+        else
+            cloned[key] = value
+        end
+    end
+    return cloned
+end
+
+function SkynetIADSSiblingCoordination:clearPendingCoverThreat(family)
+    if family == nil then
+        return
+    end
+    family.pendingCoverGroupName = nil
+    family.pendingCoverThreatDecision = nil
+end
+
+function SkynetIADSSiblingCoordination:cachePendingCoverThreat(family, member, threatDecision, source)
+    if family == nil or member == nil or threatDecision == nil then
+        return nil
+    end
+    local cloned = self:cloneThreatDecision(threatDecision)
+    if cloned == nil then
+        return nil
+    end
+    local triggerInfo = cloned.triggerInfo
+    if triggerInfo ~= nil then
+        triggerInfo.source = source or triggerInfo.source or "sibling_cover_prearm"
+        triggerInfo.prearmedCover = "Y"
+        triggerInfo.contactName = self:getSafeThreatName(
+            family,
+            triggerInfo.contactName,
+            family.lastThreatTriggerInfo and family.lastThreatTriggerInfo.contactName or nil
+        ) or triggerInfo.contactName
+    end
+    family.pendingCoverGroupName = member.groupName
+    family.pendingCoverThreatDecision = cloned
+    return cloned
+end
+
+function SkynetIADSSiblingCoordination:consumePendingCoverThreat(family, member)
+    if family == nil or member == nil or family.pendingCoverGroupName ~= member.groupName then
+        return nil
+    end
+    local pendingThreatDecision = self:cloneThreatDecision(family.pendingCoverThreatDecision)
+    self:clearPendingCoverThreat(family)
+    return pendingThreatDecision
+end
+
+function SkynetIADSSiblingCoordination:prepareCoverThreatDecision(family, coverMember, coveredMember)
+    if family == nil or coverMember == nil then
+        return nil
+    end
+    local coverEntry = self:getMobilePatrolEntry(coverMember.element)
+    if coverEntry == nil or coverEntry.kind ~= "MSAM" or coverEntry.manager == nil or coverEntry.manager.findSAMThreatContact == nil then
+        self:clearPendingCoverThreat(family)
+        return nil
+    end
+
+    local threatDecision = coverEntry.manager:findSAMThreatContact(coverEntry)
+    if threatDecision == nil then
+        self:clearPendingCoverThreat(family)
+        return nil
+    end
+
+    local triggerInfo = threatDecision.triggerInfo or {}
+    threatDecision.triggerInfo = triggerInfo
+    triggerInfo.source = triggerInfo.source or "sibling_cover_prearm"
+    triggerInfo.coveredGroup = coveredMember and coveredMember.groupName or nil
+    triggerInfo.contactName = self:getSafeThreatName(
+        family,
+        triggerInfo.contactName,
+        family.lastThreatTriggerInfo and family.lastThreatTriggerInfo.contactName or nil
+    ) or triggerInfo.contactName
+
+    self:cacheFamilyThreat(family, coverMember, threatDecision)
+    local cachedThreatDecision = self:cachePendingCoverThreat(family, coverMember, threatDecision, "sibling_cover_prearm")
+    local traceEntry = self:getMobilePatrolEntry(coverMember.element)
+    if traceEntry and traceEntry.manager and traceEntry.manager.traceEntryCommand then
+        traceEntry.manager:traceEntryCommand(traceEntry, "sibling_cover_prearm", {
+            event = "decision",
+            outcome = threatDecision.shouldGoLive == true and "armed" or "cached",
+            source = "sibling_coord",
+            family = family.name,
+            familyMode = family.mode,
+            familyRole = "passive",
+            reason = coveredMember and ("switch_lock_" .. coveredMember.groupName) or "switch_lock",
+            contact = triggerInfo.contactName,
+            contactType = triggerInfo.contactType,
+            distanceNm = triggerInfo.distanceNm or triggerInfo.effectiveDistanceNm,
+            shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
+            weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
+        }, "prepareCoverThreatDecision")
+    end
+    return cachedThreatDecision
+end
+
 function SkynetIADSSiblingCoordination:isEngaged(member)
     if member and member.forcedPassive == true then
         return false
@@ -354,6 +457,7 @@ function SkynetIADSSiblingCoordination:clearSuppressedSwitchLock(family)
     end
     family.suppressedSwitchGroupName = nil
     family.suppressedSwitchUntil = 0
+    self:clearPendingCoverThreat(family)
 end
 
 function SkynetIADSSiblingCoordination:ensureSuppressedSwitchLock(family, member)
@@ -586,14 +690,19 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     end
     local lockedPrimary = self:getSuppressedSwitchLockedMember(family)
     if lockedPrimary and currentPrimary == lockedPrimary then
+        local coverMember = self:pickCoverMember(family, lockedPrimary.groupName)
+        local preparedCoverDecision = nil
+        if coverMember then
+            preparedCoverDecision = self:prepareCoverThreatDecision(family, coverMember, lockedPrimary)
+        end
         local lockRemainingSeconds = self:getSuppressedSwitchLockRemaining(family, lockedPrimary)
         if lockRemainingSeconds > 0 then
             return lockedPrimary, "switch_lock_" .. lockedPrimary.groupName, nil
         end
-        local coverMember = self:pickCoverMember(family, lockedPrimary.groupName)
         if coverMember then
+            local coverThreatDecision = self:consumePendingCoverThreat(family, coverMember) or preparedCoverDecision
             self:clearSuppressedSwitchLock(family)
-            return coverMember, "cover_for_" .. lockedPrimary.groupName, nil
+            return coverMember, "cover_for_" .. lockedPrimary.groupName, coverThreatDecision
         end
         self:clearSuppressedSwitchLock(family)
     end
@@ -1037,6 +1146,8 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         lastThreatSourceGroupName = nil,
         suppressedSwitchGroupName = nil,
         suppressedSwitchUntil = 0,
+        pendingCoverGroupName = nil,
+        pendingCoverThreatDecision = nil,
     }
 
     for i = 1, #definition.members do
