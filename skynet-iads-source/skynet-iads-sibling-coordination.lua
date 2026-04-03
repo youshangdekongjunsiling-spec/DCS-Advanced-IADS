@@ -11,6 +11,8 @@ SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION = "hold_dark"
 SkynetIADSSiblingCoordination.DEFAULT_MODE = "ambush"
 SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM = 25
 SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS = 10
+SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS = 8
+SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM = 1.5
 
 local function setGroundROE(controller, weaponHold)
     pcall(function()
@@ -318,6 +320,45 @@ function SkynetIADSSiblingCoordination:canCover(member)
         and element:hasWorkingRadar()
 end
 
+function SkynetIADSSiblingCoordination:hasLiveRadarUnits(member)
+    if member == nil or member.element == nil or member.element.getRadars == nil then
+        return false
+    end
+    local radars = member.element:getRadars() or {}
+    if #radars == 0 then
+        return true
+    end
+    for i = 1, #radars do
+        local radar = radars[i]
+        if radar ~= nil then
+            local okExists, exists = pcall(function()
+                return radar:isExist()
+            end)
+            if okExists and exists == true then
+                return true
+            end
+            local okDestroyed, destroyed = pcall(function()
+                return radar:isDestroyed()
+            end)
+            if okDestroyed and destroyed == false then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+function SkynetIADSSiblingCoordination:canParticipate(member)
+    local element = member and member.element or nil
+    if element == nil then
+        return false
+    end
+    return element:isDestroyed() == false
+        and element:hasWorkingPowerSource()
+        and element:hasRemainingAmmo()
+        and self:hasLiveRadarUnits(member)
+end
+
 function SkynetIADSSiblingCoordination:findMemberByGroupName(family, groupName)
     for i = 1, #family.members do
         local member = family.members[i]
@@ -335,7 +376,7 @@ function SkynetIADSSiblingCoordination:pickCoverMember(family, excludedGroupName
     end
     for i = 1, #family.members do
         local member = family.members[i]
-        if member.groupName ~= excludedGroupName and self:isSuppressed(member) == false and self:canCover(member) then
+        if member.groupName ~= excludedGroupName and self:isSuppressed(member) == false and self:canParticipate(member) then
             return member
         end
     end
@@ -356,7 +397,7 @@ function SkynetIADSSiblingCoordination:getMemberThreatDecision(family, member)
     if family == nil or member == nil then
         return nil
     end
-    if self:isSuppressed(member) or self:canCover(member) == false then
+    if self:isSuppressed(member) or self:canParticipate(member) == false then
         return nil
     end
     if family.mode == "denial" then
@@ -379,6 +420,76 @@ function SkynetIADSSiblingCoordination:getThreatDecisionDistanceNm(threatDecisio
         or tonumber(triggerInfo.contactDistanceNm)
         or tonumber(triggerInfo.directDistanceNm)
         or math.huge
+end
+
+function SkynetIADSSiblingCoordination:getThreatDecisionPriority(threatDecision)
+    if threatDecision == nil then
+        return -1
+    end
+    if threatDecision.shouldGoLive == true then
+        return 1
+    end
+    return 0
+end
+
+function SkynetIADSSiblingCoordination:clearPrimarySelectionLock(family)
+    if family == nil then
+        return
+    end
+    family.primarySelectionGroupName = nil
+    family.primarySelectionUntil = 0
+end
+
+function SkynetIADSSiblingCoordination:setPrimarySelectionLock(family, member)
+    if family == nil or member == nil then
+        return
+    end
+    family.primarySelectionGroupName = member.groupName
+    family.primarySelectionUntil = timer.getTime() + (family.primaryLatchSeconds or self.defaultPrimaryLatchSeconds)
+end
+
+function SkynetIADSSiblingCoordination:getPrimarySelectionLockRemaining(family, member)
+    if family == nil or member == nil then
+        return 0
+    end
+    if family.primarySelectionGroupName ~= member.groupName then
+        return 0
+    end
+    local remaining = (family.primarySelectionUntil or 0) - timer.getTime()
+    if remaining <= 0 then
+        return 0
+    end
+    return remaining
+end
+
+function SkynetIADSSiblingCoordination:isPrimarySelectionLocked(family, member)
+    return self:getPrimarySelectionLockRemaining(family, member) > 0
+end
+
+function SkynetIADSSiblingCoordination:shouldRetainCurrentPrimary(family, currentPrimary, currentDecision, bestMember, bestDecision)
+    if family == nil or currentPrimary == nil or currentDecision == nil then
+        return false
+    end
+    if self:isSuppressed(currentPrimary) or self:canParticipate(currentPrimary) == false then
+        return false
+    end
+    if bestMember == nil or bestMember == currentPrimary then
+        return true
+    end
+
+    local currentPriority = self:getThreatDecisionPriority(currentDecision)
+    local bestPriority = self:getThreatDecisionPriority(bestDecision)
+    if bestPriority > currentPriority then
+        return false
+    end
+    if self:isPrimarySelectionLocked(family, currentPrimary) then
+        return true
+    end
+
+    local currentDistanceNm = self:getThreatDecisionDistanceNm(currentDecision)
+    local bestDistanceNm = self:getThreatDecisionDistanceNm(bestDecision)
+    local hysteresisNm = family.primaryDistanceHysteresisNm or self.defaultPrimaryDistanceHysteresisNm
+    return bestDistanceNm >= (currentDistanceNm - hysteresisNm)
 end
 
 function SkynetIADSSiblingCoordination:getBestThreatCandidate(family, excludedGroupName)
@@ -428,6 +539,7 @@ function SkynetIADSSiblingCoordination:ensureSuppressedSwitchLock(family, member
     if family.suppressedSwitchGroupName == member.groupName then
         return false
     end
+    self:clearPrimarySelectionLock(family)
     family.suppressedSwitchGroupName = member.groupName
     family.suppressedSwitchUntil = now + (family.suppressedSwitchDelaySeconds or self.defaultSuppressedSwitchDelaySeconds)
     local delaySeconds = mist.utils.round((family.suppressedSwitchUntil or now) - now, 1)
@@ -508,7 +620,17 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
         return nil, true
     end
 
+    local currentDecision = nil
+    if currentPrimary and self:isSuppressed(currentPrimary) == false then
+        currentDecision = self:getMemberThreatDecision(family, currentPrimary)
+    end
     local bestMember, bestDecision = self:getBestThreatCandidate(family, nil)
+    if self:shouldRetainCurrentPrimary(family, currentPrimary, currentDecision, bestMember, bestDecision) then
+        if currentPrimary ~= member then
+            return nil, false
+        end
+        return currentDecision, true
+    end
     if bestMember == nil then
         return nil, true
     end
@@ -600,7 +722,14 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
         return currentPrimary, "engaged", nil
     end
 
+    local currentDecision = nil
+    if currentPrimary and self:isSuppressed(currentPrimary) == false then
+        currentDecision = self:getMemberThreatDecision(family, currentPrimary)
+    end
     local bestMember, bestDecision = self:getBestThreatCandidate(family, nil)
+    if self:shouldRetainCurrentPrimary(family, currentPrimary, currentDecision, bestMember, bestDecision) then
+        return currentPrimary, family.activeReason or "nearest_trigger", currentDecision
+    end
     if bestMember then
         return bestMember, "nearest_trigger", bestDecision
     end
@@ -776,6 +905,9 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     end
     family.activeGroupName = member.groupName
     family.activeReason = reason
+    if switchedPrimary then
+        self:setPrimarySelectionLock(family, member)
+    end
 end
 
 function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
@@ -927,6 +1059,7 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
         self:log("Family released | family=" .. family.name)
     end
     self:clearSuppressedSwitchLock(family)
+    self:clearPrimarySelectionLock(family)
     family.activeGroupName = nil
     family.activeReason = nil
     for i = 1, #family.members do
@@ -987,6 +1120,8 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         preferredPrimaryGroupName = definition.primary,
         denialAlertDistanceNm = definition.denialAlertDistanceNm or self.defaultDenialAlertDistanceNm,
         suppressedSwitchDelaySeconds = definition.suppressedSwitchDelaySeconds or self.defaultSuppressedSwitchDelaySeconds,
+        primaryLatchSeconds = definition.primaryLatchSeconds or self.defaultPrimaryLatchSeconds,
+        primaryDistanceHysteresisNm = definition.primaryDistanceHysteresisNm or self.defaultPrimaryDistanceHysteresisNm,
         members = {},
         activeGroupName = nil,
         activeReason = nil,
@@ -995,6 +1130,8 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         lastThreatSourceGroupName = nil,
         suppressedSwitchGroupName = nil,
         suppressedSwitchUntil = 0,
+        primarySelectionGroupName = nil,
+        primarySelectionUntil = 0,
     }
 
     for i = 1, #definition.members do
@@ -1032,6 +1169,8 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         .. " | preferredPrimary=" .. tostring(family.preferredPrimaryGroupName)
         .. " | members=" .. tostring(#family.members)
         .. " | passiveAction=" .. tostring(family.passiveAction)
+        .. " | primaryLatch=" .. tostring(family.primaryLatchSeconds) .. "s"
+        .. " | primaryHysteresis=" .. tostring(family.primaryDistanceHysteresisNm) .. "nm"
     )
     return true, #family.members
 end
@@ -1061,6 +1200,8 @@ function SkynetIADSSiblingCoordination.create(iads, config)
     self.defaultMode = (config and config.defaultMode) or SkynetIADSSiblingCoordination.DEFAULT_MODE
     self.defaultDenialAlertDistanceNm = (config and config.defaultDenialAlertDistanceNm) or SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM
     self.defaultSuppressedSwitchDelaySeconds = (config and config.defaultSuppressedSwitchDelaySeconds) or SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS
+    self.defaultPrimaryLatchSeconds = (config and config.defaultPrimaryLatchSeconds) or SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS
+    self.defaultPrimaryDistanceHysteresisNm = (config and config.defaultPrimaryDistanceHysteresisNm) or SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM
     self.families = {}
     self.taskID = nil
     self._immediateEvaluationInProgress = false

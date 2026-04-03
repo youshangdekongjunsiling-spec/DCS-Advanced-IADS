@@ -3320,6 +3320,52 @@ function SkynetIADSMobilePatrol.installHooks()
 			end
 			return nil
 		end
+		if entry and entry.kind == "MSAM" and moveFireCapable then
+			if isAirContact(contact) ~= true then
+				return nil
+			end
+			if self:areGoLiveConstraintsSatisfied(contact) ~= true then
+				return nil
+			end
+			local threatRangeMeters = entry.manager and entry.manager.getThreatRangeMeters and entry.manager:getThreatRangeMeters(entry) or 0
+			if threatRangeMeters == nil or threatRangeMeters <= 0 then
+				return nil
+			end
+			local contactDistanceMeters = entry.manager:getContactDistanceMeters(entry, contact)
+			local directUnit, directUnitDistanceMeters = entry.manager:findNearestEnemyAircraftUnit(entry, threatRangeMeters)
+			local effectiveDistanceMeters = contactDistanceMeters
+			if directUnit ~= nil and directUnitDistanceMeters < effectiveDistanceMeters then
+				effectiveDistanceMeters = directUnitDistanceMeters
+			end
+			if effectiveDistanceMeters > threatRangeMeters then
+				return nil
+			end
+			local result = originalSAMInformOfContact(self, contact)
+			if entry.state == "patrolling" and hadTargetInRange == false and entry.manager and entry.manager.issuePatrolRoute then
+				entry.manager:setOrderTraceContext(entry, "move_fire_contact_route_resume", {
+					source = "inform_of_contact_move_fire",
+					contactName = entry.manager:getContactName(contact),
+					contactType = entry.manager:getContactTypeName(contact),
+					distanceNm = toRoundedNm(effectiveDistanceMeters),
+					threatRangeNm = toRoundedNm(threatRangeMeters),
+				}, "SkynetIADSSamSite:informOfContact")
+				entry.manager:issuePatrolRoute(entry)
+			end
+			if entry.manager and hadTargetInRange == false and self.targetsInRange == true then
+				entry.manager:log(
+					"informOfContact moving | "
+					.. entry.groupName
+					.. " | contact="
+					.. entry.manager:getContactName(contact)
+					.. " | distance="
+					.. tostring(toRoundedNm(effectiveDistanceMeters))
+					.. "nm | threatRange="
+					.. tostring(toRoundedNm(threatRangeMeters))
+					.. "nm"
+				)
+			end
+			return result
+		end
 		if entry and entry.kind == "MSAM" then
 			local profile = entry.manager:getMSAMCombatProfile(entry)
 			if profile and isAirContact(contact) and contact:isIdentifiedAsHARM() == false and self:areGoLiveConstraintsSatisfied(contact) == true then
