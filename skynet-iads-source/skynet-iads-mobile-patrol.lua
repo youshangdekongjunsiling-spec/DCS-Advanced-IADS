@@ -26,6 +26,8 @@ SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_CHECK_INTERVAL_SECONDS = 1
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_MIN_COMPLETION_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
+SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
+SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -268,6 +270,58 @@ local function toRoundedNm(distanceMeters)
 		return nil
 	end
 	return mist.utils.round(mist.utils.metersToNM(distanceMeters), 1)
+end
+
+local function resetMoveFireContactSession(entry)
+	if entry == nil then
+		return
+	end
+	entry.moveFireContactActive = false
+	entry.moveFireLastSeenTime = nil
+	entry.moveFireLastContactName = nil
+	entry.moveFireRouteResumeLockUntil = 0
+end
+
+local function hasRecentMoveFireContactSession(entry, now)
+	if entry == nil or entry.moveFireContactActive ~= true or entry.moveFireLastSeenTime == nil then
+		return false
+	end
+	now = now or timer.getTime()
+	return (now - entry.moveFireLastSeenTime) <= SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS
+end
+
+local function touchMoveFireContactSession(entry, contact)
+	if entry == nil then
+		return
+	end
+	entry.moveFireContactActive = true
+	entry.moveFireLastSeenTime = timer.getTime()
+	if entry.manager and entry.manager.getContactName then
+		entry.moveFireLastContactName = entry.manager:getContactName(contact)
+	end
+end
+
+local function shouldIssueMoveFireRouteResume(entry, element, now)
+	if entry == nil then
+		return false
+	end
+	now = now or timer.getTime()
+	if entry.combatMode == "harm_silent" or entry.debugHarmActive == true then
+		return false
+	end
+	if element and (element.harmSilenceID ~= nil or element.harmRelocationInProgress == true) then
+		return false
+	end
+	return entry.moveFireRouteResumeLockUntil == nil or now >= entry.moveFireRouteResumeLockUntil
+end
+
+local function markMoveFireRouteResumeIssued(entry, now)
+	if entry == nil then
+		return
+	end
+	now = now or timer.getTime()
+	entry.moveFireRouteResumeLockUntil =
+		now + SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS
 end
 
 local function setThreatProbeCandidate(details, prefix, name, typeName, distanceMeters)
@@ -2256,6 +2310,9 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false then
 		entry.lastThreatContact = threatDecision.contact
 		self:refreshThreatContact(entry.lastThreatContact)
+		if moveFireCapable == true then
+			touchMoveFireContactSession(entry, threatDecision.contact)
+		end
 	end
 	if triggerInfo then
 		entry.lastDeployTrigger = triggerInfo
@@ -2577,6 +2634,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.debugLastCombatAnnouncementKey = nil
 	entry.lastThreatProbeSignature = nil
 	entry.lastThreatProbeTime = nil
+	resetMoveFireContactSession(entry)
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
@@ -2995,6 +3053,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			forceElementIntoPatrolDarkState(entry.element)
 			entry.combatMode = "patrolling"
 			entry.debugLastCombatAnnouncementKey = nil
+			resetMoveFireContactSession(entry)
 			local resumedRoute = false
 			pcall(function()
 				resumedRoute = self:issuePatrolRoute(entry)
@@ -3157,6 +3216,10 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		patrolRefreshDelays = {},
 		nextPatrolRefreshTime = nil,
 		debugHarmActive = false,
+		moveFireContactActive = false,
+		moveFireLastSeenTime = nil,
+		moveFireLastContactName = nil,
+		moveFireRouteResumeLockUntil = 0,
 		lastThreatProbeSignature = nil,
 		lastThreatProbeTime = nil,
 		manager = self,
@@ -3296,6 +3359,8 @@ function SkynetIADSMobilePatrol.installHooks()
 	function SkynetIADSSamSite:informOfContact(contact)
 		local hadTargetInRange = self.targetsInRange == true
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
+		local now = timer.getTime()
+		local hadRecentMoveFireContact = hasRecentMoveFireContactSession(entry, now)
 		local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
 		local siblingInfo = entry and entry.manager and entry.manager.getSiblingInfo and entry.manager:getSiblingInfo(entry) or nil
 		local passiveSiblingBlocked =
@@ -3324,6 +3389,9 @@ function SkynetIADSMobilePatrol.installHooks()
 			if isAirContact(contact) ~= true then
 				return nil
 			end
+			if entry.combatMode == "harm_silent" or self.harmSilenceID ~= nil or self.harmRelocationInProgress == true then
+				return nil
+			end
 			if self:areGoLiveConstraintsSatisfied(contact) ~= true then
 				return nil
 			end
@@ -3341,7 +3409,14 @@ function SkynetIADSMobilePatrol.installHooks()
 				return nil
 			end
 			local result = originalSAMInformOfContact(self, contact)
-			if entry.state == "patrolling" and hadTargetInRange == false and entry.manager and entry.manager.issuePatrolRoute then
+			touchMoveFireContactSession(entry, contact)
+			if entry.state == "patrolling"
+				and hadRecentMoveFireContact ~= true
+				and entry.manager
+				and entry.manager.issuePatrolRoute
+				and shouldIssueMoveFireRouteResume(entry, self, now)
+			then
+				markMoveFireRouteResumeIssued(entry, now)
 				entry.manager:setOrderTraceContext(entry, "move_fire_contact_route_resume", {
 					source = "inform_of_contact_move_fire",
 					contactName = entry.manager:getContactName(contact),
@@ -3351,7 +3426,7 @@ function SkynetIADSMobilePatrol.installHooks()
 				}, "SkynetIADSSamSite:informOfContact")
 				entry.manager:issuePatrolRoute(entry)
 			end
-			if entry.manager and hadTargetInRange == false and self.targetsInRange == true then
+			if entry.manager and hadRecentMoveFireContact ~= true then
 				entry.manager:log(
 					"informOfContact moving | "
 					.. entry.groupName
@@ -3506,6 +3581,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			if moveFireCapable then
 				entry.state = "patrolling"
 				entry.combatMode = "harm_silent"
+				resetMoveFireContactSession(entry)
 				if entry.manager and entry.manager.advancePatrol then
 					local resumedRoute = false
 					pcall(function()
@@ -3558,6 +3634,7 @@ function SkynetIADSMobilePatrol.installHooks()
 			if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
 				entry.state = "patrolling"
 				entry.combatMode = "patrolling"
+				resetMoveFireContactSession(entry)
 				if entry.manager.advancePatrol then
 					local resumedRoute = false
 					pcall(function()
