@@ -154,10 +154,21 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			local isWeaponContact = categoryId == Object.Category.WEAPON
 			local directTargetElement = isWeaponContact and self:getDirectTargetElement(contact) or nil
 			local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
-			if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" and contact._skynetInitialDirectTargetGroupName == nil then
-				contact._skynetInitialDirectTargetGroupName = currentDirectTargetGroupName
+			if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" then
+				if contact._skynetPendingDirectTargetGroupName == currentDirectTargetGroupName then
+					contact._skynetPendingDirectTargetMatchCount = (contact._skynetPendingDirectTargetMatchCount or 1) + 1
+				else
+					contact._skynetPendingDirectTargetGroupName = currentDirectTargetGroupName
+					contact._skynetPendingDirectTargetMatchCount = 1
+				end
+				if contact._skynetPendingDirectTargetMatchCount >= 2 then
+					contact._skynetFrozenDirectTargetGroupName = currentDirectTargetGroupName
+				end
+			elseif contact._skynetFrozenDirectTargetGroupName == nil then
+				contact._skynetPendingDirectTargetGroupName = nil
+				contact._skynetPendingDirectTargetMatchCount = 0
 			end
-			local frozenDirectTargetGroupName = contact._skynetInitialDirectTargetGroupName
+			local frozenDirectTargetGroupName = contact._skynetFrozenDirectTargetGroupName
 			local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
 			local contactAgeSeconds = self:getContactAgeSeconds(contact)
 			local directTargetBackstopActive =
@@ -171,7 +182,9 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			else
 				contact._skynetDirectTargetGroupName = nil
 				if isWeaponContact ~= true then
-					contact._skynetInitialDirectTargetGroupName = nil
+					contact._skynetPendingDirectTargetGroupName = nil
+					contact._skynetPendingDirectTargetMatchCount = 0
+					contact._skynetFrozenDirectTargetGroupName = nil
 				end
 				if isWeaponContact ~= true and contact:isIdentifiedAsHARM() == true then
 					contact:setHARMState(SkynetIADSContact.NOT_HARM)
