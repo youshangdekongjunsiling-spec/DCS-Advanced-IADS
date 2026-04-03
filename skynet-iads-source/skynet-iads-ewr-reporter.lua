@@ -261,7 +261,7 @@ function SkynetIADSEWRReporter:broadcastTick()
 end
 
 function SkynetIADSEWRReporter._tick(params, time)
-    local self = params.self
+    local self = params and params.self or nil
     if not self or not self.iads then
         return nil
     end

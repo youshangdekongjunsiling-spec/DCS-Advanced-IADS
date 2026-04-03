@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-order-trace-origin | BUILD TIME: 02.04.2026 0027Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa11-sibling-firefix-sa15-harmfix | BUILD TIME: 02.04.2026 0121Z ---")
 do
 --this file contains the required units per sam type
 samTypesDB = {	
@@ -4609,6 +4609,15 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 	if siblingCoordClass and siblingCoordClass.getFamilyForElement then
 		local siblingInfo = siblingCoordClass.getFamilyForElement(self)
 		if siblingInfo and siblingInfo.role == "passive" then
+			if self.iads and self.iads.traceElementCommand then
+				self.iads:traceElementCommand(self, "harm_ignore_passive", {
+					event = "decision",
+					outcome = "ignored",
+					reason = "passive_sibling",
+					originModule = "skynet-iads-abstract-radar-element.lua",
+					originFunction = "informOfHARM",
+				})
+			end
 			return
 		end
 	end
@@ -4648,8 +4657,21 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 			distanceNM = mist.utils.metersToNM(self:getDistanceInMetersToContact(radarReference, harmContact:getPosition().p))
 		end
 		local secondsToImpact = self:getSecondsToImpact(distanceNM, speedKT)
-		if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+		local canReactToHARM =
+			(self:getIsAPointDefence() == false or mobileMoveFireCapable == true)
+			and (self:isDefendingHARM() == false or (self:getHARMShutdownTime() < secondsToImpact))
+		local shouldIgnoreShutdown = mobileMoveFireCapable ~= true and self:shallIgnoreHARMShutdown() == true
+		if canReactToHARM and shouldIgnoreShutdown == false then
 			self:goSilentToEvadeHARM(secondsToImpact)
+		elseif shouldIgnoreShutdown and self.iads and self.iads.traceElementCommand then
+			self.iads:traceElementCommand(self, "harm_ignore_engage_capable", {
+				event = "decision",
+				outcome = "ignored",
+				reason = "can_engage_harm",
+				harmTTI = secondsToImpact and mist.utils.round(secondsToImpact, 1) or nil,
+				originModule = "skynet-iads-abstract-radar-element.lua",
+				originFunction = "informOfHARM",
+			})
 		end
 		return
 	end
@@ -4681,9 +4703,22 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 					end
 					--self.iads:printOutputToLog("Ignore HARM shutdown: "..tostring(self:shallIgnoreHARMShutdown()))
 					--self.iads:printOutputToLog("忽略HARM关闭："..tostring(self:shallIgnoreHARMShutdown()))
-					if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+					local canReactToHARM =
+						(self:getIsAPointDefence() == false or mobileMoveFireCapable == true)
+						and (self:isDefendingHARM() == false or (self:getHARMShutdownTime() < secondsToImpact))
+					local shouldIgnoreShutdown = mobileMoveFireCapable ~= true and self:shallIgnoreHARMShutdown() == true
+					if canReactToHARM and shouldIgnoreShutdown == false then
 						self:goSilentToEvadeHARM(secondsToImpact)
 						break
+					elseif shouldIgnoreShutdown and self.iads and self.iads.traceElementCommand then
+						self.iads:traceElementCommand(self, "harm_ignore_engage_capable", {
+							event = "decision",
+							outcome = "ignored",
+							reason = "can_engage_harm",
+							harmTTI = secondsToImpact and mist.utils.round(secondsToImpact, 1) or nil,
+							originModule = "skynet-iads-abstract-radar-element.lua",
+							originFunction = "informOfHARM",
+						})
 					end
 				end
 			end
@@ -5866,8 +5901,9 @@ SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ENGAGE_DISTANCE_NM = 16
 SkynetIADSMobilePatrol.DEFAULT_COMBAT_EXIT_NO_TARGET_SECONDS = 10
 SkynetIADSMobilePatrol.DEFAULT_POST_COMBAT_MOBILE_SECONDS = 30
 SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS = 60
-SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS = 8
+SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS = 30
 SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS = 25
+SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT = 2
 SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
@@ -6051,7 +6087,23 @@ local function collectEnemyAirUnits(enemyCoalitionId)
 					local units = group:getUnits()
 					for k = 1, #units do
 						local unit = units[k]
+						local isAlive = false
+						local isInAir = false
 						if unit and unit:isExist() then
+							local okLife, life = pcall(function()
+								return unit:getLife()
+							end)
+							if okLife and type(life) == "number" and life > 0 then
+								isAlive = true
+							end
+							local okInAir, inAir = pcall(function()
+								return unit:inAir()
+							end)
+							if okInAir and inAir == true then
+								isInAir = true
+							end
+						end
+						if isAlive and isInAir then
 							airUnits[#airUnits + 1] = unit
 						end
 					end
@@ -6108,11 +6160,23 @@ end
 
 local collectElementEmitterRepresentations
 
+local function getGroundOpenFireROEValue()
+	local groundROE = AI.Option and AI.Option.Ground and AI.Option.Ground.val and AI.Option.Ground.val.ROE or nil
+	if groundROE == nil then
+		return nil
+	end
+	return groundROE.WEAPON_FREE or groundROE.OPEN_FIRE
+end
+
 local function setGroundROE(controller, weaponHold)
+	local roeValue = weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or getGroundOpenFireROEValue()
+	if roeValue == nil then
+		return
+	end
 	pcall(function()
 		controller:setOption(
 			AI.Option.Ground.id.ROE,
-			weaponHold and AI.Option.Ground.val.ROE.WEAPON_HOLD or AI.Option.Ground.val.ROE.OPEN_FIRE
+			roeValue
 		)
 	end)
 end
@@ -6218,6 +6282,7 @@ local function setElementMovingCombatState(element, weaponHold)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
 		return
 	end
+	local wasActive = element.aiState == true
 	local representations = collectElementEmitterRepresentations(element)
 	for i = 1, #representations do
 		setMovingCombatROEForRepresentation(representations[i], weaponHold)
@@ -6230,15 +6295,19 @@ local function setElementMovingCombatState(element, weaponHold)
 		setCombatAlarmState(controller)
 		setGroundROE(controller, weaponHold)
 	end
-	element.goLiveTime = timer.getTime()
+	if wasActive ~= true then
+		element.goLiveTime = timer.getTime()
+	end
 	element.aiState = true
 	if element.pointDefencesStopActingAsEW then
 		element:pointDefencesStopActingAsEW()
 	end
-	if element.scanForHarms then
+	if wasActive ~= true and element.scanForHarms then
 		element:scanForHarms()
 	end
 end
+
+local applyPatrolOptionsToRepresentation
 
 local function setElementMovingSilenceState(element)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
@@ -6314,7 +6383,7 @@ collectElementEmitterRepresentations = function(element)
 	return representations
 end
 
-local function applyPatrolOptionsToRepresentation(representation)
+applyPatrolOptionsToRepresentation = function(representation)
 	if representation == nil or representation.isExist == nil or representation:isExist() == false then
 		return
 	end
@@ -6704,20 +6773,57 @@ function SkynetIADSMobilePatrol:selectStartingWaypointIndex(entry)
 	return nearestIndex
 end
 
-function SkynetIADSMobilePatrol:buildRoadPatrolRoute(entry, startIndex)
+function SkynetIADSMobilePatrol:selectNearestWaypointIndex(entry)
+	if #entry.routePoints <= 1 then
+		return 1
+	end
+	local nearestIndex = 1
+	local nearestDistance = math.huge
+	for i = 1, #entry.routePoints do
+		local distance = self:getWaypointDistance(entry, entry.routePoints[i])
+		if distance < nearestDistance then
+			nearestDistance = distance
+			nearestIndex = i
+		end
+	end
+	return nearestIndex
+end
+
+function SkynetIADSMobilePatrol:getPatrolRouteForm(entry)
+	if entry and entry.patrolRouteMode == "off_road" then
+		return "off_road"
+	end
+	return "On Road"
+end
+
+function SkynetIADSMobilePatrol:buildPatrolRoute(entry, startIndex, form, prependCurrentPoint)
 	if entry == nil or #entry.routePoints == 0 then
 		return nil
 	end
 	local route = {}
 	local speedMps = mist.utils.kmphToMps(entry.patrolSpeedKmph)
+	if prependCurrentPoint == true then
+		local currentPoint = self:getPatrolReferencePoint(entry)
+		if currentPoint then
+			route[#route + 1] = mist.ground.buildWP(currentPoint, form, speedMps)
+		end
+	end
 	for offset = 0, (#entry.routePoints - 1) do
 		local index = ((startIndex - 1 + offset) % #entry.routePoints) + 1
 		local point = entry.routePoints[index]
 		if point then
-			route[#route + 1] = mist.ground.buildWP(point, "On Road", speedMps)
+			route[#route + 1] = mist.ground.buildWP(point, form, speedMps)
 		end
 	end
 	return #route > 0 and route or nil
+end
+
+function SkynetIADSMobilePatrol:buildRoadPatrolRoute(entry, startIndex)
+	return self:buildPatrolRoute(entry, startIndex, "On Road", false)
+end
+
+function SkynetIADSMobilePatrol:buildOffRoadPatrolRoute(entry, startIndex, prependCurrentPoint)
+	return self:buildPatrolRoute(entry, startIndex, "off_road", prependCurrentPoint == true)
 end
 
 function SkynetIADSMobilePatrol:issueRoadMove(entry, destination)
@@ -6771,7 +6877,22 @@ function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
 		}, "issuePatrolRoute")
 		return false
 	end
+	local routeMode = entry.patrolRouteMode or "road"
+	local routeForm = self:getPatrolRouteForm(entry)
+	local startIndex = entry.currentWaypointIndex or 1
 	local ok = pcall(function()
+		if routeMode == "off_road" then
+			local route = self:buildOffRoadPatrolRoute(entry, startIndex, true)
+			if route == nil then
+				error("missing off-road patrol route")
+			end
+			mist.ground.patrolRoute({
+				gpData = entry.groupName,
+				route = route,
+				speed = mist.utils.kmphToMps(entry.patrolSpeedKmph),
+			})
+			return
+		end
 		mist.ground.patrolRoute({
 			gpData = entry.groupName,
 			useGroupRoute = entry.groupName,
@@ -6783,30 +6904,94 @@ function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
 		entry.currentDestination = nil
 		entry.lastRouteIssueTime = timer.getTime()
 		entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
-		self:log("Patrol route issued for "..entry.groupName.." | speed="..entry.patrolSpeedKmph.."km/h")
+		self:log("Patrol route issued for "..entry.groupName.." | mode="..routeMode.." | wp="..tostring(startIndex).." | speed="..entry.patrolSpeedKmph.."km/h")
 	else
-		self:log("Patrol route failed for "..entry.groupName)
+		self:log("Patrol route failed for "..entry.groupName.." | mode="..routeMode.." | wp="..tostring(startIndex))
 	end
 	self:traceEntryCommand(entry, "patrol_route", {
 		outcome = ok and "issued" or "failed",
 		speedKmph = entry.patrolSpeedKmph,
+		routeMode = routeMode,
+		routeForm = routeForm,
+		waypoint = startIndex,
 	}, "issuePatrolRoute")
 	return ok
 end
 
 function SkynetIADSMobilePatrol:shouldReissuePatrolRoute(entry)
 	if entry.lastRouteIssueTime == nil or entry.lastRouteIssueReferencePoint == nil then
-		return false
+		return false, nil, nil
 	end
-	if (timer.getTime() - entry.lastRouteIssueTime) < self.defaultRouteReissueSeconds then
-		return false
+	local elapsedSeconds = timer.getTime() - entry.lastRouteIssueTime
+	if elapsedSeconds < self.defaultRouteReissueSeconds then
+		return false, nil, elapsedSeconds
 	end
 	local currentPoint = self:getPatrolReferencePoint(entry)
 	if currentPoint == nil then
-		return false
+		return false, nil, elapsedSeconds
 	end
 	local movedDistance = mist.utils.get2DDist(currentPoint, entry.lastRouteIssueReferencePoint)
-	return movedDistance < self.defaultMinMovementMeters
+	if movedDistance >= self.defaultMinMovementMeters then
+		entry.stationaryReissueCount = 0
+		return false, movedDistance, elapsedSeconds
+	end
+	return true, movedDistance, elapsedSeconds
+end
+
+function SkynetIADSMobilePatrol:handlePatrolStationaryRecovery(entry, source)
+	local shouldReissue, movedDistance, elapsedSeconds = self:shouldReissuePatrolRoute(entry)
+	if shouldReissue ~= true then
+		return false
+	end
+
+	entry.stationaryReissueCount = (entry.stationaryReissueCount or 0) + 1
+	local stationaryCount = entry.stationaryReissueCount
+	local fallbackTriggered = false
+	local forcedAdvance = false
+	if stationaryCount >= self.defaultRouteReissueFallbackCount and entry.patrolRouteMode ~= "off_road" then
+		entry.patrolRouteMode = "off_road"
+		fallbackTriggered = true
+	end
+	if entry.patrolRouteMode == "off_road" then
+		if fallbackTriggered then
+			entry.currentWaypointIndex = self:selectNearestWaypointIndex(entry)
+		elseif stationaryCount > self.defaultRouteReissueFallbackCount and #entry.routePoints > 1 then
+			entry.currentWaypointIndex = ((entry.currentWaypointIndex or 1) % #entry.routePoints) + 1
+			forcedAdvance = self:advancePatrol(entry, true) == true
+		end
+	end
+
+	local roundedMovedDistance = movedDistance and mist.utils.round(movedDistance, 1) or nil
+	local roundedElapsedSeconds = elapsedSeconds and mist.utils.round(elapsedSeconds, 1) or nil
+	local note = "elapsed="..tostring(roundedElapsedSeconds).."s moved="..tostring(roundedMovedDistance).."m count="..tostring(stationaryCount).." mode="..tostring(entry.patrolRouteMode or "road")
+	if entry.patrolRouteMode == "off_road" then
+		note = note .. " wp=" .. tostring(entry.currentWaypointIndex)
+	end
+	if forcedAdvance then
+		note = note .. " forcedAdvance=Y"
+	end
+	self:log("Patrol route reissued for "..entry.groupName.." | source="..tostring(source).." | moved="..tostring(roundedMovedDistance).."m | elapsed="..tostring(roundedElapsedSeconds).."s | count="..tostring(stationaryCount).." | mode="..tostring(entry.patrolRouteMode or "road"))
+	self:traceEntryCommand(entry, "patrol_reissue_stationary", {
+		event = "decision",
+		outcome = "reissue",
+		source = source,
+		movedMeters = roundedMovedDistance,
+		elapsedSeconds = roundedElapsedSeconds,
+		stationaryCount = stationaryCount,
+		routeMode = entry.patrolRouteMode or "road",
+		waypoint = entry.currentWaypointIndex,
+		fallbackTriggered = fallbackTriggered and "Y" or "N",
+		forcedAdvance = forcedAdvance and "Y" or "N",
+	}, "handlePatrolStationaryRecovery")
+	self:setOrderTraceContext(entry, "patrol_reissue_stationary", {
+		source = source,
+		note = note,
+	}, "handlePatrolStationaryRecovery")
+	if forcedAdvance == true then
+		return true
+	end
+	self:issuePatrolRoute(entry)
+	return true
 end
 
 function SkynetIADSMobilePatrol:issueHold(entry)
@@ -7080,6 +7265,280 @@ function SkynetIADSMobilePatrol:getContactName(contact)
 	return targetName
 end
 
+function SkynetIADSMobilePatrol:getUnitName(unit)
+	if unit == nil then
+		return "unknown"
+	end
+	local targetName = "unknown"
+	local okName, name = pcall(function()
+		return unit:getName()
+	end)
+	if okName and name then
+		targetName = name
+	end
+	return targetName
+end
+
+function SkynetIADSMobilePatrol:refreshThreatContact(contact)
+	if contact == nil or contact.refresh == nil then
+		return false
+	end
+	local okRefresh = pcall(function()
+		contact:refresh()
+	end)
+	return okRefresh == true
+end
+
+function SkynetIADSMobilePatrol:doesContactMatchUnit(contact, unit)
+	if contact == nil or unit == nil then
+		return false
+	end
+
+	local contactName = self:getContactName(contact)
+	local unitName = self:getUnitName(unit)
+	if contactName ~= "unknown" and unitName ~= "unknown" and contactName == unitName then
+		return true
+	end
+
+	local contactRepresentation = nil
+	local okContactRepresentation = pcall(function()
+		contactRepresentation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+	end)
+	if okContactRepresentation == true and contactRepresentation ~= nil then
+		if contactRepresentation == unit then
+			return true
+		end
+
+		local okContactId, contactId = pcall(function()
+			return contactRepresentation:getID()
+		end)
+		local okUnitId, unitId = pcall(function()
+			return unit:getID()
+		end)
+		if okContactId == true and okUnitId == true and contactId ~= nil and contactId == unitId then
+			return true
+		end
+	end
+
+	return false
+end
+
+function SkynetIADSMobilePatrol:findMatchingEligibleContact(entry, unit, maxDistanceMeters)
+	if entry == nil or unit == nil then
+		return nil, math.huge, nil
+	end
+
+	local contacts = self.iads:getContacts()
+	for i = 1, #contacts do
+		local contact = contacts[i]
+		if contact
+			and isAirContact(contact)
+			and contact:isIdentifiedAsHARM() == false
+			and entry.element:areGoLiveConstraintsSatisfied(contact)
+			and self:doesContactMatchUnit(contact, unit) then
+			self:refreshThreatContact(contact)
+			local distanceMeters = self:getContactDistanceMeters(entry, contact)
+			if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
+				return contact, distanceMeters, "live_contact_match"
+			end
+		end
+	end
+
+	local cachedContact = entry.lastThreatContact
+	if cachedContact
+		and cachedContact.isExist
+		and cachedContact:isExist()
+		and cachedContact:isIdentifiedAsHARM() == false
+		and entry.element:areGoLiveConstraintsSatisfied(cachedContact)
+		and self:doesContactMatchUnit(cachedContact, unit) then
+		self:refreshThreatContact(cachedContact)
+		local distanceMeters = self:getContactDistanceMeters(entry, cachedContact)
+		if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
+			return cachedContact, distanceMeters, "cached_contact_match"
+		end
+	end
+
+	return nil, math.huge, nil
+end
+
+function SkynetIADSMobilePatrol:getUnitDistanceMeters(entry, unit)
+	local radarPoint = self:getPatrolReferencePoint(entry)
+	local unitPoint = nil
+	if unit and unit.getPoint then
+		pcall(function()
+			unitPoint = unit:getPoint()
+		end)
+	end
+	if radarPoint and unitPoint then
+		return mist.utils.get2DDist(radarPoint, unitPoint)
+	end
+	return math.huge
+end
+
+function SkynetIADSMobilePatrol:findCachedThreatContactFallback(entry, unit, maxDistanceMeters)
+	if entry == nil or unit == nil then
+		return nil, math.huge, nil
+	end
+
+	local cachedContact = entry.lastThreatContact
+	if cachedContact == nil
+		or cachedContact.isExist == nil
+		or cachedContact:isExist() == false
+		or cachedContact:isIdentifiedAsHARM() == true
+		or entry.element:areGoLiveConstraintsSatisfied(cachedContact) ~= true then
+		return nil, math.huge, nil
+	end
+
+	self:refreshThreatContact(cachedContact)
+	local cachedDistanceMeters = self:getContactDistanceMeters(entry, cachedContact)
+	if maxDistanceMeters ~= nil and cachedDistanceMeters > maxDistanceMeters then
+		return nil, math.huge, nil
+	end
+
+	local unitDistanceMeters = self:getUnitDistanceMeters(entry, unit)
+	local proximityToleranceMeters = mist.utils.NMToMeters(5)
+	local contactType = self:getContactTypeName(cachedContact)
+	local unitType = self:getUnitTypeName(unit)
+	local compatibleType =
+		contactType == "unknown"
+		or unitType == "unknown"
+		or contactType == unitType
+	local distanceClose =
+		unitDistanceMeters < math.huge
+		and math.abs(cachedDistanceMeters - unitDistanceMeters) <= proximityToleranceMeters
+
+	if self:doesContactMatchUnit(cachedContact, unit) or (compatibleType and distanceClose) then
+		return cachedContact, cachedDistanceMeters, "cached_contact_fallback"
+	end
+
+	return nil, math.huge, nil
+end
+
+function SkynetIADSMobilePatrol:getReusableThreatContact(entry, triggerInfo)
+	if entry == nil or triggerInfo == nil then
+		return nil, math.huge
+	end
+
+	local cachedContact = entry.lastThreatContact
+	if cachedContact == nil
+		or cachedContact.isExist == nil
+		or cachedContact:isExist() == false
+		or cachedContact:isIdentifiedAsHARM() == true
+		or entry.element:areGoLiveConstraintsSatisfied(cachedContact) ~= true then
+		return nil, math.huge
+	end
+
+	self:refreshThreatContact(cachedContact)
+	local cachedDistanceMeters = self:getContactDistanceMeters(entry, cachedContact)
+	local expectedDistanceNm =
+		triggerInfo.contactDistanceNm
+		or triggerInfo.directDistanceNm
+		or triggerInfo.effectiveDistanceNm
+		or triggerInfo.distanceNm
+	local expectedDistanceMeters = expectedDistanceNm and mist.utils.NMToMeters(expectedDistanceNm) or math.huge
+	local proximityToleranceMeters = mist.utils.NMToMeters(5)
+	local cachedName = self:getContactName(cachedContact)
+	local expectedName = triggerInfo.contactName or triggerInfo.directUnitName
+	local cachedType = self:getContactTypeName(cachedContact)
+	local expectedType = triggerInfo.contactType
+	local nameMatches =
+		expectedName ~= nil
+		and expectedName ~= "unknown"
+		and cachedName ~= "unknown"
+		and cachedName == expectedName
+	local compatibleType =
+		expectedType == nil
+		or expectedType == "unknown"
+		or cachedType == "unknown"
+		or cachedType == expectedType
+	local distanceClose =
+		expectedDistanceMeters == math.huge
+		or math.abs(cachedDistanceMeters - expectedDistanceMeters) <= proximityToleranceMeters
+
+	if nameMatches or (compatibleType and distanceClose) then
+		return cachedContact, cachedDistanceMeters
+	end
+
+	return nil, math.huge
+end
+
+function SkynetIADSMobilePatrol:getContactTypeName(contact)
+	if contact == nil then
+		return "unknown"
+	end
+	local targetType = "unknown"
+	local okType, typeName = pcall(function()
+		return contact:getTypeName()
+	end)
+	if okType and typeName then
+		targetType = typeName
+	end
+	return targetType
+end
+
+function SkynetIADSMobilePatrol:getUnitTypeName(unit)
+	if unit == nil then
+		return "unknown"
+	end
+	local targetType = "unknown"
+	local okType, typeName = pcall(function()
+		return unit:getTypeName()
+	end)
+	if okType and typeName then
+		targetType = typeName
+	end
+	return targetType
+end
+
+function SkynetIADSMobilePatrol:findFallbackEligibleContact(entry, unit, expectedDistanceMeters, maxDistanceMeters)
+	if entry == nil or unit == nil then
+		return nil, math.huge, nil
+	end
+
+	local eligibleCount = 0
+	local nearestContact = nil
+	local nearestDistanceMeters = math.huge
+	local contacts = self.iads:getContacts()
+	for i = 1, #contacts do
+		local contact = contacts[i]
+		if contact
+			and isAirContact(contact)
+			and contact:isIdentifiedAsHARM() == false
+			and entry.element:areGoLiveConstraintsSatisfied(contact) then
+			self:refreshThreatContact(contact)
+			local distanceMeters = self:getContactDistanceMeters(entry, contact)
+			if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
+				eligibleCount = eligibleCount + 1
+				if distanceMeters < nearestDistanceMeters then
+					nearestContact = contact
+					nearestDistanceMeters = distanceMeters
+				end
+			end
+		end
+	end
+
+	if nearestContact == nil then
+		return nil, math.huge, nil
+	end
+
+	if eligibleCount == 1 then
+		return nearestContact, nearestDistanceMeters, "sole_contact_fallback"
+	end
+
+	if expectedDistanceMeters ~= nil and expectedDistanceMeters < math.huge then
+		local proximityToleranceMeters = mist.utils.NMToMeters(3)
+		if math.abs(nearestDistanceMeters - expectedDistanceMeters) <= proximityToleranceMeters then
+			local contactType = self:getContactTypeName(nearestContact)
+			local unitType = self:getUnitTypeName(unit)
+			if contactType == "unknown" or unitType == "unknown" or contactType == unitType then
+				return nearestContact, nearestDistanceMeters, "proximity_contact_fallback"
+			end
+		end
+	end
+
+	return nil, math.huge, nil
+end
+
 function SkynetIADSMobilePatrol:getContactDistanceMeters(entry, contact)
 	local radarPoint = self:getPatrolReferencePoint(entry)
 	local targetPoint = nil
@@ -7210,6 +7669,16 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 	if profile then
 		local contact, contactDistanceMeters = self:findNearestEligibleContact(entry, profile.alertRangeMeters)
 		local directUnit, directUnitDistanceMeters = self:findNearestEnemyAircraftUnit(entry, profile.alertRangeMeters)
+		local matchedContactSource = nil
+		if contact == nil and directUnit ~= nil then
+			contact, contactDistanceMeters, matchedContactSource = self:findMatchingEligibleContact(entry, directUnit, profile.alertRangeMeters)
+			if contact == nil then
+				contact, contactDistanceMeters, matchedContactSource = self:findFallbackEligibleContact(entry, directUnit, directUnitDistanceMeters, profile.alertRangeMeters)
+			end
+			if contact == nil then
+				contact, contactDistanceMeters, matchedContactSource = self:findCachedThreatContactFallback(entry, directUnit, profile.alertRangeMeters)
+			end
+		end
 		if contact == nil and directUnit == nil then
 			return nil
 		end
@@ -7234,10 +7703,22 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		local shouldWeaponHold = inEngageRange and hasFireQualityContact ~= true
 		local triggerInfo = nil
 		if contact ~= nil then
+			local contactSource = hasFireQualityContact and "contact_scan_engage" or "contact_scan_alert"
+			if matchedContactSource == "live_contact_match" then
+				contactSource = hasFireQualityContact and "matched_contact_engage" or "matched_contact_alert"
+			elseif matchedContactSource == "cached_contact_match" then
+				contactSource = hasFireQualityContact and "cached_contact_engage" or "cached_contact_alert"
+			elseif matchedContactSource == "cached_contact_fallback" then
+				contactSource = hasFireQualityContact and "cached_fallback_engage" or "cached_fallback_alert"
+			elseif matchedContactSource == "sole_contact_fallback" then
+				contactSource = hasFireQualityContact and "fallback_contact_engage" or "fallback_contact_alert"
+			elseif matchedContactSource == "proximity_contact_fallback" then
+				contactSource = hasFireQualityContact and "proximity_contact_engage" or "proximity_contact_alert"
+			end
 			triggerInfo = self:buildDeployTriggerInfo(
 				entry,
 				contact,
-				(hasFireQualityContact and "contact_scan_engage" or "contact_scan_alert")
+				contactSource
 			)
 			triggerInfo.contactDistanceNm = triggerInfo.distanceNm
 		else
@@ -7286,10 +7767,27 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		if directUnit == nil then
 			return nil
 		end
-		local triggerInfo = self:buildAircraftUnitTriggerInfo(entry, directUnit, "direct_unit_scan", threatRangeMeters)
+		local contact, contactDistanceMeters, matchedContactSource = self:findMatchingEligibleContact(entry, directUnit, threatRangeMeters)
+		if contact == nil then
+			contact, contactDistanceMeters, matchedContactSource = self:findFallbackEligibleContact(entry, directUnit, directUnitDistanceMeters, threatRangeMeters)
+		end
+		local directSource = "direct_unit_scan"
+		if matchedContactSource == "live_contact_match" then
+			directSource = "direct_unit_contact_match"
+		elseif matchedContactSource == "cached_contact_match" then
+			directSource = "direct_unit_cached_contact"
+		elseif matchedContactSource == "sole_contact_fallback" then
+			directSource = "direct_unit_fallback_contact"
+		elseif matchedContactSource == "proximity_contact_fallback" then
+			directSource = "direct_unit_proximity_contact"
+		end
+		local triggerInfo = self:buildAircraftUnitTriggerInfo(entry, directUnit, directSource, threatRangeMeters)
+		if contact ~= nil and contactDistanceMeters < math.huge then
+			triggerInfo.contactDistanceNm = mist.utils.round(mist.utils.metersToNM(contactDistanceMeters), 1)
+		end
 		triggerInfo.engageRangeNm = mist.utils.round(mist.utils.metersToNM(threatRangeMeters), 1)
 		return {
-			contact = nil,
+			contact = contact,
 			triggerInfo = triggerInfo,
 			shouldDeploy = false,
 			shouldGoLive = true,
@@ -7333,13 +7831,36 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	local now = timer.getTime()
 	local wasCombatCommitted = entry.combatCommitted == true
 	local triggerInfo = threatDecision.triggerInfo
+	local moveFireCapable = self:isMoveFireCapable(entry)
+	if threatDecision.contact == nil and threatDecision.shouldGoLive == true and moveFireCapable ~= true then
+		local reusableContact, reusableDistanceMeters = self:getReusableThreatContact(entry, triggerInfo)
+		if reusableContact ~= nil then
+			threatDecision.contact = reusableContact
+			if triggerInfo then
+				triggerInfo.source = "reused_cached_contact"
+				if triggerInfo.contactDistanceNm == nil and reusableDistanceMeters < math.huge then
+					triggerInfo.contactDistanceNm = mist.utils.round(mist.utils.metersToNM(reusableDistanceMeters), 1)
+				end
+				if triggerInfo.contactName == nil or triggerInfo.contactName == "unknown" then
+					triggerInfo.contactName = self:getContactName(reusableContact)
+				end
+				if triggerInfo.contactType == nil or triggerInfo.contactType == "unknown" then
+					triggerInfo.contactType = self:getContactTypeName(reusableContact)
+				end
+			end
+		end
+	end
+	if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false then
+		entry.lastThreatContact = threatDecision.contact
+		self:refreshThreatContact(entry.lastThreatContact)
+	end
 	if triggerInfo then
 		entry.lastDeployTrigger = triggerInfo
 	end
 	entry.combatMode = threatDecision.combatMode or "default_fire"
-	local moveFireCapable = self:isMoveFireCapable(entry)
+	local effectiveSkipPause = skipPause == true or threatDecision.skipPauseDeployment == true
 
-	if moveFireCapable ~= true and threatDecision.shouldDeploy and entry.state ~= "deployed" and entry.state ~= "deploy_scattering" and skipPause ~= true then
+	if moveFireCapable ~= true and threatDecision.shouldDeploy and entry.state ~= "deployed" and entry.state ~= "deploy_scattering" and effectiveSkipPause ~= true then
 		self:pausePatrolForDeployment(entry, triggerInfo)
 	end
 
@@ -7347,9 +7868,6 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 		entry.lastThreatTime = timer.getTime()
 		entry.noThreatSince = nil
 		if threatDecision.shouldGoLive == true then
-			if entry.element.targetsInRange ~= nil then
-				entry.element.targetsInRange = true
-			end
 			self:setOrderTraceContext(entry, "msam_threat_decision", {
 				source = triggerInfo and triggerInfo.source or "deploy_scattering",
 				triggerInfo = triggerInfo,
@@ -7373,9 +7891,6 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	end
 
 	if threatDecision.shouldGoLive then
-		if entry.element.targetsInRange ~= nil then
-			entry.element.targetsInRange = true
-		end
 		if moveFireCapable then
 			self:traceEntryCommand(entry, "moving_combat_state", {
 				outcome = "issued",
@@ -7387,6 +7902,11 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 				weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
 			}, "applyMSAMThreatDecision")
 			setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
+			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
+				pcall(function()
+					entry.element:informOfContact(threatDecision.contact)
+				end)
+			end
 		else
 			self:setOrderTraceContext(entry, "msam_threat_decision", {
 				source = triggerInfo and triggerInfo.source or "go_live",
@@ -7611,6 +8131,10 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
+	entry.stationaryReissueCount = 0
+	if entry.patrolRouteMode == "off_road" then
+		entry.currentWaypointIndex = self:selectNearestWaypointIndex(entry)
+	end
 	entry.patrolRefreshDelays = mist.utils.deepCopy(self.defaultPatrolRefreshDelays)
 	entry.nextPatrolRefreshTime = timer.getTime() + entry.patrolRefreshDelays[1]
 	self:setOrderTraceContext(entry, "begin_patrol", {
@@ -7646,19 +8170,22 @@ function SkynetIADSMobilePatrol:advancePatrol(entry, force)
 	end
 	if nextPoint then
 		local startIndex = entry.currentWaypointIndex
-		local route = self:buildRoadPatrolRoute(entry, startIndex)
+		local routeMode = entry.patrolRouteMode or "road"
+		local route = routeMode == "off_road" and self:buildOffRoadPatrolRoute(entry, startIndex, false) or self:buildRoadPatrolRoute(entry, startIndex)
 		if route and pcall(function()
 			mist.goRoute(entry.group, route)
 		end) then
 			entry.currentDestination = nextPoint
 			entry.lastRouteIssueTime = timer.getTime()
 			entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
-			self:log("Road patrol issued for "..entry.groupName.." | wp="..tostring(startIndex).." | speed="..entry.patrolSpeedKmph.."km/h")
-			self:traceEntryCommand(entry, "road_patrol_resume", {
+			entry.stationaryReissueCount = 0
+			self:log("Patrol resume issued for "..entry.groupName.." | mode="..routeMode.." | wp="..tostring(startIndex).." | speed="..entry.patrolSpeedKmph.."km/h")
+			self:traceEntryCommand(entry, routeMode == "off_road" and "offroad_patrol_resume" or "road_patrol_resume", {
 				outcome = "issued",
 				reason = "advance_patrol",
 				speedKmph = entry.patrolSpeedKmph,
 				waypoint = startIndex,
+				routeMode = routeMode,
 				destination = nextPoint,
 			}, "advancePatrol")
 			entry.currentWaypointIndex = (entry.currentWaypointIndex % #entry.routePoints) + 1
@@ -7709,6 +8236,17 @@ function SkynetIADSMobilePatrol:handleDeployScatterState(entry)
 	return false
 end
 
+function SkynetIADSMobilePatrol:cancelDeployScatter(entry)
+	if entry == nil then
+		return
+	end
+	entry.currentDestination = nil
+	entry.deployScatterStartPoint = nil
+	entry.deployScatterDestination = nil
+	entry.deployScatterDeadline = 0
+	entry.deployScatterMinimumCompletionMeters = 0
+end
+
 function SkynetIADSMobilePatrol:getSiblingInfo(entry)
 	if SkynetIADSSiblingCoordination and SkynetIADSSiblingCoordination.getFamilyForElement then
 		return SkynetIADSSiblingCoordination.getFamilyForElement(entry.element)
@@ -7742,13 +8280,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 				entry.nextPatrolRefreshTime = nil
 			end
 		end
-		if self:shouldReissuePatrolRoute(entry) then
-			self:log("Patrol route reissued for "..entry.groupName.." | stationary during harm_silent")
-			self:setOrderTraceContext(entry, "patrol_reissue_harm_silent", {
-				source = "harm_silent_stationary",
-			}, "updateEntry")
-			self:issuePatrolRoute(entry)
-		end
+		self:handlePatrolStationaryRecovery(entry, "harm_silent_stationary")
 		self:traceStateSnapshot(entry, "harm_silent", {
 			source = "harm_detected",
 		}, "updateEntry")
@@ -7764,7 +8296,45 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		return
 	end
 
+	local siblingInfo = self:getSiblingInfo(entry)
+	local siblingPassiveRelocate = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "relocate"
+	local siblingPassiveHold = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "hold_dark"
+	local siblingPassiveStandby = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "standby"
+
 	if entry.state == "deploy_scattering" then
+		if siblingPassiveRelocate then
+			self:cancelDeployScatter(entry)
+			self:beginPatrol(entry)
+			return
+		end
+		if siblingPassiveHold or siblingPassiveStandby then
+			self:cancelDeployScatter(entry)
+			entry.combatCommitted = false
+			entry.combatNoTargetSince = nil
+			entry.noThreatSince = nil
+			entry.lastThreatTime = now
+			entry.debugLastCombatAnnouncementKey = nil
+			forceElementIntoPatrolDarkState(entry.element)
+			if siblingPassiveStandby then
+				entry.state = "deployed"
+				entry.combatMode = "sibling_standby"
+				self:traceStateSnapshot(entry, "sibling_passive_standby", {
+					source = "sibling_coord",
+					note = "deploy_scatter_cancelled",
+				}, "updateEntry")
+			else
+				entry.state = "patrolling"
+				entry.combatMode = "patrolling"
+				if entry.manager and entry.manager.issueHold then
+					entry.manager:issueHold(entry)
+				end
+				self:traceStateSnapshot(entry, "sibling_passive_hold", {
+					source = "sibling_coord",
+					note = "deploy_scatter_cancelled",
+				}, "updateEntry")
+			end
+			return
+		end
 		if self:handleDeployScatterState(entry) ~= true then
 			if entry.kind == "MSAM" then
 				local threatDecision = self:findSAMThreatContact(entry)
@@ -7780,11 +8350,6 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			return
 		end
 	end
-
-	local siblingInfo = self:getSiblingInfo(entry)
-	local siblingPassiveRelocate = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "relocate"
-	local siblingPassiveHold = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "hold_dark"
-	local siblingPassiveStandby = siblingInfo ~= nil and siblingInfo.role == "passive" and siblingInfo.passiveMode == "standby"
 
 	if siblingPassiveHold then
 		entry.combatCommitted = false
@@ -7874,7 +8439,20 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 				end
 			end
 
-			if threatDecision == nil or threatDecision.shouldGoLive ~= true then
+			local shouldMaintainCombatLatch = false
+			if combatThreatPresent == true then
+				if threatDecision == nil then
+					shouldMaintainCombatLatch = true
+				elseif threatDecision.shouldGoLive ~= true then
+					local threatSource = threatDecision.triggerInfo and threatDecision.triggerInfo.source or nil
+					local isAlertOnlyDecision =
+						threatDecision.combatMode == "alert_hold"
+						or (threatSource ~= nil and string.find(threatSource, "_alert", 1, true) ~= nil)
+					shouldMaintainCombatLatch = isAlertOnlyDecision ~= true
+				end
+			end
+
+			if shouldMaintainCombatLatch then
 				local triggerInfo = threatDecision and threatDecision.triggerInfo or entry.lastDeployTrigger or nil
 				if triggerInfo then
 					triggerInfo.combatMode = "combat_latched"
@@ -7978,13 +8556,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		end
 	end
 
-	if self:shouldReissuePatrolRoute(entry) then
-		self:log("Patrol route reissued for "..entry.groupName.." | group appears stationary")
-		self:setOrderTraceContext(entry, "patrol_reissue_stationary", {
-			source = "stationary_recovery",
-		}, "updateEntry")
-		self:issuePatrolRoute(entry)
-	end
+	self:handlePatrolStationaryRecovery(entry, "stationary_recovery")
 	self:traceStateSnapshot(entry, "patrolling", {
 		source = "patrol_tick",
 	}, "updateEntry")
@@ -8061,6 +8633,8 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		noThreatSince = nil,
 		lastRouteIssueTime = nil,
 		lastRouteIssueReferencePoint = nil,
+		patrolRouteMode = "road",
+		stationaryReissueCount = 0,
 		deployScatterStartPoint = nil,
 		deployScatterDestination = nil,
 		deployScatterDeadline = 0,
@@ -8127,6 +8701,7 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultPostCombatMobileSeconds = (config and config.defaultPostCombatMobileSeconds) or SkynetIADSMobilePatrol.DEFAULT_POST_COMBAT_MOBILE_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
+		defaultRouteReissueFallbackCount = (config and config.defaultRouteReissueFallbackCount) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT,
 		defaultMinMovementMeters = (config and config.defaultMinMovementMeters) or SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS,
 		defaultPatrolRefreshDelays = (config and config.defaultPatrolRefreshDelays) or SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS,
 		moveFireNatoNames = mist.utils.deepCopy((config and config.moveFireNatoNames) or SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES),
@@ -8205,7 +8780,27 @@ function SkynetIADSMobilePatrol.installHooks()
 		local hadTargetInRange = self.targetsInRange == true
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
 		local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
+		local siblingInfo = entry and entry.manager and entry.manager.getSiblingInfo and entry.manager:getSiblingInfo(entry) or nil
+		local passiveSiblingBlocked =
+			siblingInfo ~= nil
+			and siblingInfo.role == "passive"
+			and (
+				siblingInfo.passiveMode == "standby"
+				or siblingInfo.passiveMode == "hold_dark"
+				or siblingInfo.passiveMode == "relocate"
+			)
 		if entry and entry.kind == "MSAM" and isAirContact(contact) == false then
+			return nil
+		end
+		if entry and entry.kind == "MSAM" and passiveSiblingBlocked then
+			if entry.manager and entry.manager.traceEntryCommand then
+				entry.manager:traceEntryCommand(entry, "sibling_passive_contact_block", {
+					event = "decision",
+					outcome = "blocked",
+					source = "sibling_coord",
+					note = "mode=" .. tostring(siblingInfo.passiveMode),
+				}, "SkynetIADSSamSite:informOfContact")
+			end
 			return nil
 		end
 		if entry and entry.kind == "MSAM" then
@@ -8461,6 +9056,7 @@ SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL = 1
 SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION = "hold_dark"
 SkynetIADSSiblingCoordination.DEFAULT_MODE = "ambush"
 SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM = 25
+SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS = 10
 
 local function setGroundROE(controller, weaponHold)
     pcall(function()
@@ -8626,6 +9222,7 @@ function SkynetIADSSiblingCoordination.getFamilyForElement(element)
         preferredPrimaryGroupName = family.preferredPrimaryGroupName,
         denialAlertDistanceNm = family.denialAlertDistanceNm,
         reason = family.activeReason,
+        sharedReason = family.activeReason,
         passiveAction = family.passiveAction,
         passiveMode = member.passiveMode,
     }
@@ -8694,6 +9291,46 @@ function SkynetIADSSiblingCoordination:isSuppressed(member)
     return element.harmSilenceID ~= nil or element.harmRelocationInProgress == true
 end
 
+function SkynetIADSSiblingCoordination:isFamilyGroupName(family, groupName)
+    if family == nil or groupName == nil then
+        return false
+    end
+    for i = 1, #family.members do
+        local member = family.members[i]
+        if member and member.groupName == groupName then
+            return true
+        end
+    end
+    return false
+end
+
+function SkynetIADSSiblingCoordination:getSafeThreatName(family, ...)
+    local candidates = { ... }
+    for i = 1, #candidates do
+        local candidate = candidates[i]
+        if candidate ~= nil and self:isFamilyGroupName(family, candidate) ~= true then
+            return candidate
+        end
+    end
+    return nil
+end
+
+function SkynetIADSSiblingCoordination:cacheFamilyThreat(family, member, threatDecision)
+    if family == nil or threatDecision == nil then
+        return
+    end
+    local triggerInfo = threatDecision.triggerInfo or nil
+    local contact = threatDecision.contact or nil
+    if contact ~= nil and contact.isIdentifiedAsHARM and contact:isIdentifiedAsHARM() then
+        return
+    end
+    family.lastThreatContact = contact
+    family.lastThreatSourceGroupName = member and member.groupName or nil
+    if triggerInfo ~= nil then
+        family.lastThreatTriggerInfo = mist.utils.deepCopy(triggerInfo)
+    end
+end
+
 function SkynetIADSSiblingCoordination:isEngaged(member)
     if member and member.forcedPassive == true then
         return false
@@ -8701,18 +9338,19 @@ function SkynetIADSSiblingCoordination:isEngaged(member)
     local element = member.element
     local entry = self:getMobilePatrolEntry(element)
     if entry ~= nil then
+        local missilesInFlight = element:getNumberOfMissilesInFlight() > 0
+        local targetsInRange = element.targetsInRange == true
         if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
             return (
                 (entry.combatMode ~= nil and entry.combatMode ~= "patrolling" and entry.combatMode ~= "searching")
-                or element.targetsInRange == true
-                or element:getNumberOfMissilesInFlight() > 0
+                or targetsInRange
+                or missilesInFlight
             )
         end
         return (
             entry.combatCommitted == true
-            or element.targetsInRange == true
-            or element:isActive()
-            or element:getNumberOfMissilesInFlight() > 0
+            or targetsInRange
+            or missilesInFlight
         )
     end
     return element:isActive() or element.targetsInRange == true or element:getNumberOfMissilesInFlight() > 0
@@ -8754,6 +9392,55 @@ function SkynetIADSSiblingCoordination:getPreferredPrimaryMember(family)
         end
     end
     return family.members[1]
+end
+
+function SkynetIADSSiblingCoordination:clearSuppressedSwitchLock(family)
+    if family == nil then
+        return
+    end
+    family.suppressedSwitchGroupName = nil
+    family.suppressedSwitchUntil = 0
+end
+
+function SkynetIADSSiblingCoordination:ensureSuppressedSwitchLock(family, member)
+    if family == nil or member == nil then
+        return false
+    end
+    local now = timer.getTime()
+    if family.suppressedSwitchGroupName == member.groupName then
+        return false
+    end
+    family.suppressedSwitchGroupName = member.groupName
+    family.suppressedSwitchUntil = now + (family.suppressedSwitchDelaySeconds or self.defaultSuppressedSwitchDelaySeconds)
+    local delaySeconds = mist.utils.round((family.suppressedSwitchUntil or now) - now, 1)
+    self:log("switch lock start | family=" .. family.name .. " | suppressed=" .. member.groupName .. " | delay=" .. tostring(delaySeconds) .. "s")
+    self:notifyDebug(family.name .. " switch lock -> " .. member.groupName .. " | delay=" .. tostring(delaySeconds) .. "s")
+    return true
+end
+
+function SkynetIADSSiblingCoordination:getSuppressedSwitchLockRemaining(family, member)
+    if family == nil or member == nil then
+        return 0
+    end
+    if family.suppressedSwitchGroupName ~= member.groupName then
+        return 0
+    end
+    local remaining = (family.suppressedSwitchUntil or 0) - timer.getTime()
+    if remaining <= 0 then
+        return 0
+    end
+    return remaining
+end
+
+function SkynetIADSSiblingCoordination:getSuppressedSwitchLockedMember(family)
+    if family == nil or family.suppressedSwitchGroupName == nil then
+        return nil
+    end
+    local member = self:findMemberByGroupName(family, family.suppressedSwitchGroupName)
+    if member == nil then
+        self:clearSuppressedSwitchLock(family)
+    end
+    return member
 end
 
 function SkynetIADSSiblingCoordination:getBestAmbushThreatCandidate(family)
@@ -8802,6 +9489,32 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
     end
 
     local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
+    local lockedPrimary = self:getSuppressedSwitchLockedMember(family)
+    if currentPrimary and self:isSuppressed(currentPrimary) then
+        self:ensureSuppressedSwitchLock(family, currentPrimary)
+        lockedPrimary = currentPrimary
+    end
+    if lockedPrimary and currentPrimary == lockedPrimary then
+        local lockRemainingSeconds = self:getSuppressedSwitchLockRemaining(family, lockedPrimary)
+        if lockRemainingSeconds > 0 then
+            return nil, false
+        end
+        local coverMember = self:pickCoverMember(family, lockedPrimary.groupName)
+        if coverMember then
+            if coverMember ~= member then
+                return nil, false
+            end
+            if family.mode == "denial" then
+                return self:getDenialThreatDecision(family, coverMember), true
+            end
+            local coverEntry = self:getMobilePatrolEntry(coverMember.element)
+            if coverEntry and coverEntry.kind == "MSAM" and coverEntry.manager and coverEntry.manager.findSAMThreatContact then
+                return coverEntry.manager:findSAMThreatContact(coverEntry), true
+            end
+            return nil, true
+        end
+        self:clearSuppressedSwitchLock(family)
+    end
     if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
         if currentPrimary ~= member then
             return nil, false
@@ -8914,15 +9627,25 @@ end
 
 function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
-    if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
-        return currentPrimary, "engaged", nil
+    if currentPrimary and self:isSuppressed(currentPrimary) then
+        self:ensureSuppressedSwitchLock(family, currentPrimary)
+    end
+    local lockedPrimary = self:getSuppressedSwitchLockedMember(family)
+    if lockedPrimary and currentPrimary == lockedPrimary then
+        local lockRemainingSeconds = self:getSuppressedSwitchLockRemaining(family, lockedPrimary)
+        if lockRemainingSeconds > 0 then
+            return lockedPrimary, "switch_lock_" .. lockedPrimary.groupName, nil
+        end
+        local coverMember = self:pickCoverMember(family, lockedPrimary.groupName)
+        if coverMember then
+            self:clearSuppressedSwitchLock(family)
+            return coverMember, "cover_for_" .. lockedPrimary.groupName, nil
+        end
+        self:clearSuppressedSwitchLock(family)
     end
 
-    if currentPrimary and self:isSuppressed(currentPrimary) then
-        local coverMember = self:pickCoverMember(family, currentPrimary.groupName)
-        if coverMember then
-            return coverMember, "cover_for_" .. currentPrimary.groupName, nil
-        end
+    if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
+        return currentPrimary, "engaged", nil
     end
 
     if family.mode == "denial" then
@@ -8991,6 +9714,9 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     local entry = self:getMobilePatrolEntry(member.element)
     local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
     local shouldForceDeploy = reason ~= nil and string.find(reason, "cover_for_", 1, true) == 1
+    local coveredGroupName = shouldForceDeploy and string.sub(reason, string.len("cover_for_") + 1) or nil
+    local coveredMember = coveredGroupName and self:findMemberByGroupName(family, coveredGroupName) or nil
+    local coveredEntry = coveredMember and self:getMobilePatrolEntry(coveredMember.element) or nil
     local skipEngagedFastPath = false
     local liveDecision = nil
     if entry and entry.combatCommitted == true and entry.manager and entry.manager.findSAMThreatContact then
@@ -9015,6 +9741,37 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
         if threatDecision == nil and entry.manager.findSAMThreatContact then
             threatDecision = entry.manager:findSAMThreatContact(entry)
         end
+        local inheritedTriggerInfo = coveredEntry and coveredEntry.lastDeployTrigger and mist.utils.deepCopy(coveredEntry.lastDeployTrigger) or nil
+        if inheritedTriggerInfo == nil and family.lastThreatTriggerInfo ~= nil then
+            inheritedTriggerInfo = mist.utils.deepCopy(family.lastThreatTriggerInfo)
+        end
+        local inheritedContact = coveredEntry and coveredEntry.lastThreatContact or family.lastThreatContact or nil
+        if threatDecision ~= nil and threatDecision.contact == nil and inheritedContact ~= nil then
+            if inheritedContact ~= nil and inheritedContact.isExist and inheritedContact:isExist() then
+                threatDecision.contact = inheritedContact
+                if coveredEntry and coveredEntry.manager and coveredEntry.manager.refreshThreatContact then
+                    coveredEntry.manager:refreshThreatContact(inheritedContact)
+                end
+                if threatDecision.triggerInfo then
+                    local inheritedTargetName = coveredEntry and coveredEntry.manager and coveredEntry.manager.getContactName and coveredEntry.manager:getContactName(inheritedContact) or nil
+                    threatDecision.triggerInfo.source = "cover_inherited_contact"
+                    threatDecision.triggerInfo.inheritedContactName = inheritedTargetName
+                    threatDecision.triggerInfo.contactName = self:getSafeThreatName(family, inheritedTargetName, threatDecision.triggerInfo.contactName)
+                end
+            end
+        end
+        if threatDecision ~= nil and shouldForceDeploy == true and threatDecision.shouldGoLive ~= true then
+            local preservedContact = threatDecision.contact
+            threatDecision = mist.utils.deepCopy(threatDecision)
+            threatDecision.contact = preservedContact
+            threatDecision.shouldGoLive = true
+            threatDecision.shouldWeaponHold = false
+            threatDecision.combatMode = moveFireCapable and "sibling_cover_fire" or "sibling_cover"
+            threatDecision.triggerInfo = threatDecision.triggerInfo or {}
+            threatDecision.triggerInfo.source = "sibling_cover"
+            threatDecision.triggerInfo.combatMode = threatDecision.combatMode
+            threatDecision.skipPauseDeployment = moveFireCapable ~= true
+        end
         if threatDecision == nil and shouldForceDeploy ~= true then
             if switchedPrimary then
                 self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
@@ -9025,11 +9782,14 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
             return
         end
         if threatDecision == nil then
-            local preferredTargetName = family.activeGroupName or family.name
-            if entry.lastDeployTrigger and entry.lastDeployTrigger.contactName then
-                preferredTargetName = entry.lastDeployTrigger.contactName
-            end
-            local syntheticTriggerInfo = entry.lastDeployTrigger and mist.utils.deepCopy(entry.lastDeployTrigger) or nil
+            local preferredTargetName = self:getSafeThreatName(
+                family,
+                inheritedTriggerInfo and inheritedTriggerInfo.contactName or nil,
+                entry.lastDeployTrigger and entry.lastDeployTrigger.contactName or nil,
+                family.lastThreatTriggerInfo and family.lastThreatTriggerInfo.contactName or nil,
+                "unknown"
+            )
+            local syntheticTriggerInfo = inheritedTriggerInfo or (entry.lastDeployTrigger and mist.utils.deepCopy(entry.lastDeployTrigger) or nil)
             if syntheticTriggerInfo == nil and entry.manager.findSAMThreatContact then
                 local inferredThreatDecision = entry.manager:findSAMThreatContact(entry)
                 if inferredThreatDecision and inferredThreatDecision.triggerInfo then
@@ -9050,16 +9810,31 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
                 },
             }
             threatDecision.triggerInfo.source = threatDecision.triggerInfo.source or "sibling_coord"
-            threatDecision.triggerInfo.contactName = threatDecision.triggerInfo.contactName or preferredTargetName
+            threatDecision.triggerInfo.contactName = self:getSafeThreatName(family, threatDecision.triggerInfo.contactName, preferredTargetName) or "unknown"
             threatDecision.triggerInfo.contactType = threatDecision.triggerInfo.contactType or (shouldForceDeploy and "sibling_cover" or "sibling_primary")
             threatDecision.triggerInfo.combatMode = shouldForceDeploy and "sibling_cover" or "sibling_primary"
+            threatDecision.skipPauseDeployment = shouldForceDeploy and moveFireCapable ~= true or false
         end
-        entry.manager:applyMSAMThreatDecision(entry, threatDecision)
+        if threatDecision.triggerInfo then
+            threatDecision.triggerInfo.contactName = self:getSafeThreatName(
+                family,
+                threatDecision.triggerInfo.contactName,
+                inheritedTriggerInfo and inheritedTriggerInfo.contactName or nil,
+                family.lastThreatTriggerInfo and family.lastThreatTriggerInfo.contactName or nil
+            ) or threatDecision.triggerInfo.contactName
+        end
+        entry.manager:applyMSAMThreatDecision(entry, threatDecision, threatDecision.skipPauseDeployment == true)
+        self:cacheFamilyThreat(family, member, threatDecision)
     else
         if shouldForceDeploy and moveFireCapable ~= true and entry and entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
             entry.manager:pausePatrolForDeployment(entry, {
                 source = "sibling_coord",
-                contactName = family.activeGroupName or "sibling",
+                contactName = self:getSafeThreatName(
+                    family,
+                    coveredEntry and coveredEntry.lastDeployTrigger and coveredEntry.lastDeployTrigger.contactName or nil,
+                    family.lastThreatTriggerInfo and family.lastThreatTriggerInfo.contactName or nil,
+                    "sibling_cover"
+                ),
                 contactType = "sibling_cover",
                 distanceNm = 0,
                 threatRangeNm = 0,
@@ -9083,6 +9858,9 @@ function SkynetIADSSiblingCoordination:activateMember(family, member, reason, th
     if switchedPrimary then
         self:log("Primary active | family=" .. family.name .. " | group=" .. member.groupName .. " | reason=" .. tostring(reason))
         self:notifyDebug(family.name .. " primary -> " .. member.groupName .. " | reason=" .. tostring(reason))
+    end
+    if family.suppressedSwitchGroupName ~= nil and family.suppressedSwitchGroupName ~= member.groupName then
+        self:clearSuppressedSwitchLock(family)
     end
     family.activeGroupName = member.groupName
     family.activeReason = reason
@@ -9127,7 +9905,11 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
         if entry.state == "patrolling" and entry.manager and entry.manager.pausePatrolForDeployment then
             entry.manager:pausePatrolForDeployment(entry, {
                 source = "sibling_coord",
-                contactName = family.activeGroupName or "sibling",
+                contactName = self:getSafeThreatName(
+                    family,
+                    family.lastThreatTriggerInfo and family.lastThreatTriggerInfo.contactName or nil,
+                    "sibling_standby"
+                ),
                 contactType = "sibling_standby",
                 distanceNm = 0,
                 threatRangeNm = 0,
@@ -9209,10 +9991,19 @@ end
 function SkynetIADSSiblingCoordination:updateFamily(family)
     local primary, reason, threatDecision = self:choosePrimaryMember(family)
     if primary then
+        local switchLockActive = reason ~= nil and string.find(reason, "switch_lock_", 1, true) == 1
+        if switchLockActive then
+            family.activeGroupName = primary.groupName
+            family.activeReason = reason
+        end
         for i = 1, #family.members do
             local member = family.members[i]
-            if member == primary then
-                self:activateMember(family, member, reason, threatDecision)
+            if switchLockActive ~= true and member == primary then
+                if self:isSuppressed(member) then
+                    self:setPassiveMember(family, member)
+                else
+                    self:activateMember(family, member, reason, threatDecision)
+                end
             else
                 self:setPassiveMember(family, member)
             end
@@ -9223,6 +10014,7 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
     if family.activeGroupName ~= nil then
         self:log("Family released | family=" .. family.name)
     end
+    self:clearSuppressedSwitchLock(family)
     family.activeGroupName = nil
     family.activeReason = nil
     for i = 1, #family.members do
@@ -9230,11 +10022,19 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
     end
 end
 
-function SkynetIADSSiblingCoordination:tick(_, time)
+function SkynetIADSSiblingCoordination:tick(time)
     for i = 1, #self.families do
         self:updateFamily(self.families[i])
     end
     return time + self.checkInterval
+end
+
+function SkynetIADSSiblingCoordination._tick(params, time)
+    local self = params and params.self or nil
+    if self == nil then
+        return nil
+    end
+    return self:tick(time)
 end
 
 function SkynetIADSSiblingCoordination:requestImmediateEvaluation(reason)
@@ -9256,7 +10056,7 @@ function SkynetIADSSiblingCoordination:start()
         return
     end
     self.taskID = mist.scheduleFunction(
-        SkynetIADSSiblingCoordination.tick,
+        SkynetIADSSiblingCoordination._tick,
         { self = self },
         timer.getTime() + self.checkInterval,
         self.checkInterval
@@ -9274,9 +10074,15 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         passiveAction = definition.passiveAction or self.defaultPassiveAction,
         preferredPrimaryGroupName = definition.primary,
         denialAlertDistanceNm = definition.denialAlertDistanceNm or self.defaultDenialAlertDistanceNm,
+        suppressedSwitchDelaySeconds = definition.suppressedSwitchDelaySeconds or self.defaultSuppressedSwitchDelaySeconds,
         members = {},
         activeGroupName = nil,
         activeReason = nil,
+        lastThreatContact = nil,
+        lastThreatTriggerInfo = nil,
+        lastThreatSourceGroupName = nil,
+        suppressedSwitchGroupName = nil,
+        suppressedSwitchUntil = 0,
     }
 
     for i = 1, #definition.members do
@@ -9342,6 +10148,7 @@ function SkynetIADSSiblingCoordination.create(iads, config)
     self.defaultPassiveAction = (config and config.defaultPassiveAction) or SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION
     self.defaultMode = (config and config.defaultMode) or SkynetIADSSiblingCoordination.DEFAULT_MODE
     self.defaultDenialAlertDistanceNm = (config and config.defaultDenialAlertDistanceNm) or SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM
+    self.defaultSuppressedSwitchDelaySeconds = (config and config.defaultSuppressedSwitchDelaySeconds) or SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS
     self.families = {}
     self.taskID = nil
     self._immediateEvaluationInProgress = false
@@ -9615,7 +10422,7 @@ function SkynetIADSEWRReporter:broadcastTick()
 end
 
 function SkynetIADSEWRReporter._tick(params, time)
-    local self = params.self
+    local self = params and params.self or nil
     if not self or not self.iads then
         return nil
     end

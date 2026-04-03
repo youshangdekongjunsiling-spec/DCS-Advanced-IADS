@@ -1282,6 +1282,15 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 	if siblingCoordClass and siblingCoordClass.getFamilyForElement then
 		local siblingInfo = siblingCoordClass.getFamilyForElement(self)
 		if siblingInfo and siblingInfo.role == "passive" then
+			if self.iads and self.iads.traceElementCommand then
+				self.iads:traceElementCommand(self, "harm_ignore_passive", {
+					event = "decision",
+					outcome = "ignored",
+					reason = "passive_sibling",
+					originModule = "skynet-iads-abstract-radar-element.lua",
+					originFunction = "informOfHARM",
+				})
+			end
 			return
 		end
 	end
@@ -1321,8 +1330,21 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 			distanceNM = mist.utils.metersToNM(self:getDistanceInMetersToContact(radarReference, harmContact:getPosition().p))
 		end
 		local secondsToImpact = self:getSecondsToImpact(distanceNM, speedKT)
-		if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+		local canReactToHARM =
+			(self:getIsAPointDefence() == false or mobileMoveFireCapable == true)
+			and (self:isDefendingHARM() == false or (self:getHARMShutdownTime() < secondsToImpact))
+		local shouldIgnoreShutdown = mobileMoveFireCapable ~= true and self:shallIgnoreHARMShutdown() == true
+		if canReactToHARM and shouldIgnoreShutdown == false then
 			self:goSilentToEvadeHARM(secondsToImpact)
+		elseif shouldIgnoreShutdown and self.iads and self.iads.traceElementCommand then
+			self.iads:traceElementCommand(self, "harm_ignore_engage_capable", {
+				event = "decision",
+				outcome = "ignored",
+				reason = "can_engage_harm",
+				harmTTI = secondsToImpact and mist.utils.round(secondsToImpact, 1) or nil,
+				originModule = "skynet-iads-abstract-radar-element.lua",
+				originFunction = "informOfHARM",
+			})
 		end
 		return
 	end
@@ -1354,9 +1376,22 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 					end
 					--self.iads:printOutputToLog("Ignore HARM shutdown: "..tostring(self:shallIgnoreHARMShutdown()))
 					--self.iads:printOutputToLog("忽略HARM关闭："..tostring(self:shallIgnoreHARMShutdown()))
-					if ( (self:getIsAPointDefence() == false or mobileMoveFireCapable == true) and ( self:isDefendingHARM() == false or ( self:getHARMShutdownTime() < secondsToImpact ) ) and self:shallIgnoreHARMShutdown() == false) then
+					local canReactToHARM =
+						(self:getIsAPointDefence() == false or mobileMoveFireCapable == true)
+						and (self:isDefendingHARM() == false or (self:getHARMShutdownTime() < secondsToImpact))
+					local shouldIgnoreShutdown = mobileMoveFireCapable ~= true and self:shallIgnoreHARMShutdown() == true
+					if canReactToHARM and shouldIgnoreShutdown == false then
 						self:goSilentToEvadeHARM(secondsToImpact)
 						break
+					elseif shouldIgnoreShutdown and self.iads and self.iads.traceElementCommand then
+						self.iads:traceElementCommand(self, "harm_ignore_engage_capable", {
+							event = "decision",
+							outcome = "ignored",
+							reason = "can_engage_harm",
+							harmTTI = secondsToImpact and mist.utils.round(secondsToImpact, 1) or nil,
+							originModule = "skynet-iads-abstract-radar-element.lua",
+							originFunction = "informOfHARM",
+						})
 					end
 				end
 			end
