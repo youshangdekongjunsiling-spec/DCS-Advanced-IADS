@@ -751,6 +751,20 @@ function SkynetIADS:traceElementCommand(element, command, details)
 	return false
 end
 
+function SkynetIADS:traceAirUnit(unit, details)
+	if self.orderTrace and self.orderTrace.traceAirUnit then
+		return self.orderTrace:traceAirUnit(unit, details)
+	end
+	return false
+end
+
+function SkynetIADS:traceWeaponContact(contact, details)
+	if self.orderTrace and self.orderTrace.traceWeaponContact then
+		return self.orderTrace:traceWeaponContact(contact, details)
+	end
+	return false
+end
+
 -- ============================================================================
 -- 激活 IADS 系统
 -- 功能: 启动整个 IADS 系统，开始目标检测和跟踪

@@ -78,6 +78,31 @@ function SkynetIADSAbstractRadarElement:weaponFired(event)
 			local launcher = self.launchers[i]
 			if launcher:getDCSRepresentation() == launcherFired then
 				table.insert(self.missilesInFlight, weapon)
+				self.lastWeaponLaunchTime = timer.getTime()
+				if self.iads and self.iads.traceElementCommand then
+					local weaponType = nil
+					local weaponName = nil
+					local launcherName = nil
+					pcall(function()
+						weaponType = weapon and weapon.getTypeName and weapon:getTypeName() or nil
+					end)
+					pcall(function()
+						weaponName = weapon and weapon.getName and weapon:getName() or nil
+					end)
+					pcall(function()
+						launcherName = launcherFired and launcherFired.getName and launcherFired:getName() or nil
+					end)
+					self.iads:traceElementCommand(self, "weapon_fired", {
+						event = "track",
+						scope = "weapon_track",
+						outcome = "launched",
+						originModule = "skynet-iads-abstract-radar-element",
+						originFunction = "weaponFired",
+						weaponName = weaponName,
+						weaponType = weaponType,
+						launcher = launcherName,
+					})
+				end
 			end
 		end
 	end

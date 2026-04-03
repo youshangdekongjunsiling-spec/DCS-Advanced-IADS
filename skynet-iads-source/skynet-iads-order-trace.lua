@@ -80,6 +80,7 @@ function SkynetIADSOrderTrace:create(iads, options)
 	trace.options = options or {}
 	trace.sequence = 0
 	trace.warningIssued = false
+	trace.observationCache = {}
 	trace.filePath = trace:resolveLogPath()
 	trace.fileSinkAvailable = io ~= nil and io.open ~= nil
 	trace:writeSessionBanner("START")
@@ -218,6 +219,59 @@ function SkynetIADSOrderTrace:getElementContext(element)
 		return element._skynetOrderTraceContext
 	end
 	return nil
+end
+
+function SkynetIADSOrderTrace:metersToNm(distanceMeters)
+	if type(distanceMeters) ~= "number" then
+		return nil
+	end
+	if mist and mist.utils and mist.utils.metersToNM then
+		return mist.utils.metersToNM(distanceMeters)
+	end
+	return distanceMeters / 1852
+end
+
+function SkynetIADSOrderTrace:getObjectCategoryName(categoryId)
+	if categoryId == nil or Object == nil or Object.Category == nil then
+		return nil
+	end
+	if categoryId == Object.Category.UNIT then
+		return "UNIT"
+	end
+	if categoryId == Object.Category.WEAPON then
+		return "WEAPON"
+	end
+	if categoryId == Object.Category.STATIC then
+		return "STATIC"
+	end
+	if categoryId == Object.Category.BASE then
+		return "BASE"
+	end
+	if categoryId == Object.Category.SCENERY then
+		return "SCENERY"
+	end
+	return tostring(categoryId)
+end
+
+function SkynetIADSOrderTrace:shouldTraceObservation(cacheKey, signature, minIntervalSeconds)
+	local now = self:getMissionTimeSeconds()
+	local interval = minIntervalSeconds or 1
+	local cached = self.observationCache[cacheKey]
+	if cached ~= nil and cached.signature == signature and (now - cached.time) < interval then
+		return false
+	end
+	self.observationCache[cacheKey] = {
+		signature = signature,
+		time = now,
+	}
+	if self.sequence % 250 == 0 then
+		for key, value in pairs(self.observationCache) do
+			if (now - (value.time or 0)) > 120 then
+				self.observationCache[key] = nil
+			end
+		end
+	end
+	return true
 end
 
 function SkynetIADSOrderTrace:clearElementContext(element)
@@ -370,6 +424,170 @@ function SkynetIADSOrderTrace:normalizeDetails(details)
 	return normalized
 end
 
+function SkynetIADSOrderTrace:buildUnitObservation(unit)
+	local snapshot = {}
+	if unit == nil then
+		return snapshot
+	end
+	local okName, unitName = pcall(function()
+		return unit:getName()
+	end)
+	if okName and unitName then
+		snapshot.contact = unitName
+	end
+	local okType, typeName = pcall(function()
+		return unit:getTypeName()
+	end)
+	if okType and typeName then
+		snapshot.contactType = typeName
+	end
+	local okCategory, categoryId = pcall(function()
+		return unit:getCategory()
+	end)
+	if okCategory then
+		snapshot.category = self:getObjectCategoryName(categoryId)
+	end
+	local okGroup, group = pcall(function()
+		return unit:getGroup()
+	end)
+	if okGroup and group and group.getName then
+		local okGroupName, groupName = pcall(function()
+			return group:getName()
+		end)
+		if okGroupName and groupName then
+			snapshot.airGroup = groupName
+		end
+	end
+	local okInAir, inAir = pcall(function()
+		return unit:inAir()
+	end)
+	if okInAir then
+		snapshot.inAir = safeBoolFlag(inAir == true)
+	end
+	local okLife, life = pcall(function()
+		return unit:getLife()
+	end)
+	if okLife and type(life) == "number" then
+		snapshot.life = safeRound(life, 0)
+	end
+	local okPoint, point = pcall(function()
+		return unit:getPoint()
+	end)
+	if okPoint and point then
+		snapshot.position = point
+		if type(point.y) == "number" and mist and mist.utils and mist.utils.metersToFeet then
+			snapshot.altitudeFeet = mist.utils.round(mist.utils.metersToFeet(point.y), 0)
+		end
+	end
+	local okHeading, heading = pcall(function()
+		return mist.utils.round(mist.utils.toDegree(mist.getHeading(unit)), 0)
+	end)
+	if okHeading and heading ~= nil then
+		snapshot.heading = heading
+	end
+	return snapshot
+end
+
+function SkynetIADSOrderTrace:buildContactObservation(contact)
+	local snapshot = {}
+	if contact == nil then
+		return snapshot
+	end
+	local okName, contactName = pcall(function()
+		return contact:getName()
+	end)
+	if okName and contactName then
+		snapshot.contact = contactName
+	end
+	local okType, contactType = pcall(function()
+		return contact:getTypeName()
+	end)
+	if okType and contactType and contactType ~= "UNKNOWN" then
+		snapshot.contactType = contactType
+	end
+	local representation = nil
+	local okRepresentation = pcall(function()
+		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+	end)
+	if okRepresentation and representation ~= nil then
+		if snapshot.contactType == nil and representation.getTypeName then
+			local okRepType, repTypeName = pcall(function()
+				return representation:getTypeName()
+			end)
+			if okRepType and repTypeName then
+				snapshot.contactType = repTypeName
+			end
+		end
+		if representation.getCategory then
+			local okCategory, categoryId = pcall(function()
+				return representation:getCategory()
+			end)
+			if okCategory then
+				snapshot.category = self:getObjectCategoryName(categoryId)
+			end
+		end
+	end
+	if contact.getGroundSpeedInKnots then
+		local okGroundSpeed, groundSpeedKts = pcall(function()
+			return contact:getGroundSpeedInKnots(1)
+		end)
+		if okGroundSpeed and groundSpeedKts ~= nil then
+			snapshot.groundSpeedKts = groundSpeedKts
+		end
+	end
+	if contact.getAge then
+		local okAge, ageSeconds = pcall(function()
+			return contact:getAge()
+		end)
+		if okAge and ageSeconds ~= nil then
+			snapshot.ageSeconds = safeRound(ageSeconds, 1)
+		end
+	end
+	if contact.getHARMState then
+		local okHarmState, harmState = pcall(function()
+			return contact:getHARMState()
+		end)
+		if okHarmState and harmState ~= nil then
+			snapshot.harmState = harmState
+		end
+	end
+	if contact.getNumberOfTimesHitByRadar then
+		local okRadarHits, radarHits = pcall(function()
+			return contact:getNumberOfTimesHitByRadar()
+		end)
+		if okRadarHits and radarHits ~= nil then
+			snapshot.radarHits = radarHits
+		end
+	end
+	if contact.getAbstractRadarElementsDetected then
+		local okDetectedBy, detectedBy = pcall(function()
+			return contact:getAbstractRadarElementsDetected()
+		end)
+		if okDetectedBy and detectedBy ~= nil then
+			snapshot.detectedByCount = #detectedBy
+		end
+	end
+	if contact.getHeightInFeetMSL then
+		local okAltitude, altitudeFeet = pcall(function()
+			return contact:getHeightInFeetMSL()
+		end)
+		if okAltitude and altitudeFeet ~= nil then
+			snapshot.altitudeFeet = altitudeFeet
+		end
+	end
+	if contact.getMagneticHeading then
+		local okHeading, heading = pcall(function()
+			return contact:getMagneticHeading()
+		end)
+		if okHeading and heading ~= nil and heading >= 0 then
+			snapshot.heading = heading
+		end
+	end
+	snapshot.directTargetGroup = contact._skynetFrozenDirectTargetGroupName or contact._skynetDirectTargetGroupName or nil
+	snapshot.pendingDirectTargetGroup = contact._skynetPendingDirectTargetGroupName or nil
+	return snapshot
+end
+
 function SkynetIADSOrderTrace:appendField(parts, key, value)
 	local text = safeString(value)
 	if text == nil or text == "" then
@@ -405,6 +623,10 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"source",
 		"contact",
 		"contactType",
+		"category",
+		"observerGroup",
+		"observerKind",
+		"airGroup",
 		"selectedBy",
 		"matchedContactSource",
 		"rejectReason",
@@ -444,6 +666,22 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"destination",
 		"harmTTI",
 		"harmShutdown",
+		"harmState",
+		"directTargetGroup",
+		"pendingDirectTargetGroup",
+		"backstopActive",
+		"directTargetPending",
+		"groundSpeedKts",
+		"ageSeconds",
+		"altitudeFeet",
+		"heading",
+		"inAir",
+		"life",
+		"radarHits",
+		"detectedByCount",
+		"weaponName",
+		"weaponType",
+		"launcher",
 		"active",
 		"autonomous",
 		"targetsInRange",
@@ -519,6 +757,61 @@ function SkynetIADSOrderTrace:traceElementCommand(element, command, details)
 		entry._skynetOrderTraceContext = nil
 	end
 	return ok
+end
+
+function SkynetIADSOrderTrace:traceAirUnit(unit, details)
+	local payload = {}
+	mergeInto(payload, self:buildUnitObservation(unit), true)
+	mergeInto(payload, details, true)
+	payload.event = payload.event or "track"
+	payload.command = payload.command or "air_contact"
+	payload.scope = payload.scope or "air_track"
+	if payload.distanceNm == nil and payload.distanceMeters ~= nil then
+		payload.distanceNm = safeRound(self:metersToNm(payload.distanceMeters), 1)
+	end
+	local observerGroup = payload.observerGroup or "global"
+	local airContact = payload.contact or "unknown"
+	local distanceBucket = payload.distanceNm ~= nil and tostring(safeRound(payload.distanceNm, 0)) or "na"
+	local signature = table.concat({
+		tostring(payload.command),
+		tostring(payload.outcome or "observed"),
+		tostring(payload.contactType or "unknown"),
+		tostring(distanceBucket),
+		tostring(payload.source or "unknown"),
+	}, "|")
+	local cacheKey = "air:" .. tostring(observerGroup) .. ":" .. tostring(airContact)
+	if self:shouldTraceObservation(cacheKey, signature, payload.minIntervalSeconds or 1.5) ~= true then
+		return false
+	end
+	payload.minIntervalSeconds = nil
+	return self:traceCommand(payload)
+end
+
+function SkynetIADSOrderTrace:traceWeaponContact(contact, details)
+	local payload = {}
+	mergeInto(payload, self:buildContactObservation(contact), true)
+	mergeInto(payload, details, true)
+	payload.event = payload.event or "track"
+	payload.command = payload.command or "weapon_contact"
+	payload.scope = payload.scope or "weapon_track"
+	local weaponContact = payload.contact or "unknown"
+	local ageBucket = payload.ageSeconds ~= nil and tostring(safeRound(payload.ageSeconds, 0)) or "na"
+	local speedBucket = payload.groundSpeedKts ~= nil and tostring(safeRound(payload.groundSpeedKts / 25, 0) * 25) or "na"
+	local signature = table.concat({
+		tostring(payload.command),
+		tostring(payload.harmState or "unknown"),
+		tostring(payload.directTargetGroup or "none"),
+		tostring(payload.pendingDirectTargetGroup or "none"),
+		tostring(speedBucket),
+		tostring(ageBucket),
+		tostring(payload.outcome or "observed"),
+	}, "|")
+	local cacheKey = "weapon:" .. tostring(weaponContact)
+	if self:shouldTraceObservation(cacheKey, signature, payload.minIntervalSeconds or 1) ~= true then
+		return false
+	end
+	payload.minIntervalSeconds = nil
+	return self:traceCommand(payload)
 end
 
 end

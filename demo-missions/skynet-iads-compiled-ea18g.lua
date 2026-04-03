@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-movefire-latch-fix | BUILD TIME: 03.04.2026 2152Z ---")
+env.info("--- SKYNET VERSION: ea18g-air-weapon-trace-livehold | BUILD TIME: 03.04.2026 2221Z ---")
 
 do
 --this file contains the required units per sam type
@@ -1598,6 +1598,7 @@ function SkynetIADSOrderTrace:create(iads, options)
 	trace.options = options or {}
 	trace.sequence = 0
 	trace.warningIssued = false
+	trace.observationCache = {}
 	trace.filePath = trace:resolveLogPath()
 	trace.fileSinkAvailable = io ~= nil and io.open ~= nil
 	trace:writeSessionBanner("START")
@@ -1736,6 +1737,59 @@ function SkynetIADSOrderTrace:getElementContext(element)
 		return element._skynetOrderTraceContext
 	end
 	return nil
+end
+
+function SkynetIADSOrderTrace:metersToNm(distanceMeters)
+	if type(distanceMeters) ~= "number" then
+		return nil
+	end
+	if mist and mist.utils and mist.utils.metersToNM then
+		return mist.utils.metersToNM(distanceMeters)
+	end
+	return distanceMeters / 1852
+end
+
+function SkynetIADSOrderTrace:getObjectCategoryName(categoryId)
+	if categoryId == nil or Object == nil or Object.Category == nil then
+		return nil
+	end
+	if categoryId == Object.Category.UNIT then
+		return "UNIT"
+	end
+	if categoryId == Object.Category.WEAPON then
+		return "WEAPON"
+	end
+	if categoryId == Object.Category.STATIC then
+		return "STATIC"
+	end
+	if categoryId == Object.Category.BASE then
+		return "BASE"
+	end
+	if categoryId == Object.Category.SCENERY then
+		return "SCENERY"
+	end
+	return tostring(categoryId)
+end
+
+function SkynetIADSOrderTrace:shouldTraceObservation(cacheKey, signature, minIntervalSeconds)
+	local now = self:getMissionTimeSeconds()
+	local interval = minIntervalSeconds or 1
+	local cached = self.observationCache[cacheKey]
+	if cached ~= nil and cached.signature == signature and (now - cached.time) < interval then
+		return false
+	end
+	self.observationCache[cacheKey] = {
+		signature = signature,
+		time = now,
+	}
+	if self.sequence % 250 == 0 then
+		for key, value in pairs(self.observationCache) do
+			if (now - (value.time or 0)) > 120 then
+				self.observationCache[key] = nil
+			end
+		end
+	end
+	return true
 end
 
 function SkynetIADSOrderTrace:clearElementContext(element)
@@ -1888,6 +1942,170 @@ function SkynetIADSOrderTrace:normalizeDetails(details)
 	return normalized
 end
 
+function SkynetIADSOrderTrace:buildUnitObservation(unit)
+	local snapshot = {}
+	if unit == nil then
+		return snapshot
+	end
+	local okName, unitName = pcall(function()
+		return unit:getName()
+	end)
+	if okName and unitName then
+		snapshot.contact = unitName
+	end
+	local okType, typeName = pcall(function()
+		return unit:getTypeName()
+	end)
+	if okType and typeName then
+		snapshot.contactType = typeName
+	end
+	local okCategory, categoryId = pcall(function()
+		return unit:getCategory()
+	end)
+	if okCategory then
+		snapshot.category = self:getObjectCategoryName(categoryId)
+	end
+	local okGroup, group = pcall(function()
+		return unit:getGroup()
+	end)
+	if okGroup and group and group.getName then
+		local okGroupName, groupName = pcall(function()
+			return group:getName()
+		end)
+		if okGroupName and groupName then
+			snapshot.airGroup = groupName
+		end
+	end
+	local okInAir, inAir = pcall(function()
+		return unit:inAir()
+	end)
+	if okInAir then
+		snapshot.inAir = safeBoolFlag(inAir == true)
+	end
+	local okLife, life = pcall(function()
+		return unit:getLife()
+	end)
+	if okLife and type(life) == "number" then
+		snapshot.life = safeRound(life, 0)
+	end
+	local okPoint, point = pcall(function()
+		return unit:getPoint()
+	end)
+	if okPoint and point then
+		snapshot.position = point
+		if type(point.y) == "number" and mist and mist.utils and mist.utils.metersToFeet then
+			snapshot.altitudeFeet = mist.utils.round(mist.utils.metersToFeet(point.y), 0)
+		end
+	end
+	local okHeading, heading = pcall(function()
+		return mist.utils.round(mist.utils.toDegree(mist.getHeading(unit)), 0)
+	end)
+	if okHeading and heading ~= nil then
+		snapshot.heading = heading
+	end
+	return snapshot
+end
+
+function SkynetIADSOrderTrace:buildContactObservation(contact)
+	local snapshot = {}
+	if contact == nil then
+		return snapshot
+	end
+	local okName, contactName = pcall(function()
+		return contact:getName()
+	end)
+	if okName and contactName then
+		snapshot.contact = contactName
+	end
+	local okType, contactType = pcall(function()
+		return contact:getTypeName()
+	end)
+	if okType and contactType and contactType ~= "UNKNOWN" then
+		snapshot.contactType = contactType
+	end
+	local representation = nil
+	local okRepresentation = pcall(function()
+		representation = contact.getDCSRepresentation and contact:getDCSRepresentation() or nil
+	end)
+	if okRepresentation and representation ~= nil then
+		if snapshot.contactType == nil and representation.getTypeName then
+			local okRepType, repTypeName = pcall(function()
+				return representation:getTypeName()
+			end)
+			if okRepType and repTypeName then
+				snapshot.contactType = repTypeName
+			end
+		end
+		if representation.getCategory then
+			local okCategory, categoryId = pcall(function()
+				return representation:getCategory()
+			end)
+			if okCategory then
+				snapshot.category = self:getObjectCategoryName(categoryId)
+			end
+		end
+	end
+	if contact.getGroundSpeedInKnots then
+		local okGroundSpeed, groundSpeedKts = pcall(function()
+			return contact:getGroundSpeedInKnots(1)
+		end)
+		if okGroundSpeed and groundSpeedKts ~= nil then
+			snapshot.groundSpeedKts = groundSpeedKts
+		end
+	end
+	if contact.getAge then
+		local okAge, ageSeconds = pcall(function()
+			return contact:getAge()
+		end)
+		if okAge and ageSeconds ~= nil then
+			snapshot.ageSeconds = safeRound(ageSeconds, 1)
+		end
+	end
+	if contact.getHARMState then
+		local okHarmState, harmState = pcall(function()
+			return contact:getHARMState()
+		end)
+		if okHarmState and harmState ~= nil then
+			snapshot.harmState = harmState
+		end
+	end
+	if contact.getNumberOfTimesHitByRadar then
+		local okRadarHits, radarHits = pcall(function()
+			return contact:getNumberOfTimesHitByRadar()
+		end)
+		if okRadarHits and radarHits ~= nil then
+			snapshot.radarHits = radarHits
+		end
+	end
+	if contact.getAbstractRadarElementsDetected then
+		local okDetectedBy, detectedBy = pcall(function()
+			return contact:getAbstractRadarElementsDetected()
+		end)
+		if okDetectedBy and detectedBy ~= nil then
+			snapshot.detectedByCount = #detectedBy
+		end
+	end
+	if contact.getHeightInFeetMSL then
+		local okAltitude, altitudeFeet = pcall(function()
+			return contact:getHeightInFeetMSL()
+		end)
+		if okAltitude and altitudeFeet ~= nil then
+			snapshot.altitudeFeet = altitudeFeet
+		end
+	end
+	if contact.getMagneticHeading then
+		local okHeading, heading = pcall(function()
+			return contact:getMagneticHeading()
+		end)
+		if okHeading and heading ~= nil and heading >= 0 then
+			snapshot.heading = heading
+		end
+	end
+	snapshot.directTargetGroup = contact._skynetFrozenDirectTargetGroupName or contact._skynetDirectTargetGroupName or nil
+	snapshot.pendingDirectTargetGroup = contact._skynetPendingDirectTargetGroupName or nil
+	return snapshot
+end
+
 function SkynetIADSOrderTrace:appendField(parts, key, value)
 	local text = safeString(value)
 	if text == nil or text == "" then
@@ -1923,6 +2141,10 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"source",
 		"contact",
 		"contactType",
+		"category",
+		"observerGroup",
+		"observerKind",
+		"airGroup",
 		"selectedBy",
 		"matchedContactSource",
 		"rejectReason",
@@ -1962,6 +2184,22 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"destination",
 		"harmTTI",
 		"harmShutdown",
+		"harmState",
+		"directTargetGroup",
+		"pendingDirectTargetGroup",
+		"backstopActive",
+		"directTargetPending",
+		"groundSpeedKts",
+		"ageSeconds",
+		"altitudeFeet",
+		"heading",
+		"inAir",
+		"life",
+		"radarHits",
+		"detectedByCount",
+		"weaponName",
+		"weaponType",
+		"launcher",
 		"active",
 		"autonomous",
 		"targetsInRange",
@@ -2037,6 +2275,61 @@ function SkynetIADSOrderTrace:traceElementCommand(element, command, details)
 		entry._skynetOrderTraceContext = nil
 	end
 	return ok
+end
+
+function SkynetIADSOrderTrace:traceAirUnit(unit, details)
+	local payload = {}
+	mergeInto(payload, self:buildUnitObservation(unit), true)
+	mergeInto(payload, details, true)
+	payload.event = payload.event or "track"
+	payload.command = payload.command or "air_contact"
+	payload.scope = payload.scope or "air_track"
+	if payload.distanceNm == nil and payload.distanceMeters ~= nil then
+		payload.distanceNm = safeRound(self:metersToNm(payload.distanceMeters), 1)
+	end
+	local observerGroup = payload.observerGroup or "global"
+	local airContact = payload.contact or "unknown"
+	local distanceBucket = payload.distanceNm ~= nil and tostring(safeRound(payload.distanceNm, 0)) or "na"
+	local signature = table.concat({
+		tostring(payload.command),
+		tostring(payload.outcome or "observed"),
+		tostring(payload.contactType or "unknown"),
+		tostring(distanceBucket),
+		tostring(payload.source or "unknown"),
+	}, "|")
+	local cacheKey = "air:" .. tostring(observerGroup) .. ":" .. tostring(airContact)
+	if self:shouldTraceObservation(cacheKey, signature, payload.minIntervalSeconds or 1.5) ~= true then
+		return false
+	end
+	payload.minIntervalSeconds = nil
+	return self:traceCommand(payload)
+end
+
+function SkynetIADSOrderTrace:traceWeaponContact(contact, details)
+	local payload = {}
+	mergeInto(payload, self:buildContactObservation(contact), true)
+	mergeInto(payload, details, true)
+	payload.event = payload.event or "track"
+	payload.command = payload.command or "weapon_contact"
+	payload.scope = payload.scope or "weapon_track"
+	local weaponContact = payload.contact or "unknown"
+	local ageBucket = payload.ageSeconds ~= nil and tostring(safeRound(payload.ageSeconds, 0)) or "na"
+	local speedBucket = payload.groundSpeedKts ~= nil and tostring(safeRound(payload.groundSpeedKts / 25, 0) * 25) or "na"
+	local signature = table.concat({
+		tostring(payload.command),
+		tostring(payload.harmState or "unknown"),
+		tostring(payload.directTargetGroup or "none"),
+		tostring(payload.pendingDirectTargetGroup or "none"),
+		tostring(speedBucket),
+		tostring(ageBucket),
+		tostring(payload.outcome or "observed"),
+	}, "|")
+	local cacheKey = "weapon:" .. tostring(weaponContact)
+	if self:shouldTraceObservation(cacheKey, signature, payload.minIntervalSeconds or 1) ~= true then
+		return false
+	end
+	payload.minIntervalSeconds = nil
+	return self:traceCommand(payload)
 end
 
 end
@@ -2794,6 +3087,20 @@ function SkynetIADS:traceElementCommand(element, command, details)
 	return false
 end
 
+function SkynetIADS:traceAirUnit(unit, details)
+	if self.orderTrace and self.orderTrace.traceAirUnit then
+		return self.orderTrace:traceAirUnit(unit, details)
+	end
+	return false
+end
+
+function SkynetIADS:traceWeaponContact(contact, details)
+	if self.orderTrace and self.orderTrace.traceWeaponContact then
+		return self.orderTrace:traceWeaponContact(contact, details)
+	end
+	return false
+end
+
 -- ============================================================================
 -- 激活 IADS 系统
 -- 功能: 启动整个 IADS 系统，开始目标检测和跟踪
@@ -3425,6 +3732,31 @@ function SkynetIADSAbstractRadarElement:weaponFired(event)
 			local launcher = self.launchers[i]
 			if launcher:getDCSRepresentation() == launcherFired then
 				table.insert(self.missilesInFlight, weapon)
+				self.lastWeaponLaunchTime = timer.getTime()
+				if self.iads and self.iads.traceElementCommand then
+					local weaponType = nil
+					local weaponName = nil
+					local launcherName = nil
+					pcall(function()
+						weaponType = weapon and weapon.getTypeName and weapon:getTypeName() or nil
+					end)
+					pcall(function()
+						weaponName = weapon and weapon.getName and weapon:getName() or nil
+					end)
+					pcall(function()
+						launcherName = launcherFired and launcherFired.getName and launcherFired:getName() or nil
+					end)
+					self.iads:traceElementCommand(self, "weapon_fired", {
+						event = "track",
+						scope = "weapon_track",
+						outcome = "launched",
+						originModule = "skynet-iads-abstract-radar-element",
+						originFunction = "weaponFired",
+						weaponName = weaponName,
+						weaponType = weaponType,
+						launcher = launcherName,
+					})
+				end
 			end
 		end
 	end
@@ -5746,6 +6078,17 @@ function SkynetIADSHARMDetection:getContactAgeSeconds(contact)
 	return age
 end
 
+function SkynetIADSHARMDetection:traceWeaponContact(contact, details)
+	if self.iads == nil or self.iads.traceWeaponContact == nil or contact == nil then
+		return false
+	end
+	local payload = details or {}
+	payload.originModule = payload.originModule or "skynet-iads-harm-detection"
+	payload.originFunction = payload.originFunction or "evaluateContacts"
+	payload.source = payload.source or "harm_detection"
+	return self.iads:traceWeaponContact(contact, payload)
+end
+
 function SkynetIADSHARMDetection:evaluateContacts()
 	self:cleanAgedContacts()
 	for i = 1, #self.contacts do
@@ -5765,6 +6108,8 @@ function SkynetIADSHARMDetection:evaluateContacts()
 					end
 				end
 			else
+				local groundSpeed = contact:getGroundSpeedInKnots(0)
+				local contactAgeSeconds = self:getContactAgeSeconds(contact)
 				local directTargetElement = self:getDirectTargetElement(contact)
 				local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
 				if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" then
@@ -5783,7 +6128,6 @@ function SkynetIADSHARMDetection:evaluateContacts()
 				end
 				local frozenDirectTargetGroupName = contact._skynetFrozenDirectTargetGroupName
 				local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
-				local contactAgeSeconds = self:getContactAgeSeconds(contact)
 				local directTargetBackstopActive =
 					hasDirectTarget
 					and contactAgeSeconds >= SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS
@@ -5796,11 +6140,13 @@ function SkynetIADSHARMDetection:evaluateContacts()
 					contact._skynetDirectTargetGroupName = nil
 				end
 
-				local groundSpeed = contact:getGroundSpeedInKnots(0)
 				local likelyWeaponThreat = false
 				if directTargetPending ~= true then
 					likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
 				end
+				local simpleAltitudePointCount = 0
+				local newRadarCount = 0
+				local detectionProbability = nil
 				if directTargetBackstopActive == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
 					contact:setHARMState(SkynetIADSContact.HARM)
 					if self.iads:getDebugSettings().harmDefence then
@@ -5811,14 +6157,16 @@ function SkynetIADSHARMDetection:evaluateContacts()
 				-- If a contact has only been hit by a radar once its speed is often 0, so skip probabilistic checks this cycle.
 				if groundSpeed > 0 then
 					local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
+					simpleAltitudePointCount = #simpleAltitudeProfile
 					local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
+					newRadarCount = #newRadarsToEvaluate
 					if directTargetBackstopActive == false
 						and likelyWeaponThreat == false
 						and #newRadarsToEvaluate > 0
 						and contact:isIdentifiedAsHARM() == false
 						and groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS
 						and #simpleAltitudeProfile <= 2 then
-						local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
+						detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
 						if self:shallReactToHARM(detectionProbability) then
 							contact:setHARMState(SkynetIADSContact.HARM)
 							if self.iads:getDebugSettings().harmDefence then
@@ -5841,7 +6189,26 @@ function SkynetIADSHARMDetection:evaluateContacts()
 							self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
 						end
 					end
+				else
+					simpleAltitudePointCount = 0
+					newRadarCount = 0
 				end
+
+				self:traceWeaponContact(contact, {
+					command = "weapon_contact",
+					scope = "weapon_track",
+					outcome = contact:isIdentifiedAsHARM() == true and "harm" or "observed",
+					groundSpeedKts = groundSpeed,
+					ageSeconds = contactAgeSeconds,
+					directTargetGroup = contact._skynetFrozenDirectTargetGroupName or contact._skynetDirectTargetGroupName or nil,
+					pendingDirectTargetGroup = contact._skynetPendingDirectTargetGroupName or nil,
+					backstopActive = directTargetBackstopActive == true and "Y" or "N",
+					directTargetPending = directTargetPending == true and "Y" or "N",
+					simpleAltitudePoints = simpleAltitudePointCount,
+					newRadarCount = newRadarCount,
+					detectionProbability = detectionProbability,
+					note = likelyWeaponThreat == true and "likelyWeaponThreat=Y" or nil,
+				})
 
 				if contact:isIdentifiedAsHARM() then
 					self:informRadarsOfHARM(contact)
@@ -5959,6 +6326,7 @@ SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
+SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -7495,6 +7863,20 @@ function SkynetIADSMobilePatrol:getUnitTypeName(unit)
 	return targetType
 end
 
+function SkynetIADSMobilePatrol:traceAirUnitTrack(entry, unit, distanceMeters, details, functionName)
+	if entry == nil or unit == nil or self.iads == nil or self.iads.traceAirUnit == nil then
+		return false
+	end
+	local payload = details or {}
+	payload.originModule = payload.originModule or "skynet-iads-mobile-patrol"
+	payload.originFunction = payload.originFunction or functionName or "traceAirUnitTrack"
+	payload.observerGroup = payload.observerGroup or entry.groupName
+	payload.observerKind = payload.observerKind or entry.kind
+	payload.source = payload.source or "direct_unit_scan"
+	payload.distanceNm = payload.distanceNm or toRoundedNm(distanceMeters)
+	return self.iads:traceAirUnit(unit, payload)
+end
+
 function SkynetIADSMobilePatrol:traceThreatProbe(entry, details)
 	if entry == nil then
 		return false
@@ -8474,12 +8856,28 @@ function SkynetIADSMobilePatrol:findNearestEnemyAircraftUnit(entry, maxDistanceM
 			local unitPoint = unit:getPoint()
 			if unitPoint then
 				local distanceMeters = mist.utils.get2DDist(center, unitPoint)
+				if distanceMeters <= maxDistanceMeters then
+					self:traceAirUnitTrack(entry, unit, distanceMeters, {
+						outcome = "candidate",
+						command = "air_contact",
+						scope = "air_track",
+						note = "within_scan_range=Y",
+					}, "findNearestEnemyAircraftUnit")
+				end
 				if distanceMeters <= maxDistanceMeters and distanceMeters < nearestDistanceMeters then
 					nearestUnit = unit
 					nearestDistanceMeters = distanceMeters
 				end
 			end
 		end
+	end
+	if nearestUnit ~= nil then
+		self:traceAirUnitTrack(entry, nearestUnit, nearestDistanceMeters, {
+			outcome = "selected",
+			command = "air_contact",
+			scope = "air_track",
+			note = "nearest_candidate=Y",
+		}, "findNearestEnemyAircraftUnit")
 	end
 	return nearestUnit, nearestDistanceMeters
 end
@@ -8936,12 +9334,36 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 		if entry.combatCommitted == true then
 			local combatThreatPresent, combatThreatDetails = self:hasSAMCombatThreat(entry)
-			if self:handleCombatThreatLoss(entry, now, combatThreatPresent, "combat_scan", combatThreatDetails) then
+			local missilesInFlight = 0
+			local okMissilesInFlight, trackedMissilesInFlight = pcall(function()
+				return entry.element:getNumberOfMissilesInFlight()
+			end)
+			if okMissilesInFlight == true and type(trackedMissilesInFlight) == "number" then
+				missilesInFlight = trackedMissilesInFlight
+			end
+			local recentWeaponLaunchHold = false
+			local lastWeaponLaunchTime = entry.element and entry.element.lastWeaponLaunchTime or nil
+			if type(lastWeaponLaunchTime) == "number" then
+				recentWeaponLaunchHold =
+					(now - lastWeaponLaunchTime) <= SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS
+			end
+			local maintainByWeaponCommit = missilesInFlight > 0 or recentWeaponLaunchHold == true
+
+			if maintainByWeaponCommit ~= true and self:handleCombatThreatLoss(entry, now, combatThreatPresent, "combat_scan", combatThreatDetails) then
 				return
+			elseif maintainByWeaponCommit == true then
+				entry.combatNoTargetSince = nil
+				self:traceCombatExitCheck(entry, {
+					source = "combat_scan",
+					outcome = "blocked",
+					note = missilesInFlight > 0 and "missilesInFlight>0" or "recentLaunchHold=Y",
+					missilesInFlight = missilesInFlight,
+					residualContactFiltered = combatThreatDetails and combatThreatDetails.residualContactFiltered == true and "Y" or "N",
+				}, "updateEntry")
 			end
 
-			local shouldMaintainCombatLatch = false
-			if combatThreatPresent == true then
+			local shouldMaintainCombatLatch = maintainByWeaponCommit == true
+			if shouldMaintainCombatLatch ~= true and combatThreatPresent == true then
 				if threatDecision == nil then
 					shouldMaintainCombatLatch = true
 				elseif threatDecision.shouldGoLive ~= true then

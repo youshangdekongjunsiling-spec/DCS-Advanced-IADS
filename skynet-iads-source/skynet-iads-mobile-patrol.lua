@@ -28,6 +28,7 @@ SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
+SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -1564,6 +1565,20 @@ function SkynetIADSMobilePatrol:getUnitTypeName(unit)
 	return targetType
 end
 
+function SkynetIADSMobilePatrol:traceAirUnitTrack(entry, unit, distanceMeters, details, functionName)
+	if entry == nil or unit == nil or self.iads == nil or self.iads.traceAirUnit == nil then
+		return false
+	end
+	local payload = details or {}
+	payload.originModule = payload.originModule or "skynet-iads-mobile-patrol"
+	payload.originFunction = payload.originFunction or functionName or "traceAirUnitTrack"
+	payload.observerGroup = payload.observerGroup or entry.groupName
+	payload.observerKind = payload.observerKind or entry.kind
+	payload.source = payload.source or "direct_unit_scan"
+	payload.distanceNm = payload.distanceNm or toRoundedNm(distanceMeters)
+	return self.iads:traceAirUnit(unit, payload)
+end
+
 function SkynetIADSMobilePatrol:traceThreatProbe(entry, details)
 	if entry == nil then
 		return false
@@ -2543,12 +2558,28 @@ function SkynetIADSMobilePatrol:findNearestEnemyAircraftUnit(entry, maxDistanceM
 			local unitPoint = unit:getPoint()
 			if unitPoint then
 				local distanceMeters = mist.utils.get2DDist(center, unitPoint)
+				if distanceMeters <= maxDistanceMeters then
+					self:traceAirUnitTrack(entry, unit, distanceMeters, {
+						outcome = "candidate",
+						command = "air_contact",
+						scope = "air_track",
+						note = "within_scan_range=Y",
+					}, "findNearestEnemyAircraftUnit")
+				end
 				if distanceMeters <= maxDistanceMeters and distanceMeters < nearestDistanceMeters then
 					nearestUnit = unit
 					nearestDistanceMeters = distanceMeters
 				end
 			end
 		end
+	end
+	if nearestUnit ~= nil then
+		self:traceAirUnitTrack(entry, nearestUnit, nearestDistanceMeters, {
+			outcome = "selected",
+			command = "air_contact",
+			scope = "air_track",
+			note = "nearest_candidate=Y",
+		}, "findNearestEnemyAircraftUnit")
 	end
 	return nearestUnit, nearestDistanceMeters
 end
@@ -3005,12 +3036,36 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 		if entry.combatCommitted == true then
 			local combatThreatPresent, combatThreatDetails = self:hasSAMCombatThreat(entry)
-			if self:handleCombatThreatLoss(entry, now, combatThreatPresent, "combat_scan", combatThreatDetails) then
+			local missilesInFlight = 0
+			local okMissilesInFlight, trackedMissilesInFlight = pcall(function()
+				return entry.element:getNumberOfMissilesInFlight()
+			end)
+			if okMissilesInFlight == true and type(trackedMissilesInFlight) == "number" then
+				missilesInFlight = trackedMissilesInFlight
+			end
+			local recentWeaponLaunchHold = false
+			local lastWeaponLaunchTime = entry.element and entry.element.lastWeaponLaunchTime or nil
+			if type(lastWeaponLaunchTime) == "number" then
+				recentWeaponLaunchHold =
+					(now - lastWeaponLaunchTime) <= SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS
+			end
+			local maintainByWeaponCommit = missilesInFlight > 0 or recentWeaponLaunchHold == true
+
+			if maintainByWeaponCommit ~= true and self:handleCombatThreatLoss(entry, now, combatThreatPresent, "combat_scan", combatThreatDetails) then
 				return
+			elseif maintainByWeaponCommit == true then
+				entry.combatNoTargetSince = nil
+				self:traceCombatExitCheck(entry, {
+					source = "combat_scan",
+					outcome = "blocked",
+					note = missilesInFlight > 0 and "missilesInFlight>0" or "recentLaunchHold=Y",
+					missilesInFlight = missilesInFlight,
+					residualContactFiltered = combatThreatDetails and combatThreatDetails.residualContactFiltered == true and "Y" or "N",
+				}, "updateEntry")
 			end
 
-			local shouldMaintainCombatLatch = false
-			if combatThreatPresent == true then
+			local shouldMaintainCombatLatch = maintainByWeaponCommit == true
+			if shouldMaintainCombatLatch ~= true and combatThreatPresent == true then
 				if threatDecision == nil then
 					shouldMaintainCombatLatch = true
 				elseif threatDecision.shouldGoLive ~= true then
