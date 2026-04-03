@@ -5734,7 +5734,12 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			local categoryId = self:getContactCategory(contact)
 			local isWeaponContact = categoryId == Object.Category.WEAPON
 			local directTargetElement = isWeaponContact and self:getDirectTargetElement(contact) or nil
-			local hasDirectTarget = directTargetElement ~= nil
+			local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
+			if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" and contact._skynetInitialDirectTargetGroupName == nil then
+				contact._skynetInitialDirectTargetGroupName = currentDirectTargetGroupName
+			end
+			local frozenDirectTargetGroupName = contact._skynetInitialDirectTargetGroupName
+			local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
 			local contactAgeSeconds = self:getContactAgeSeconds(contact)
 			local directTargetBackstopActive =
 				hasDirectTarget
@@ -5742,10 +5747,13 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			local directTargetPending = hasDirectTarget and directTargetBackstopActive ~= true
 
 			if directTargetBackstopActive then
-				contact._skynetDirectTargetGroupName = directTargetElement:getDCSName()
+				contact._skynetDirectTargetGroupName = frozenDirectTargetGroupName
 				contact:setHARMState(SkynetIADSContact.HARM)
 			else
 				contact._skynetDirectTargetGroupName = nil
+				if isWeaponContact ~= true then
+					contact._skynetInitialDirectTargetGroupName = nil
+				end
 				if isWeaponContact ~= true and contact:isIdentifiedAsHARM() == true then
 					contact:setHARMState(SkynetIADSContact.NOT_HARM)
 					if self.iads:getDebugSettings().harmDefence then
@@ -6112,6 +6120,44 @@ local function collectEnemyAirUnits(enemyCoalitionId)
 		end
 	end
 	return airUnits
+end
+
+local function getUnitSpeedMetersPerSecond(unit)
+	if unit == nil or unit.isExist == nil or unit:isExist() == false or unit.getVelocity == nil then
+		return math.huge
+	end
+	local okVelocity, velocity = pcall(function()
+		return unit:getVelocity()
+	end)
+	if okVelocity ~= true or velocity == nil then
+		return math.huge
+	end
+	local x = velocity.x or 0
+	local y = velocity.y or 0
+	local z = velocity.z or 0
+	return math.sqrt((x * x) + (y * y) + (z * z))
+end
+
+local function getUnitAltitudeAGLMeters(unit)
+	if unit == nil or unit.isExist == nil or unit:isExist() == false or unit.getPoint == nil then
+		return math.huge
+	end
+	local okPoint, point = pcall(function()
+		return unit:getPoint()
+	end)
+	if okPoint ~= true or point == nil or point.x == nil or point.z == nil then
+		return math.huge
+	end
+	local terrainHeight = land.getHeight({ x = point.x, y = point.z }) or 0
+	local altitudeAGL = (point.y or 0) - terrainHeight
+	if altitudeAGL < 0 then
+		altitudeAGL = 0
+	end
+	return altitudeAGL
+end
+
+local function isLikelyGroundedResidualAirUnit(unit)
+	return getUnitAltitudeAGLMeters(unit) <= 5 and getUnitSpeedMetersPerSecond(unit) <= 20
 end
 
 local function isAirContact(contact)
@@ -7462,6 +7508,50 @@ function SkynetIADSMobilePatrol:getReusableThreatContact(entry, triggerInfo)
 	return nil, math.huge
 end
 
+function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredContact)
+	if entry == nil or entry.element == nil or entry.element.informOfContact == nil then
+		return false
+	end
+
+	local function canInform(contact)
+		if contact == nil or isAirContact(contact) ~= true then
+			return false
+		end
+		if contact.isIdentifiedAsHARM and contact:isIdentifiedAsHARM() == true then
+			return false
+		end
+		local okConstraints, constraintsSatisfied = pcall(function()
+			return entry.element:areGoLiveConstraintsSatisfied(contact)
+		end)
+		return okConstraints == true and constraintsSatisfied == true
+	end
+
+	local function inform(contact)
+		if canInform(contact) ~= true then
+			return false
+		end
+		local okInform = pcall(function()
+			entry.element:informOfContact(contact)
+		end)
+		return okInform == true
+	end
+
+	local informedAny = false
+	if preferredContact ~= nil then
+		informedAny = inform(preferredContact) or informedAny
+	end
+
+	local contacts = self.iads:getContacts()
+	for i = 1, #contacts do
+		local contact = contacts[i]
+		if contact ~= preferredContact then
+			informedAny = inform(contact) or informedAny
+		end
+	end
+
+	return informedAny
+end
+
 function SkynetIADSMobilePatrol:getContactTypeName(contact)
 	if contact == nil then
 		return "unknown"
@@ -7679,6 +7769,10 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 				contact, contactDistanceMeters, matchedContactSource = self:findCachedThreatContactFallback(entry, directUnit, profile.alertRangeMeters)
 			end
 		end
+		if contact == nil and directUnit ~= nil and isLikelyGroundedResidualAirUnit(directUnit) then
+			directUnit = nil
+			directUnitDistanceMeters = math.huge
+		end
 		if contact == nil and directUnit == nil then
 			return nil
 		end
@@ -7770,6 +7864,9 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 		local contact, contactDistanceMeters, matchedContactSource = self:findMatchingEligibleContact(entry, directUnit, threatRangeMeters)
 		if contact == nil then
 			contact, contactDistanceMeters, matchedContactSource = self:findFallbackEligibleContact(entry, directUnit, directUnitDistanceMeters, threatRangeMeters)
+		end
+		if contact == nil and isLikelyGroundedResidualAirUnit(directUnit) then
+			return nil
 		end
 		local directSource = "direct_unit_scan"
 		if matchedContactSource == "live_contact_match" then
@@ -7875,11 +7972,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			}, "applyMSAMThreatDecision")
 			entry.element:goLive()
 			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
-			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
-				pcall(function()
-					entry.element:informOfContact(threatDecision.contact)
-				end)
-			end
+			self:informEntryOfThreatContacts(entry, threatDecision.contact)
 			if threatDecision.shouldGoLive == true then
 				entry.combatCommitted = true
 				entry.combatNoTargetSince = nil
@@ -7915,11 +8008,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			}, "applyMSAMThreatDecision")
 			entry.element:goLive()
 			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
-			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
-				pcall(function()
-					entry.element:informOfContact(threatDecision.contact)
-				end)
-			end
+			self:informEntryOfThreatContacts(entry, threatDecision.contact)
 		end
 	else
 		self:traceEntryCommand(entry, "patrol_dark_state", {

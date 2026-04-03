@@ -153,7 +153,12 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			local categoryId = self:getContactCategory(contact)
 			local isWeaponContact = categoryId == Object.Category.WEAPON
 			local directTargetElement = isWeaponContact and self:getDirectTargetElement(contact) or nil
-			local hasDirectTarget = directTargetElement ~= nil
+			local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
+			if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" and contact._skynetInitialDirectTargetGroupName == nil then
+				contact._skynetInitialDirectTargetGroupName = currentDirectTargetGroupName
+			end
+			local frozenDirectTargetGroupName = contact._skynetInitialDirectTargetGroupName
+			local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
 			local contactAgeSeconds = self:getContactAgeSeconds(contact)
 			local directTargetBackstopActive =
 				hasDirectTarget
@@ -161,10 +166,13 @@ function SkynetIADSHARMDetection:evaluateContacts()
 			local directTargetPending = hasDirectTarget and directTargetBackstopActive ~= true
 
 			if directTargetBackstopActive then
-				contact._skynetDirectTargetGroupName = directTargetElement:getDCSName()
+				contact._skynetDirectTargetGroupName = frozenDirectTargetGroupName
 				contact:setHARMState(SkynetIADSContact.HARM)
 			else
 				contact._skynetDirectTargetGroupName = nil
+				if isWeaponContact ~= true then
+					contact._skynetInitialDirectTargetGroupName = nil
+				end
 				if isWeaponContact ~= true and contact:isIdentifiedAsHARM() == true then
 					contact:setHARMState(SkynetIADSContact.NOT_HARM)
 					if self.iads:getDebugSettings().harmDefence then
