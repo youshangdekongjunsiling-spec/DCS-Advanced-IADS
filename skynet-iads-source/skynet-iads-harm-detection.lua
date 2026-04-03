@@ -152,97 +152,99 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		if contact ~= nil then
 			local categoryId = self:getContactCategory(contact)
 			local isWeaponContact = categoryId == Object.Category.WEAPON
-			local directTargetElement = isWeaponContact and self:getDirectTargetElement(contact) or nil
-			local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
-			if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" then
-				if contact._skynetPendingDirectTargetGroupName == currentDirectTargetGroupName then
-					contact._skynetPendingDirectTargetMatchCount = (contact._skynetPendingDirectTargetMatchCount or 1) + 1
-				else
-					contact._skynetPendingDirectTargetGroupName = currentDirectTargetGroupName
-					contact._skynetPendingDirectTargetMatchCount = 1
-				end
-				if contact._skynetPendingDirectTargetMatchCount >= 2 then
-					contact._skynetFrozenDirectTargetGroupName = currentDirectTargetGroupName
-				end
-			elseif contact._skynetFrozenDirectTargetGroupName == nil then
+			if isWeaponContact ~= true then
+				contact._skynetDirectTargetGroupName = nil
 				contact._skynetPendingDirectTargetGroupName = nil
 				contact._skynetPendingDirectTargetMatchCount = 0
-			end
-			local frozenDirectTargetGroupName = contact._skynetFrozenDirectTargetGroupName
-			local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
-			local contactAgeSeconds = self:getContactAgeSeconds(contact)
-			local directTargetBackstopActive =
-				hasDirectTarget
-				and contactAgeSeconds >= SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS
-			local directTargetPending = hasDirectTarget and directTargetBackstopActive ~= true
-
-			if directTargetBackstopActive then
-				contact._skynetDirectTargetGroupName = frozenDirectTargetGroupName
-				contact:setHARMState(SkynetIADSContact.HARM)
-			else
-				contact._skynetDirectTargetGroupName = nil
-				if isWeaponContact ~= true then
-					contact._skynetPendingDirectTargetGroupName = nil
-					contact._skynetPendingDirectTargetMatchCount = 0
-					contact._skynetFrozenDirectTargetGroupName = nil
-				end
-				if isWeaponContact ~= true and contact:isIdentifiedAsHARM() == true then
+				contact._skynetFrozenDirectTargetGroupName = nil
+				if contact:isIdentifiedAsHARM() == true then
 					contact:setHARMState(SkynetIADSContact.NOT_HARM)
 					if self.iads:getDebugSettings().harmDefence then
 						self.iads:printOutputToLog("HARM FILTERED (NON-WEAPON): "..contact:getTypeName())
 					end
 				end
-			end
-
-			local groundSpeed = contact:getGroundSpeedInKnots(0)
-			local likelyWeaponThreat = false
-			if directTargetPending ~= true then
-				likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
-			end
-			if directTargetBackstopActive == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
-				contact:setHARMState(SkynetIADSContact.HARM)
-				if self.iads:getDebugSettings().harmDefence then
-					self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
-				end
-			end
-
-			-- If a contact has only been hit by a radar once its speed is often 0, so skip probabilistic checks this cycle.
-			if groundSpeed > 0 then
-				local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
-				local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
-				if directTargetBackstopActive == false
-					and likelyWeaponThreat == false
-					and #newRadarsToEvaluate > 0
-					and contact:isIdentifiedAsHARM() == false
-					and groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS
-					and #simpleAltitudeProfile <= 2 then
-					local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
-					if self:shallReactToHARM(detectionProbability) then
-						contact:setHARMState(SkynetIADSContact.HARM)
-						if self.iads:getDebugSettings().harmDefence then
-							self.iads:printOutputToLog("HARM IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
-						end
+			else
+				local directTargetElement = self:getDirectTargetElement(contact)
+				local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
+				if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" then
+					if contact._skynetPendingDirectTargetGroupName == currentDirectTargetGroupName then
+						contact._skynetPendingDirectTargetMatchCount = (contact._skynetPendingDirectTargetMatchCount or 1) + 1
 					else
-						contact:setHARMState(SkynetIADSContact.NOT_HARM)
+						contact._skynetPendingDirectTargetGroupName = currentDirectTargetGroupName
+						contact._skynetPendingDirectTargetMatchCount = 1
+					end
+					if contact._skynetPendingDirectTargetMatchCount >= 2 then
+						contact._skynetFrozenDirectTargetGroupName = currentDirectTargetGroupName
+					end
+				elseif contact._skynetFrozenDirectTargetGroupName == nil then
+					contact._skynetPendingDirectTargetGroupName = nil
+					contact._skynetPendingDirectTargetMatchCount = 0
+				end
+				local frozenDirectTargetGroupName = contact._skynetFrozenDirectTargetGroupName
+				local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
+				local contactAgeSeconds = self:getContactAgeSeconds(contact)
+				local directTargetBackstopActive =
+					hasDirectTarget
+					and contactAgeSeconds >= SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS
+				local directTargetPending = hasDirectTarget and directTargetBackstopActive ~= true
+
+				if directTargetBackstopActive then
+					contact._skynetDirectTargetGroupName = frozenDirectTargetGroupName
+					contact:setHARMState(SkynetIADSContact.HARM)
+				else
+					contact._skynetDirectTargetGroupName = nil
+				end
+
+				local groundSpeed = contact:getGroundSpeedInKnots(0)
+				local likelyWeaponThreat = false
+				if directTargetPending ~= true then
+					likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
+				end
+				if directTargetBackstopActive == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
+					contact:setHARMState(SkynetIADSContact.HARM)
+					if self.iads:getDebugSettings().harmDefence then
+						self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
+					end
+				end
+
+				-- If a contact has only been hit by a radar once its speed is often 0, so skip probabilistic checks this cycle.
+				if groundSpeed > 0 then
+					local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
+					local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
+					if directTargetBackstopActive == false
+						and likelyWeaponThreat == false
+						and #newRadarsToEvaluate > 0
+						and contact:isIdentifiedAsHARM() == false
+						and groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS
+						and #simpleAltitudeProfile <= 2 then
+						local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
+						if self:shallReactToHARM(detectionProbability) then
+							contact:setHARMState(SkynetIADSContact.HARM)
+							if self.iads:getDebugSettings().harmDefence then
+								self.iads:printOutputToLog("HARM IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+							end
+						else
+							contact:setHARMState(SkynetIADSContact.NOT_HARM)
+							if self.iads:getDebugSettings().harmDefence then
+								self.iads:printOutputToLog("HARM NOT IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+							end
+						end
+					end
+
+					if directTargetBackstopActive == false
+						and likelyWeaponThreat == false
+						and #simpleAltitudeProfile > 2
+						and contact:isIdentifiedAsHARM() then
+						contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
 						if self.iads:getDebugSettings().harmDefence then
-							self.iads:printOutputToLog("HARM NOT IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+							self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
 						end
 					end
 				end
 
-				if directTargetBackstopActive == false
-					and likelyWeaponThreat == false
-					and #simpleAltitudeProfile > 2
-					and contact:isIdentifiedAsHARM() then
-					contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
-					if self.iads:getDebugSettings().harmDefence then
-						self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
-					end
+				if contact:isIdentifiedAsHARM() then
+					self:informRadarsOfHARM(contact)
 				end
-			end
-
-			if contact:isIdentifiedAsHARM() then
-				self:informRadarsOfHARM(contact)
 			end
 		end
 	end
@@ -287,6 +289,9 @@ function SkynetIADSHARMDetection:isElementInTable(tbl, element)
 end
 
 function SkynetIADSHARMDetection:informRadarsOfHARM(contact)
+	if self:getContactCategory(contact) ~= Object.Category.WEAPON then
+		return
+	end
 	local samSites = self.iads:getUsableSAMSites()
 	self:updateRadarsOfSites(samSites, contact)
 

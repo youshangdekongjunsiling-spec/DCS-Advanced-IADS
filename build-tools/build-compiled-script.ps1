@@ -11,11 +11,40 @@ if (Test-Path ./tmp/skynet-iads-compiled.lua) {
 	Remove-Item ./tmp/skynet-iads-compiled.lua
 }
 Add-Content ./tmp/tmp-time.lua ("env.info(`"--- SKYNET VERSION: "+$version+" | BUILD TIME: "+(Get-Date -date (Get-Date).ToUniversalTime()-uformat "%d.%m.%Y %H%MZ")+" ---`")")  
-cat ../skynet-iads-source/skynet-iads-supported-types.lua, ../skynet-iads-source/highdigitsams/skynet-iads-high-digit-sams-suported-types.lua, ../skynet-iads-source/skynet-iads-logger.lua, ../skynet-iads-source/skynet-iads-order-trace.lua, ../skynet-iads-source/skynet-iads.lua, ../skynet-iads-source/skynet-mooose-a2a-dispatcher-connector.lua, ../skynet-iads-source/skynet-iads-table-delegator.lua, ../skynet-iads-source/skynet-iads-abstract-dcs-object-wrapper.lua, ../skynet-iads-source/skynet-iads-abstract-element.lua, ../skynet-iads-source/skynet-iads-abstract-radar-element.lua, ../skynet-iads-source/skynet-iads-awacs-radar.lua, ../skynet-iads-source/skynet-iads-command-center.lua, ../skynet-iads-source/skynet-iads-contact.lua, ../skynet-iads-source/skynet-iads-early-warning-radar.lua, ../skynet-iads-source/skynet-iads-jammer.lua, ../skynet-iads-source/skynet-iads-sam-search-radar.lua, ../skynet-iads-source/skynet-iads-sam-site.lua, ../skynet-iads-source/skynet-iads-sam-tracking-radar.lua, ../skynet-iads-source/syknet-iads-sam-launcher.lua, ../skynet-iads-source/skynet-iads-harm-detection.lua | sc ./tmp/tmp-code.lua 
-$code = Get-Content ./tmp/tmp-code.lua
-Add-Content ./tmp/tmp-time.lua $code
-Rename-Item -Path ./tmp/tmp-time.lua -NewName skynet-iads-compiled.lua
-Remove-Item ./tmp/tmp-code.lua
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$sources = @(
+	"../skynet-iads-source/skynet-iads-supported-types.lua",
+	"../skynet-iads-source/highdigitsams/skynet-iads-high-digit-sams-suported-types.lua",
+	"../skynet-iads-source/skynet-iads-logger.lua",
+	"../skynet-iads-source/skynet-iads-order-trace.lua",
+	"../skynet-iads-source/skynet-iads.lua",
+	"../skynet-iads-source/skynet-mooose-a2a-dispatcher-connector.lua",
+	"../skynet-iads-source/skynet-iads-table-delegator.lua",
+	"../skynet-iads-source/skynet-iads-abstract-dcs-object-wrapper.lua",
+	"../skynet-iads-source/skynet-iads-abstract-element.lua",
+	"../skynet-iads-source/skynet-iads-abstract-radar-element.lua",
+	"../skynet-iads-source/skynet-iads-awacs-radar.lua",
+	"../skynet-iads-source/skynet-iads-command-center.lua",
+	"../skynet-iads-source/skynet-iads-contact.lua",
+	"../skynet-iads-source/skynet-iads-early-warning-radar.lua",
+	"../skynet-iads-source/skynet-iads-jammer.lua",
+	"../skynet-iads-source/skynet-iads-sam-search-radar.lua",
+	"../skynet-iads-source/skynet-iads-sam-site.lua",
+	"../skynet-iads-source/skynet-iads-sam-tracking-radar.lua",
+	"../skynet-iads-source/syknet-iads-sam-launcher.lua",
+	"../skynet-iads-source/skynet-iads-harm-detection.lua",
+	"../skynet-iads-source/skynet-iads-mobile-patrol.lua",
+	"../skynet-iads-source/skynet-iads-sibling-coordination.lua",
+	"../skynet-iads-source/skynet-iads-ewr-reporter.lua"
+)
+$compiledBuilder = New-Object System.Text.StringBuilder
+[void]$compiledBuilder.AppendLine([System.IO.File]::ReadAllText((Resolve-Path ./tmp/tmp-time.lua), [System.Text.Encoding]::UTF8))
+foreach ($source in $sources) {
+	$resolved = Resolve-Path $source
+	[void]$compiledBuilder.AppendLine([System.IO.File]::ReadAllText($resolved, [System.Text.Encoding]::UTF8))
+}
+[System.IO.File]::WriteAllText((Join-Path (Resolve-Path ./tmp/) "skynet-iads-compiled.lua"), $compiledBuilder.ToString(), $utf8)
+Remove-Item ./tmp/tmp-time.lua
 
 if (Test-Path ../demo-missions/skynet-iads-compiled.lua) {
 	Remove-Item ../demo-missions/skynet-iads-compiled.lua

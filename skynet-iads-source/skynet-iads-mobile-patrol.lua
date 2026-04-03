@@ -66,11 +66,7 @@ local function groupHasUnitWithPrefix(group, prefix)
 end
 
 local function samSiteMatchesPrefix(samSite, prefix)
-	if startsWith(samSite:getDCSName(), prefix) then
-		return true
-	end
-	local group = samSite:getDCSRepresentation()
-	return groupHasUnitWithPrefix(group, prefix)
+	return startsWith(samSite:getDCSName(), prefix)
 end
 
 local function ewRadarMatchesPrefix(ewRadar, prefix)
@@ -1097,10 +1093,13 @@ function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
 			})
 			return
 		end
+		local route = self:buildRoadPatrolRoute(entry, startIndex)
+		if route == nil then
+			error("missing road patrol route")
+		end
 		mist.ground.patrolRoute({
 			gpData = entry.groupName,
-			useGroupRoute = entry.groupName,
-			onRoadForm = "On Road",
+			route = route,
 			speed = mist.utils.kmphToMps(entry.patrolSpeedKmph),
 		})
 	end)
@@ -2998,11 +2997,14 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			entry.debugLastCombatAnnouncementKey = nil
 			local resumedRoute = false
 			pcall(function()
-				resumedRoute = self:advancePatrol(entry, true)
+				resumedRoute = self:issuePatrolRoute(entry)
 			end)
 			if resumedRoute ~= true then
+				entry.patrolRouteMode = "off_road"
+				entry.currentWaypointIndex = self:selectNearestWaypointIndex(entry)
 				self:setOrderTraceContext(entry, "move_fire_resume_patrol", {
 					source = "move_fire_reset",
+					note = "fallback=off_road",
 				}, "updateEntry")
 				self:issuePatrolRoute(entry)
 			end

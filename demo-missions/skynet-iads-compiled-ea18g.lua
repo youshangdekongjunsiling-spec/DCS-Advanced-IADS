@@ -1,4 +1,5 @@
-env.info("--- SKYNET VERSION: ea18g-sa11-sibling-firefix-sa15-harmfix-threatprobe | BUILD TIME: 03.04.2026 0229Z ---")
+env.info("--- SKYNET VERSION: ea18g-groupname-harmfix-sa15-recover | BUILD TIME: 03.04.2026 0503Z ---")
+
 do
 --this file contains the required units per sam type
 samTypesDB = {	
@@ -5752,97 +5753,99 @@ function SkynetIADSHARMDetection:evaluateContacts()
 		if contact ~= nil then
 			local categoryId = self:getContactCategory(contact)
 			local isWeaponContact = categoryId == Object.Category.WEAPON
-			local directTargetElement = isWeaponContact and self:getDirectTargetElement(contact) or nil
-			local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
-			if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" then
-				if contact._skynetPendingDirectTargetGroupName == currentDirectTargetGroupName then
-					contact._skynetPendingDirectTargetMatchCount = (contact._skynetPendingDirectTargetMatchCount or 1) + 1
-				else
-					contact._skynetPendingDirectTargetGroupName = currentDirectTargetGroupName
-					contact._skynetPendingDirectTargetMatchCount = 1
-				end
-				if contact._skynetPendingDirectTargetMatchCount >= 2 then
-					contact._skynetFrozenDirectTargetGroupName = currentDirectTargetGroupName
-				end
-			elseif contact._skynetFrozenDirectTargetGroupName == nil then
+			if isWeaponContact ~= true then
+				contact._skynetDirectTargetGroupName = nil
 				contact._skynetPendingDirectTargetGroupName = nil
 				contact._skynetPendingDirectTargetMatchCount = 0
-			end
-			local frozenDirectTargetGroupName = contact._skynetFrozenDirectTargetGroupName
-			local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
-			local contactAgeSeconds = self:getContactAgeSeconds(contact)
-			local directTargetBackstopActive =
-				hasDirectTarget
-				and contactAgeSeconds >= SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS
-			local directTargetPending = hasDirectTarget and directTargetBackstopActive ~= true
-
-			if directTargetBackstopActive then
-				contact._skynetDirectTargetGroupName = frozenDirectTargetGroupName
-				contact:setHARMState(SkynetIADSContact.HARM)
-			else
-				contact._skynetDirectTargetGroupName = nil
-				if isWeaponContact ~= true then
-					contact._skynetPendingDirectTargetGroupName = nil
-					contact._skynetPendingDirectTargetMatchCount = 0
-					contact._skynetFrozenDirectTargetGroupName = nil
-				end
-				if isWeaponContact ~= true and contact:isIdentifiedAsHARM() == true then
+				contact._skynetFrozenDirectTargetGroupName = nil
+				if contact:isIdentifiedAsHARM() == true then
 					contact:setHARMState(SkynetIADSContact.NOT_HARM)
 					if self.iads:getDebugSettings().harmDefence then
 						self.iads:printOutputToLog("HARM FILTERED (NON-WEAPON): "..contact:getTypeName())
 					end
 				end
-			end
-
-			local groundSpeed = contact:getGroundSpeedInKnots(0)
-			local likelyWeaponThreat = false
-			if directTargetPending ~= true then
-				likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
-			end
-			if directTargetBackstopActive == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
-				contact:setHARMState(SkynetIADSContact.HARM)
-				if self.iads:getDebugSettings().harmDefence then
-					self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
-				end
-			end
-
-			-- If a contact has only been hit by a radar once its speed is often 0, so skip probabilistic checks this cycle.
-			if groundSpeed > 0 then
-				local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
-				local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
-				if directTargetBackstopActive == false
-					and likelyWeaponThreat == false
-					and #newRadarsToEvaluate > 0
-					and contact:isIdentifiedAsHARM() == false
-					and groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS
-					and #simpleAltitudeProfile <= 2 then
-					local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
-					if self:shallReactToHARM(detectionProbability) then
-						contact:setHARMState(SkynetIADSContact.HARM)
-						if self.iads:getDebugSettings().harmDefence then
-							self.iads:printOutputToLog("HARM IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
-						end
+			else
+				local directTargetElement = self:getDirectTargetElement(contact)
+				local currentDirectTargetGroupName = directTargetElement and directTargetElement.getDCSName and directTargetElement:getDCSName() or nil
+				if currentDirectTargetGroupName ~= nil and currentDirectTargetGroupName ~= "" then
+					if contact._skynetPendingDirectTargetGroupName == currentDirectTargetGroupName then
+						contact._skynetPendingDirectTargetMatchCount = (contact._skynetPendingDirectTargetMatchCount or 1) + 1
 					else
-						contact:setHARMState(SkynetIADSContact.NOT_HARM)
+						contact._skynetPendingDirectTargetGroupName = currentDirectTargetGroupName
+						contact._skynetPendingDirectTargetMatchCount = 1
+					end
+					if contact._skynetPendingDirectTargetMatchCount >= 2 then
+						contact._skynetFrozenDirectTargetGroupName = currentDirectTargetGroupName
+					end
+				elseif contact._skynetFrozenDirectTargetGroupName == nil then
+					contact._skynetPendingDirectTargetGroupName = nil
+					contact._skynetPendingDirectTargetMatchCount = 0
+				end
+				local frozenDirectTargetGroupName = contact._skynetFrozenDirectTargetGroupName
+				local hasDirectTarget = frozenDirectTargetGroupName ~= nil and frozenDirectTargetGroupName ~= ""
+				local contactAgeSeconds = self:getContactAgeSeconds(contact)
+				local directTargetBackstopActive =
+					hasDirectTarget
+					and contactAgeSeconds >= SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS
+				local directTargetPending = hasDirectTarget and directTargetBackstopActive ~= true
+
+				if directTargetBackstopActive then
+					contact._skynetDirectTargetGroupName = frozenDirectTargetGroupName
+					contact:setHARMState(SkynetIADSContact.HARM)
+				else
+					contact._skynetDirectTargetGroupName = nil
+				end
+
+				local groundSpeed = contact:getGroundSpeedInKnots(0)
+				local likelyWeaponThreat = false
+				if directTargetPending ~= true then
+					likelyWeaponThreat = self:isLikelySEADThreatContact(contact, groundSpeed, categoryId)
+				end
+				if directTargetBackstopActive == false and likelyWeaponThreat == true and contact:isIdentifiedAsHARM() ~= true then
+					contact:setHARMState(SkynetIADSContact.HARM)
+					if self.iads:getDebugSettings().harmDefence then
+						self.iads:printOutputToLog("HARM PRIOR IDENTIFIED: "..contact:getTypeName().." | SPEED: "..groundSpeed.."kts")
+					end
+				end
+
+				-- If a contact has only been hit by a radar once its speed is often 0, so skip probabilistic checks this cycle.
+				if groundSpeed > 0 then
+					local simpleAltitudeProfile = contact:getSimpleAltitudeProfile()
+					local newRadarsToEvaluate = self:getNewRadarsThatHaveDetectedContact(contact)
+					if directTargetBackstopActive == false
+						and likelyWeaponThreat == false
+						and #newRadarsToEvaluate > 0
+						and contact:isIdentifiedAsHARM() == false
+						and groundSpeed > SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS
+						and #simpleAltitudeProfile <= 2 then
+						local detectionProbability = self:getDetectionProbability(newRadarsToEvaluate)
+						if self:shallReactToHARM(detectionProbability) then
+							contact:setHARMState(SkynetIADSContact.HARM)
+							if self.iads:getDebugSettings().harmDefence then
+								self.iads:printOutputToLog("HARM IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+							end
+						else
+							contact:setHARMState(SkynetIADSContact.NOT_HARM)
+							if self.iads:getDebugSettings().harmDefence then
+								self.iads:printOutputToLog("HARM NOT IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+							end
+						end
+					end
+
+					if directTargetBackstopActive == false
+						and likelyWeaponThreat == false
+						and #simpleAltitudeProfile > 2
+						and contact:isIdentifiedAsHARM() then
+						contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
 						if self.iads:getDebugSettings().harmDefence then
-							self.iads:printOutputToLog("HARM NOT IDENTIFIED: "..contact:getTypeName().." | DETECTION PROBABILITY WAS: "..detectionProbability.."%")
+							self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
 						end
 					end
 				end
 
-				if directTargetBackstopActive == false
-					and likelyWeaponThreat == false
-					and #simpleAltitudeProfile > 2
-					and contact:isIdentifiedAsHARM() then
-					contact:setHARMState(SkynetIADSContact.HARM_UNKNOWN)
-					if self.iads:getDebugSettings().harmDefence then
-						self.iads:printOutputToLog("CORRECTING HARM STATE: CONTACT IS NOT A HARM: "..contact:getName())
-					end
+				if contact:isIdentifiedAsHARM() then
+					self:informRadarsOfHARM(contact)
 				end
-			end
-
-			if contact:isIdentifiedAsHARM() then
-				self:informRadarsOfHARM(contact)
 			end
 		end
 	end
@@ -5887,6 +5890,9 @@ function SkynetIADSHARMDetection:isElementInTable(tbl, element)
 end
 
 function SkynetIADSHARMDetection:informRadarsOfHARM(contact)
+	if self:getContactCategory(contact) ~= Object.Category.WEAPON then
+		return
+	end
 	local samSites = self.iads:getUsableSAMSites()
 	self:updateRadarsOfSites(samSites, contact)
 
@@ -5991,11 +5997,7 @@ local function groupHasUnitWithPrefix(group, prefix)
 end
 
 local function samSiteMatchesPrefix(samSite, prefix)
-	if startsWith(samSite:getDCSName(), prefix) then
-		return true
-	end
-	local group = samSite:getDCSRepresentation()
-	return groupHasUnitWithPrefix(group, prefix)
+	return startsWith(samSite:getDCSName(), prefix)
 end
 
 local function ewRadarMatchesPrefix(ewRadar, prefix)
@@ -7022,10 +7024,13 @@ function SkynetIADSMobilePatrol:issuePatrolRoute(entry)
 			})
 			return
 		end
+		local route = self:buildRoadPatrolRoute(entry, startIndex)
+		if route == nil then
+			error("missing road patrol route")
+		end
 		mist.ground.patrolRoute({
 			gpData = entry.groupName,
-			useGroupRoute = entry.groupName,
-			onRoadForm = "On Road",
+			route = route,
 			speed = mist.utils.kmphToMps(entry.patrolSpeedKmph),
 		})
 	end)
@@ -8923,11 +8928,14 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			entry.debugLastCombatAnnouncementKey = nil
 			local resumedRoute = false
 			pcall(function()
-				resumedRoute = self:advancePatrol(entry, true)
+				resumedRoute = self:issuePatrolRoute(entry)
 			end)
 			if resumedRoute ~= true then
+				entry.patrolRouteMode = "off_road"
+				entry.currentWaypointIndex = self:selectNearestWaypointIndex(entry)
 				self:setOrderTraceContext(entry, "move_fire_resume_patrol", {
 					source = "move_fire_reset",
+					note = "fallback=off_road",
 				}, "updateEntry")
 				self:issuePatrolRoute(entry)
 			end
@@ -9815,6 +9823,10 @@ function SkynetIADSSiblingCoordination:findMemberByGroupName(family, groupName)
 end
 
 function SkynetIADSSiblingCoordination:pickCoverMember(family, excludedGroupName)
+    local bestMember = self:getBestThreatCandidate(family, excludedGroupName)
+    if bestMember ~= nil then
+        return bestMember
+    end
     for i = 1, #family.members do
         local member = family.members[i]
         if member.groupName ~= excludedGroupName and self:isSuppressed(member) == false and self:canCover(member) then
@@ -9832,6 +9844,66 @@ function SkynetIADSSiblingCoordination:getPreferredPrimaryMember(family)
         end
     end
     return family.members[1]
+end
+
+function SkynetIADSSiblingCoordination:getMemberThreatDecision(family, member)
+    if family == nil or member == nil then
+        return nil
+    end
+    if self:isSuppressed(member) or self:canCover(member) == false then
+        return nil
+    end
+    if family.mode == "denial" then
+        return self:getDenialThreatDecision(family, member)
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry and entry.kind == "MSAM" and entry.manager and entry.manager.findSAMThreatContact then
+        return entry.manager:findSAMThreatContact(entry)
+    end
+    return nil
+end
+
+function SkynetIADSSiblingCoordination:getThreatDecisionDistanceNm(threatDecision)
+    if threatDecision == nil then
+        return math.huge
+    end
+    local triggerInfo = threatDecision.triggerInfo or {}
+    return tonumber(triggerInfo.effectiveDistanceNm)
+        or tonumber(triggerInfo.distanceNm)
+        or tonumber(triggerInfo.contactDistanceNm)
+        or tonumber(triggerInfo.directDistanceNm)
+        or math.huge
+end
+
+function SkynetIADSSiblingCoordination:getBestThreatCandidate(family, excludedGroupName)
+    local bestMember = nil
+    local bestDecision = nil
+    local bestShouldGoLive = -1
+    local bestDistanceNm = math.huge
+    local bestPreferred = -1
+    for i = 1, #family.members do
+        local member = family.members[i]
+        if member.groupName ~= excludedGroupName then
+            local threatDecision = self:getMemberThreatDecision(family, member)
+            if threatDecision then
+                local shouldGoLiveScore = threatDecision.shouldGoLive == true and 1 or 0
+                local distanceNm = self:getThreatDecisionDistanceNm(threatDecision)
+                local preferredScore = family.preferredPrimaryGroupName == member.groupName and 1 or 0
+                local isBetter =
+                    shouldGoLiveScore > bestShouldGoLive
+                    or (shouldGoLiveScore == bestShouldGoLive and distanceNm < bestDistanceNm)
+                    or (shouldGoLiveScore == bestShouldGoLive and distanceNm == bestDistanceNm and preferredScore > bestPreferred)
+                if isBetter then
+                    bestMember = member
+                    bestDecision = threatDecision
+                    bestShouldGoLive = shouldGoLiveScore
+                    bestDistanceNm = distanceNm
+                    bestPreferred = preferredScore
+                end
+            end
+        end
+    end
+    return bestMember, bestDecision
 end
 
 function SkynetIADSSiblingCoordination:clearSuppressedSwitchLock(family)
@@ -9883,41 +9955,6 @@ function SkynetIADSSiblingCoordination:getSuppressedSwitchLockedMember(family)
     return member
 end
 
-function SkynetIADSSiblingCoordination:getBestAmbushThreatCandidate(family)
-    local bestMember = nil
-    local bestDecision = nil
-    local bestShouldGoLive = -1
-    local bestDistanceNm = math.huge
-    local bestPreferred = -1
-    for i = 1, #family.members do
-        local member = family.members[i]
-        if self:isSuppressed(member) == false and self:canCover(member) then
-            local entry = self:getMobilePatrolEntry(member.element)
-            if entry and entry.kind == "MSAM" and entry.manager and entry.manager.findSAMThreatContact then
-                local threatDecision = entry.manager:findSAMThreatContact(entry)
-                if threatDecision then
-                    local triggerInfo = threatDecision.triggerInfo or {}
-                    local shouldGoLiveScore = threatDecision.shouldGoLive == true and 1 or 0
-                    local distanceNm = tonumber(triggerInfo.distanceNm) or math.huge
-                    local preferredScore = family.preferredPrimaryGroupName == member.groupName and 1 or 0
-                    local isBetter =
-                        shouldGoLiveScore > bestShouldGoLive
-                        or (shouldGoLiveScore == bestShouldGoLive and distanceNm < bestDistanceNm)
-                        or (shouldGoLiveScore == bestShouldGoLive and distanceNm == bestDistanceNm and preferredScore > bestPreferred)
-                    if isBetter then
-                        bestMember = member
-                        bestDecision = threatDecision
-                        bestShouldGoLive = shouldGoLiveScore
-                        bestDistanceNm = distanceNm
-                        bestPreferred = preferredScore
-                    end
-                end
-            end
-        end
-    end
-    return bestMember, bestDecision
-end
-
 function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
     local family = SkynetIADSSiblingCoordination._familyByElement[element]
     local member = SkynetIADSSiblingCoordination._memberByElement[element]
@@ -9939,19 +9976,12 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
         if lockRemainingSeconds > 0 then
             return nil, false
         end
-        local coverMember = self:pickCoverMember(family, lockedPrimary.groupName)
+        local coverMember, coverDecision = self:getBestThreatCandidate(family, lockedPrimary.groupName)
         if coverMember then
             if coverMember ~= member then
                 return nil, false
             end
-            if family.mode == "denial" then
-                return self:getDenialThreatDecision(family, coverMember), true
-            end
-            local coverEntry = self:getMobilePatrolEntry(coverMember.element)
-            if coverEntry and coverEntry.kind == "MSAM" and coverEntry.manager and coverEntry.manager.findSAMThreatContact then
-                return coverEntry.manager:findSAMThreatContact(coverEntry), true
-            end
-            return nil, true
+            return coverDecision, true
         end
         self:clearSuppressedSwitchLock(family)
     end
@@ -9972,31 +10002,7 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
         return nil, true
     end
 
-    if family.mode == "denial" then
-        local preferredPrimary = self:getPreferredPrimaryMember(family)
-        if preferredPrimary ~= member or self:isSuppressed(preferredPrimary) or self:canCover(preferredPrimary) == false then
-            return nil, false
-        end
-        return self:getDenialThreatDecision(family, preferredPrimary), true
-    end
-
-    if family.mode == "ambush" then
-        local preferredPrimary = self:getPreferredPrimaryMember(family)
-        if preferredPrimary and self:isSuppressed(preferredPrimary) == false and self:canCover(preferredPrimary) then
-            local preferredEntry = self:getMobilePatrolEntry(preferredPrimary.element)
-            if preferredEntry and preferredEntry.kind == "MSAM" and preferredEntry.manager and preferredEntry.manager.findSAMThreatContact then
-                local preferredDecision = preferredEntry.manager:findSAMThreatContact(preferredEntry)
-                if preferredDecision then
-                    if preferredPrimary ~= member then
-                        return nil, false
-                    end
-                    return preferredDecision, true
-                end
-            end
-        end
-    end
-
-    local bestMember, bestDecision = self:getBestAmbushThreatCandidate(family)
+    local bestMember, bestDecision = self:getBestThreatCandidate(family, nil)
     if bestMember == nil then
         return nil, true
     end
@@ -10076,10 +10082,10 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
         if lockRemainingSeconds > 0 then
             return lockedPrimary, "switch_lock_" .. lockedPrimary.groupName, nil
         end
-        local coverMember = self:pickCoverMember(family, lockedPrimary.groupName)
+        local coverMember, coverDecision = self:getBestThreatCandidate(family, lockedPrimary.groupName)
         if coverMember then
             self:clearSuppressedSwitchLock(family)
-            return coverMember, "cover_for_" .. lockedPrimary.groupName, nil
+            return coverMember, "cover_for_" .. lockedPrimary.groupName, coverDecision
         end
         self:clearSuppressedSwitchLock(family)
     end
@@ -10088,55 +10094,15 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
         return currentPrimary, "engaged", nil
     end
 
-    if family.mode == "denial" then
-        local preferredPrimary = self:getPreferredPrimaryMember(family)
-        if preferredPrimary and self:isSuppressed(preferredPrimary) == false and self:canCover(preferredPrimary) then
-            local denialThreatDecision = self:getDenialThreatDecision(family, preferredPrimary)
-            if denialThreatDecision then
-                return preferredPrimary, "denial_trigger", denialThreatDecision
-            end
-        end
-        if preferredPrimary and self:isSuppressed(preferredPrimary) then
-            local coverMember = self:pickCoverMember(family, preferredPrimary.groupName)
-            if coverMember then
-                return coverMember, "cover_for_" .. preferredPrimary.groupName, nil
-            end
-        end
-    end
-
-    if family.mode == "ambush" then
-        local preferredPrimary = self:getPreferredPrimaryMember(family)
-        if preferredPrimary and self:isSuppressed(preferredPrimary) == false and self:canCover(preferredPrimary) then
-            local preferredEntry = self:getMobilePatrolEntry(preferredPrimary.element)
-            if preferredEntry and preferredEntry.kind == "MSAM" and preferredEntry.manager and preferredEntry.manager.findSAMThreatContact then
-                local preferredDecision = preferredEntry.manager:findSAMThreatContact(preferredEntry)
-                if preferredDecision then
-                    return preferredPrimary, "preferred_trigger", preferredDecision
-                end
-            end
-        end
-        if preferredPrimary and self:isSuppressed(preferredPrimary) then
-            local coverMember = self:pickCoverMember(family, preferredPrimary.groupName)
-            if coverMember then
-                return coverMember, "cover_for_" .. preferredPrimary.groupName, nil
-            end
-        end
+    local bestMember, bestDecision = self:getBestThreatCandidate(family, nil)
+    if bestMember then
+        return bestMember, "nearest_trigger", bestDecision
     end
 
     for i = 1, #family.members do
         local member = family.members[i]
         if self:isSuppressed(member) == false and self:isEngaged(member) then
             return member, "engaged", nil
-        end
-    end
-
-    for i = 1, #family.members do
-        local member = family.members[i]
-        if self:isSuppressed(member) then
-            local coverMember = self:pickCoverMember(family, member.groupName)
-            if coverMember then
-                return coverMember, "cover_for_" .. member.groupName, nil
-            end
         end
     end
 
