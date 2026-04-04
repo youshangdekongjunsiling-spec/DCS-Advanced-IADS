@@ -103,6 +103,31 @@ function SkynetIADSAbstractRadarElement:weaponFired(event)
 						launcher = launcherName,
 					})
 				end
+				local mobilePatrolClass = rawget(_G, "SkynetIADSMobilePatrol")
+				if mobilePatrolClass and mobilePatrolClass.getEntryForElement then
+					local okEntry, mobileEntry = pcall(function()
+						return mobilePatrolClass.getEntryForElement(self)
+					end)
+					if okEntry and mobileEntry and mobileEntry.manager and mobileEntry.manager.isMoveFireCapable then
+						local okMoveFire, canMoveFire = pcall(function()
+							return mobileEntry.manager:isMoveFireCapable(mobileEntry)
+						end)
+						if okMoveFire and canMoveFire == true and mobileEntry.manager.issuePatrolRoute then
+							pcall(function()
+								mobileEntry.manager:issuePatrolRoute(mobileEntry)
+							end)
+							if self.iads and self.iads.traceElementCommand then
+								self.iads:traceElementCommand(self, "move_fire_post_launch_resume", {
+									event = "ai_command",
+									outcome = "issued",
+									reason = "weapon_fired",
+									originModule = "skynet-iads-abstract-radar-element.lua",
+									originFunction = "weaponFired",
+								})
+							end
+						end
+					end
+				end
 			end
 		end
 	end

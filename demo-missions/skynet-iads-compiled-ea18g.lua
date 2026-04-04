@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-firelatch-movefire-motion | BUILD TIME: 04.04.2026 0115Z ---")
+env.info("--- SKYNET VERSION: ea18g-firelatch5-movefire-repush | BUILD TIME: 04.04.2026 0137Z ---")
 
 do
 --this file contains the required units per sam type
@@ -3773,6 +3773,31 @@ function SkynetIADSAbstractRadarElement:weaponFired(event)
 						launcher = launcherName,
 					})
 				end
+				local mobilePatrolClass = rawget(_G, "SkynetIADSMobilePatrol")
+				if mobilePatrolClass and mobilePatrolClass.getEntryForElement then
+					local okEntry, mobileEntry = pcall(function()
+						return mobilePatrolClass.getEntryForElement(self)
+					end)
+					if okEntry and mobileEntry and mobileEntry.manager and mobileEntry.manager.isMoveFireCapable then
+						local okMoveFire, canMoveFire = pcall(function()
+							return mobileEntry.manager:isMoveFireCapable(mobileEntry)
+						end)
+						if okMoveFire and canMoveFire == true and mobileEntry.manager.issuePatrolRoute then
+							pcall(function()
+								mobileEntry.manager:issuePatrolRoute(mobileEntry)
+							end)
+							if self.iads and self.iads.traceElementCommand then
+								self.iads:traceElementCommand(self, "move_fire_post_launch_resume", {
+									event = "ai_command",
+									outcome = "issued",
+									reason = "weapon_fired",
+									originModule = "skynet-iads-abstract-radar-element.lua",
+									originFunction = "weaponFired",
+								})
+							end
+						end
+					end
+				end
 			end
 		end
 	end
@@ -6343,7 +6368,7 @@ SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
-SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS = 3
+SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS = 5
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -10237,6 +10262,11 @@ function SkynetIADSMobilePatrol.installHooks()
 					if resumedRoute ~= true and entry.manager.issuePatrolRoute then
 						pcall(function()
 							fallbackPatrolRouteIssued = entry.manager:issuePatrolRoute(entry) == true
+						end)
+					end
+					if resumedRoute == true and entry.manager.issuePatrolRoute then
+						pcall(function()
+							entry.manager:issuePatrolRoute(entry)
 						end)
 					end
 					if entry.manager and entry.manager.traceEntryCommand then
