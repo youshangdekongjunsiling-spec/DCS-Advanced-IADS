@@ -30,6 +30,10 @@ SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
 SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS = 8
+SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_METERS = 180
+SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MAX_METERS = 320
+SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_REISSUE_SECONDS = 3
+SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_PROGRESS_METERS = 10
 SkynetIADSMobilePatrol.DEFAULT_TRACE_AIR_CONTACTS_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_TRACE_THREAT_PROBE_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
@@ -349,6 +353,15 @@ local function resetMoveFireContactSession(entry)
 	entry.moveFireLastSeenTime = nil
 	entry.moveFireLastContactName = nil
 	entry.moveFireRouteResumeLockUntil = 0
+end
+
+local function resetMoveFireHarmEscapeState(entry)
+	if entry == nil then
+		return
+	end
+	entry.moveFireHarmEscapeActive = false
+	entry.moveFireHarmEscapeDestination = nil
+	entry.moveFireHarmEscapeRouteCount = 0
 end
 
 local function clearTargetInRangeLatch(entry)
@@ -1589,6 +1602,95 @@ function SkynetIADSMobilePatrol:calculateDeployScatterPoint(entry)
 	return fallbackPoint, distanceMeters, startPoint
 end
 
+function SkynetIADSMobilePatrol:calculateSA15HarmEscapeRoute(entry)
+	local startPoint = self:getPatrolReferencePoint(entry)
+	if startPoint == nil then
+		return nil, nil
+	end
+
+	local heading = self:getPatrolForwardVector(entry)
+	local headingX = 1
+	local headingZ = 0
+	if heading ~= nil then
+		local magnitude = math.sqrt((heading.x * heading.x) + (heading.z * heading.z))
+		if magnitude > 0.001 then
+			headingX = heading.x / magnitude
+			headingZ = heading.z / magnitude
+		end
+	end
+
+	local minDistance = self.defaultSA15HarmEscapeMinMeters or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_METERS
+	local maxDistance = self.defaultSA15HarmEscapeMaxMeters or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MAX_METERS
+	local middleDistance = math.max(minDistance * 0.55, 100)
+	local speedMps = mist.utils.kmphToMps(entry.patrolSpeedKmph)
+
+	for attempt = 1, 12 do
+		local offsetDegrees = math.random(-65, 65)
+		local offsetRadians = math.rad(offsetDegrees)
+		local cosA = math.cos(offsetRadians)
+		local sinA = math.sin(offsetRadians)
+		local dirX = (headingX * cosA) - (headingZ * sinA)
+		local dirZ = (headingX * sinA) + (headingZ * cosA)
+		local distance = math.random(minDistance, maxDistance)
+		local midPoint = {
+			x = startPoint.x + (dirX * middleDistance),
+			y = startPoint.y,
+			z = startPoint.z + (dirZ * middleDistance),
+		}
+		local endPoint = {
+			x = startPoint.x + (dirX * distance),
+			y = startPoint.y,
+			z = startPoint.z + (dirZ * distance),
+		}
+		if self:isDeployScatterPointOnLand(midPoint) and self:isDeployScatterPointOnLand(endPoint) then
+			return {
+				mist.ground.buildWP(startPoint, "off_road", speedMps),
+				mist.ground.buildWP(midPoint, "off_road", speedMps),
+				mist.ground.buildWP(endPoint, "off_road", speedMps),
+			}, endPoint
+		end
+	end
+
+	return nil, nil
+end
+
+function SkynetIADSMobilePatrol:issueSA15HarmEscapeRoute(entry, reason)
+	if entry == nil or entry.group == nil or entry.group:isExist() == false then
+		return false, nil
+	end
+	local route, destination = self:calculateSA15HarmEscapeRoute(entry)
+	if route == nil or destination == nil then
+		self:traceEntryCommand(entry, "sa15_harm_escape", {
+			outcome = "failed",
+			reason = reason or "harm_detected",
+			source = "sa15_harm_escape",
+			note = "missing escape route",
+		}, "issueSA15HarmEscapeRoute")
+		return false, nil
+	end
+	local ok = pcall(function()
+		mist.goRoute(entry.group, route)
+	end)
+	if ok then
+		entry.moveFireHarmEscapeActive = true
+		entry.moveFireHarmEscapeDestination = destination
+		entry.moveFireHarmEscapeRouteCount = (entry.moveFireHarmEscapeRouteCount or 0) + 1
+		entry.currentDestination = destination
+		entry.lastRouteIssueTime = timer.getTime()
+		entry.lastRouteIssueReferencePoint = self:getPatrolReferencePoint(entry)
+	end
+	self:traceEntryCommand(entry, "sa15_harm_escape", {
+		outcome = ok and "issued" or "failed",
+		reason = reason or "harm_detected",
+		source = "sa15_harm_escape",
+		destination = destination,
+		speedKmph = entry.patrolSpeedKmph,
+		routeMode = "off_road",
+		routeCount = entry.moveFireHarmEscapeRouteCount,
+	}, "issueSA15HarmEscapeRoute")
+	return ok, destination
+end
+
 function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, speedKmph)
 	if entry == nil or entry.group == nil or entry.group:isExist() == false or destination == nil then
 		return false
@@ -1763,6 +1865,33 @@ function SkynetIADSMobilePatrol:isMoveFireCapable(entry)
 	end
 
 	return true
+end
+
+function SkynetIADSMobilePatrol:isSA15MoveFire(entry)
+	if self:isMoveFireCapable(entry) ~= true then
+		return false
+	end
+	local natoName = entry and entry.element and entry.element.getNatoName and entry.element:getNatoName() or nil
+	if natoName and string.find(natoName, "SA%-15") then
+		return true
+	end
+
+	local launchers = entry and entry.element and entry.element.getLaunchers and entry.element:getLaunchers() or {}
+	for i = 1, #launchers do
+		local launcher = launchers[i]
+		local typeName = launcher and launcher.getTypeName and launcher:getTypeName() or nil
+		if typeName == nil then
+			local representation = launcher and launcher.getDCSRepresentation and launcher:getDCSRepresentation() or nil
+			if representation and representation.getTypeName then
+				typeName = representation:getTypeName()
+			end
+		end
+		if typeName == "Tor 9A331" then
+			return true
+		end
+	end
+
+	return false
 end
 
 function SkynetIADSMobilePatrol:getDeployTriggerRangeMeters(entry)
@@ -3118,6 +3247,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.lastLaunchMonitorSignature = nil
 	entry.lastLaunchMonitorTime = nil
 	resetMoveFireContactSession(entry)
+	resetMoveFireHarmEscapeState(entry)
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
@@ -3327,11 +3457,53 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 	local now = timer.getTime()
 	local moveFireCapable = self:isMoveFireCapable(entry)
+	local sa15MoveFire = moveFireCapable and self:isSA15MoveFire(entry)
 
 	if moveFireCapable and entry.element.harmSilenceID ~= nil and entry.element.harmRelocationInProgress ~= true then
 		entry.state = "patrolling"
 		entry.combatMode = "harm_silent"
 		entry.noThreatSince = nil
+		if sa15MoveFire then
+			local shouldReissueEscape = entry.moveFireHarmEscapeActive ~= true
+			local movedDistance = nil
+			if shouldReissueEscape ~= true and entry.lastRouteIssueTime ~= nil and entry.lastRouteIssueReferencePoint ~= nil then
+				if (now - entry.lastRouteIssueTime) >= self.defaultSA15HarmEscapeReissueSeconds then
+					local currentPoint = self:getPatrolReferencePoint(entry)
+					if currentPoint then
+						movedDistance = mist.utils.get2DDist(currentPoint, entry.lastRouteIssueReferencePoint)
+						if movedDistance < self.defaultSA15HarmEscapeMinProgressMeters then
+							shouldReissueEscape = true
+						end
+					else
+						shouldReissueEscape = true
+					end
+				end
+			end
+			if shouldReissueEscape then
+				local escapeIssued, escapeDestination = self:issueSA15HarmEscapeRoute(entry, "harm_silent_reissue")
+				local continueMovingIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(entry.group)
+				scheduleMoveFireMovementKick(entry, "harm_silent_reissue", "updateEntry")
+				self:traceEntryCommand(entry, "harm_move_resume", {
+					event = "decision",
+					outcome =
+						(escapeIssued == true or continueMovingIssued == true or stopRouteCleared == true)
+						and (escapeIssued == true and "sa15_escape_route" or "continue_moving")
+						or "failed",
+					reason = "harm_silent_reissue",
+					source = "sa15_harm_escape",
+					destination = escapeDestination,
+					movedMeters = movedDistance and mist.utils.round(movedDistance, 1) or nil,
+					issueEscapeRouteResult = escapeIssued == true and "Y" or "N",
+					continueMovingResult = continueMovingIssued == true and "Y" or "N",
+					stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+					setGroupAIOnResult = aiEnabled == true and "Y" or "N",
+				}, "updateEntry")
+			end
+			self:traceStateSnapshot(entry, "harm_silent", {
+				source = "harm_detected",
+			}, "updateEntry")
+			return
+		end
 		if entry.nextPatrolRefreshTime and timer.getTime() >= entry.nextPatrolRefreshTime then
 			forceElementIntoPatrolDarkState(entry.element)
 			self:log("Patrol refresh reissued for "..entry.groupName.." | delayed startup refresh (harm_silent)")
@@ -3813,6 +3985,9 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		moveFireLastSeenTime = nil,
 		moveFireLastContactName = nil,
 		moveFireRouteResumeLockUntil = 0,
+		moveFireHarmEscapeActive = false,
+		moveFireHarmEscapeDestination = nil,
+		moveFireHarmEscapeRouteCount = 0,
 		targetInRangeLatchSeconds = (options and options.targetInRangeLatchSeconds) or self.defaultTargetInRangeLatchSeconds,
 		targetInRangeLatchedUntil = 0,
 		targetInRangeLatchedContactName = nil,
@@ -3882,6 +4057,10 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultCombatExitNoTargetSeconds = (config and config.defaultCombatExitNoTargetSeconds) or SkynetIADSMobilePatrol.DEFAULT_COMBAT_EXIT_NO_TARGET_SECONDS,
 		defaultPostCombatMobileSeconds = (config and config.defaultPostCombatMobileSeconds) or SkynetIADSMobilePatrol.DEFAULT_POST_COMBAT_MOBILE_SECONDS,
 		defaultTargetInRangeLatchSeconds = (config and config.defaultTargetInRangeLatchSeconds) or SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS,
+		defaultSA15HarmEscapeMinMeters = (config and config.defaultSA15HarmEscapeMinMeters) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_METERS,
+		defaultSA15HarmEscapeMaxMeters = (config and config.defaultSA15HarmEscapeMaxMeters) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MAX_METERS,
+		defaultSA15HarmEscapeReissueSeconds = (config and config.defaultSA15HarmEscapeReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_REISSUE_SECONDS,
+		defaultSA15HarmEscapeMinProgressMeters = (config and config.defaultSA15HarmEscapeMinProgressMeters) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_PROGRESS_METERS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultRouteReissueFallbackCount = (config and config.defaultRouteReissueFallbackCount) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT,
@@ -4240,21 +4419,31 @@ function SkynetIADSMobilePatrol.installHooks()
 				entry.state = "patrolling"
 				entry.combatMode = "harm_silent"
 				resetMoveFireContactSession(entry)
+				resetMoveFireHarmEscapeState(entry)
 				if entry.manager and entry.manager.advancePatrol then
 					local resumedRoute = false
 					local fallbackPatrolRouteIssued = false
 					local roadMoveIssued = false
 					local escapeWaypoint = nil
+					local dedicatedEscapeIssued = false
+					local dedicatedEscapeDestination = nil
 					local continueMovingIssued = false
 					local stopRouteCleared = false
 					local aiEnabled = false
-					pcall(function()
-						roadMoveIssued, fallbackPatrolRouteIssued, escapeWaypoint = issueMoveFireEscapeRoute(entry.manager, entry)
-					end)
-					if roadMoveIssued ~= true and fallbackPatrolRouteIssued ~= true then
+					local sa15MoveFire = entry.manager.isSA15MoveFire and entry.manager:isSA15MoveFire(entry) == true
+					if sa15MoveFire then
 						pcall(function()
-							resumedRoute = entry.manager:advancePatrol(entry, true)
+							dedicatedEscapeIssued, dedicatedEscapeDestination = entry.manager:issueSA15HarmEscapeRoute(entry, "harm_detected")
 						end)
+					else
+						pcall(function()
+							roadMoveIssued, fallbackPatrolRouteIssued, escapeWaypoint = issueMoveFireEscapeRoute(entry.manager, entry)
+						end)
+						if roadMoveIssued ~= true and fallbackPatrolRouteIssued ~= true then
+							pcall(function()
+								resumedRoute = entry.manager:advancePatrol(entry, true)
+							end)
+						end
 					end
 					continueMovingIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(entry.group)
 					scheduleMoveFireMovementKick(entry, "harm_detected", "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
@@ -4262,17 +4451,22 @@ function SkynetIADSMobilePatrol.installHooks()
 						entry.manager:traceEntryCommand(entry, "harm_move_resume", {
 							event = "decision",
 							outcome =
-								(roadMoveIssued == true or resumedRoute == true or fallbackPatrolRouteIssued == true or continueMovingIssued == true or stopRouteCleared == true)
+								(dedicatedEscapeIssued == true or roadMoveIssued == true or resumedRoute == true or fallbackPatrolRouteIssued == true or continueMovingIssued == true or stopRouteCleared == true)
 								and (
+									dedicatedEscapeIssued == true and "sa15_escape_route"
+									or (
 									roadMoveIssued == true and "road_move"
 									or (resumedRoute == true and "advance_patrol")
 									or (fallbackPatrolRouteIssued == true and "patrol_route")
 									or "continue_moving"
+									)
 								)
 								or "failed",
 							reason = "harm_detected",
-							source = "move_fire_harm_resume",
+							source = sa15MoveFire and "sa15_harm_escape" or "move_fire_harm_resume",
+							destination = dedicatedEscapeDestination,
 							escapeWaypoint = escapeWaypoint,
+							issueEscapeRouteResult = dedicatedEscapeIssued == true and "Y" or "N",
 							roadMoveResult = roadMoveIssued == true and "Y" or "N",
 							advancePatrolResult = resumedRoute == true and "Y" or "N",
 							issuePatrolRouteResult = fallbackPatrolRouteIssued == true and "Y" or "N",
@@ -4324,6 +4518,7 @@ function SkynetIADSMobilePatrol.installHooks()
 				entry.state = "patrolling"
 				entry.combatMode = "patrolling"
 				resetMoveFireContactSession(entry)
+				resetMoveFireHarmEscapeState(entry)
 				if entry.manager.advancePatrol then
 					local resumedRoute = false
 					local fallbackPatrolRouteIssued = false
