@@ -30,7 +30,6 @@ SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
 SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS = 8
-SkynetIADSMobilePatrol.DEFAULT_STATIC_COMBAT_FREEZE_SECONDS = 26
 SkynetIADSMobilePatrol.DEFAULT_TRACE_AIR_CONTACTS_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_TRACE_THREAT_PROBE_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
@@ -359,66 +358,6 @@ local function clearTargetInRangeLatch(entry)
 	entry.targetInRangeLatchedUntil = 0
 	entry.targetInRangeLatchedContactName = nil
 	entry.targetInRangeLatchedContactType = nil
-end
-
-local function clearStaticCombatFreeze(entry)
-	if entry == nil then
-		return
-	end
-	entry.staticCombatFreezeStartedAt = nil
-	entry.staticCombatFreezeUntil = nil
-	entry.staticCombatFreezeContactName = nil
-	entry.staticCombatFreezeContactType = nil
-end
-
-local function getStaticCombatFreezeRemainingSeconds(entry, now)
-	if entry == nil or entry.staticCombatFreezeUntil == nil then
-		return 0
-	end
-	now = now or timer.getTime()
-	return math.max(0, entry.staticCombatFreezeUntil - now)
-end
-
-local function isStaticCombatFreezeCandidate(entry)
-	if entry == nil or entry.kind ~= "MSAM" or entry.element == nil then
-		return false
-	end
-	if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
-		return false
-	end
-	return true
-end
-
-local function isStaticCombatFreezeActive(entry, now)
-	if isStaticCombatFreezeCandidate(entry) ~= true then
-		return false
-	end
-	now = now or timer.getTime()
-	if entry.combatCommitted ~= true then
-		return false
-	end
-	if entry.state == "patrolling" then
-		return false
-	end
-	if entry.element.harmSilenceID ~= nil or entry.element.harmRelocationInProgress == true then
-		return false
-	end
-	if getStaticCombatFreezeRemainingSeconds(entry, now) <= 0 then
-		return false
-	end
-	local okMissilesInFlight, missilesInFlight = pcall(function()
-		return entry.element:getNumberOfMissilesInFlight()
-	end)
-	if okMissilesInFlight == true and type(missilesInFlight) == "number" and missilesInFlight > 0 then
-		return false
-	end
-	local lastWeaponLaunchTime = entry.element and entry.element.lastWeaponLaunchTime or nil
-	if type(lastWeaponLaunchTime) == "number" and entry.staticCombatFreezeStartedAt ~= nil then
-		if lastWeaponLaunchTime >= entry.staticCombatFreezeStartedAt then
-			return false
-		end
-	end
-	return true
 end
 
 local function getEntryLatchedContactName(entry, contact)
@@ -1793,48 +1732,6 @@ function SkynetIADSMobilePatrol:getUnitTypeName(unit)
 	return targetType
 end
 
-function SkynetIADSMobilePatrol:isStaticCombatFreezeActive(entry, now)
-	return isStaticCombatFreezeActive(entry, now)
-end
-
-function SkynetIADSMobilePatrol:beginStaticCombatFreeze(entry, threatDecision, now, source)
-	if isStaticCombatFreezeCandidate(entry) ~= true or threatDecision == nil or threatDecision.shouldGoLive ~= true then
-		return false
-	end
-	now = now or timer.getTime()
-	local triggerInfo = threatDecision.triggerInfo or nil
-	local contact = threatDecision.contact
-	local contactName =
-		(triggerInfo and (triggerInfo.contactName or triggerInfo.directUnitName))
-		or (contact and self:getContactName(contact))
-		or "unknown"
-	local contactType =
-		(triggerInfo and triggerInfo.contactType)
-		or (contact and self:getContactTypeName(contact))
-		or "unknown"
-	local freezeRemainingSeconds = getStaticCombatFreezeRemainingSeconds(entry, now)
-	local freezeDurationSeconds = entry.staticCombatFreezeSeconds or SkynetIADSMobilePatrol.DEFAULT_STATIC_COMBAT_FREEZE_SECONDS
-	if freezeRemainingSeconds > 0 then
-		if entry.staticCombatFreezeContactName == contactName and entry.staticCombatFreezeContactType == contactType then
-			return false
-		end
-	end
-	entry.staticCombatFreezeStartedAt = now
-	entry.staticCombatFreezeUntil = now + freezeDurationSeconds
-	entry.staticCombatFreezeContactName = contactName
-	entry.staticCombatFreezeContactType = contactType
-	self:traceEntryCommand(entry, "combat_freeze_start", {
-		event = "decision",
-		outcome = "issued",
-		reason = "static_combat_freeze",
-		source = source or "applyMSAMThreatDecision",
-		contact = contactName,
-		contactType = contactType,
-		note = "duration=" .. tostring(freezeDurationSeconds) .. "s",
-	}, "beginStaticCombatFreeze")
-	return true
-end
-
 function SkynetIADSMobilePatrol:traceAirUnitTrack(entry, unit, distanceMeters, details, functionName)
 	if entry == nil
 		or unit == nil
@@ -2707,7 +2604,6 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 		entry.combatMode = "searching"
 		entry.debugLastCombatAnnouncementKey = nil
 		clearTargetInRangeLatch(entry)
-		clearStaticCombatFreeze(entry)
 		return false
 	end
 
@@ -2774,9 +2670,6 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	end
 
 	if threatDecision.shouldGoLive then
-		if moveFireCapable ~= true then
-			self:beginStaticCombatFreeze(entry, threatDecision, now, triggerInfo and triggerInfo.source or "threat_decision")
-		end
 		if moveFireCapable then
 			self:traceEntryCommand(entry, "moving_combat_state", {
 				outcome = "issued",
@@ -2814,7 +2707,6 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
 		}, "applyMSAMThreatDecision")
 		clearTargetInRangeLatch(entry)
-		clearStaticCombatFreeze(entry)
 		forceElementIntoPatrolDarkState(entry.element)
 	end
 
@@ -3121,7 +3013,6 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.launchAwaitContactName = nil
 	entry.launchAwaitContactType = nil
 	clearTargetInRangeLatch(entry)
-	clearStaticCombatFreeze(entry)
 	entry.lastLaunchMonitorSignature = nil
 	entry.lastLaunchMonitorTime = nil
 	resetMoveFireContactSession(entry)
@@ -3334,7 +3225,6 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 
 	local now = timer.getTime()
 	local moveFireCapable = self:isMoveFireCapable(entry)
-	local staticCombatFreezeActive = self:isStaticCombatFreezeActive(entry, now)
 
 	if moveFireCapable and entry.element.harmSilenceID ~= nil and entry.element.harmRelocationInProgress ~= true then
 		entry.state = "patrolling"
@@ -3435,7 +3325,6 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.combatNoTargetSince = nil
 		entry.noThreatSince = nil
 		clearTargetInRangeLatch(entry)
-		clearStaticCombatFreeze(entry)
 		if entry.state == "deployed" then
 			entry.state = "patrolling"
 			entry.combatMode = "patrolling"
@@ -3452,7 +3341,6 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.noThreatSince = nil
 		entry.lastThreatTime = now
 		clearTargetInRangeLatch(entry)
-		clearStaticCombatFreeze(entry)
 		if entry.state ~= "deployed" then
 			entry.state = "deployed"
 			entry.combatMode = "sibling_standby"
@@ -3515,7 +3403,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			end
 			local maintainByWeaponCommit = missilesInFlight > 0 or recentWeaponLaunchHold == true
 
-			if staticCombatFreezeActive ~= true and maintainByWeaponCommit ~= true and self:handleCombatThreatLoss(entry, now, combatThreatPresent, "combat_scan", combatThreatDetails) then
+			if maintainByWeaponCommit ~= true and self:handleCombatThreatLoss(entry, now, combatThreatPresent, "combat_scan", combatThreatDetails) then
 				return
 			elseif maintainByWeaponCommit == true then
 				entry.combatNoTargetSince = nil
@@ -3641,16 +3529,6 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			end
 		else
 			entry.combatNoTargetSince = nil
-		end
-
-		if staticCombatFreezeActive == true then
-			if threatDecision and threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false then
-				entry.lastThreatContact = threatDecision.contact
-				self:refreshThreatContact(entry.lastThreatContact)
-			end
-			entry.lastThreatTime = now
-			entry.noThreatSince = nil
-			return
 		end
 
 		threatPresent = threatDecision ~= nil
@@ -3833,11 +3711,6 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		moveFireLastSeenTime = nil,
 		moveFireLastContactName = nil,
 		moveFireRouteResumeLockUntil = 0,
-		staticCombatFreezeSeconds = (options and options.staticCombatFreezeSeconds) or self.defaultStaticCombatFreezeSeconds,
-		staticCombatFreezeStartedAt = nil,
-		staticCombatFreezeUntil = nil,
-		staticCombatFreezeContactName = nil,
-		staticCombatFreezeContactType = nil,
 		targetInRangeLatchSeconds = (options and options.targetInRangeLatchSeconds) or self.defaultTargetInRangeLatchSeconds,
 		targetInRangeLatchedUntil = 0,
 		targetInRangeLatchedContactName = nil,
@@ -3907,7 +3780,6 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultCombatExitNoTargetSeconds = (config and config.defaultCombatExitNoTargetSeconds) or SkynetIADSMobilePatrol.DEFAULT_COMBAT_EXIT_NO_TARGET_SECONDS,
 		defaultPostCombatMobileSeconds = (config and config.defaultPostCombatMobileSeconds) or SkynetIADSMobilePatrol.DEFAULT_POST_COMBAT_MOBILE_SECONDS,
 		defaultTargetInRangeLatchSeconds = (config and config.defaultTargetInRangeLatchSeconds) or SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS,
-		defaultStaticCombatFreezeSeconds = (config and config.defaultStaticCombatFreezeSeconds) or SkynetIADSMobilePatrol.DEFAULT_STATIC_COMBAT_FREEZE_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultRouteReissueFallbackCount = (config and config.defaultRouteReissueFallbackCount) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT,
@@ -4260,7 +4132,6 @@ function SkynetIADSMobilePatrol.installHooks()
 		end
 		if result ~= false and entry then
 			clearTargetInRangeLatch(entry)
-			clearStaticCombatFreeze(entry)
 		end
 		if result ~= false and entry and (self.harmRelocationInProgress == true or moveFireCapable) then
 			if moveFireCapable then
