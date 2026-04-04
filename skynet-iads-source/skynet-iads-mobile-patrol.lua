@@ -29,6 +29,9 @@ SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
+SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS = 8
+SkynetIADSMobilePatrol.DEFAULT_TRACE_AIR_CONTACTS_ENABLED = false
+SkynetIADSMobilePatrol.DEFAULT_TRACE_THREAT_PROBE_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -346,6 +349,105 @@ local function resetMoveFireContactSession(entry)
 	entry.moveFireLastSeenTime = nil
 	entry.moveFireLastContactName = nil
 	entry.moveFireRouteResumeLockUntil = 0
+end
+
+local function clearTargetInRangeLatch(entry)
+	if entry == nil then
+		return
+	end
+	entry.targetInRangeLatchedUntil = 0
+	entry.targetInRangeLatchedContactName = nil
+	entry.targetInRangeLatchedContactType = nil
+end
+
+local function getEntryLatchedContactName(entry, contact)
+	if entry == nil or contact == nil or entry.manager == nil or entry.manager.getContactName == nil then
+		return nil
+	end
+	return entry.manager:getContactName(contact)
+end
+
+local function getEntryLatchedContactType(entry, contact)
+	if entry == nil or contact == nil or entry.manager == nil or entry.manager.getContactTypeName == nil then
+		return nil
+	end
+	return entry.manager:getContactTypeName(contact)
+end
+
+local function touchTargetInRangeLatch(entry, contact, now)
+	if entry == nil then
+		return
+	end
+	now = now or timer.getTime()
+	local durationSeconds = entry.targetInRangeLatchSeconds or SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS
+	if type(durationSeconds) ~= "number" or durationSeconds <= 0 then
+		durationSeconds = SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS
+	end
+	entry.targetInRangeLatchedUntil = now + durationSeconds
+	entry.targetInRangeLatchedContactName = getEntryLatchedContactName(entry, contact)
+	entry.targetInRangeLatchedContactType = getEntryLatchedContactType(entry, contact)
+end
+
+local function getTargetInRangeLatchRemainingSeconds(entry, now)
+	if entry == nil then
+		return 0
+	end
+	now = now or timer.getTime()
+	local latchedUntil = entry.targetInRangeLatchedUntil
+	if type(latchedUntil) ~= "number" or latchedUntil <= now then
+		return 0
+	end
+	return latchedUntil - now
+end
+
+local function doesTargetInRangeLatchMatchContact(entry, contact)
+	if entry == nil or contact == nil then
+		return true
+	end
+	local latchedName = entry.targetInRangeLatchedContactName
+	local latchedType = entry.targetInRangeLatchedContactType
+	local contactName = getEntryLatchedContactName(entry, contact)
+	local contactType = getEntryLatchedContactType(entry, contact)
+	if latchedName ~= nil and latchedName ~= "unknown" and contactName ~= nil and contactName ~= "unknown" then
+		return latchedName == contactName
+	end
+	if latchedType ~= nil and latchedType ~= "unknown" and contactType ~= nil and contactType ~= "unknown" then
+		return latchedType == contactType
+	end
+	return true
+end
+
+local function isTargetInRangeLatchActive(entry, contact, now)
+	if entry == nil or entry.kind ~= "MSAM" or entry.element == nil then
+		return false
+	end
+	if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
+		return false
+	end
+	if entry.element.harmSilenceID ~= nil or entry.element.harmRelocationInProgress == true then
+		return false
+	end
+	if entry.launchAwaitSince == nil then
+		return false
+	end
+	if getTargetInRangeLatchRemainingSeconds(entry, now) <= 0 then
+		return false
+	end
+	if entry.combatCommitted ~= true and entry.state ~= "deployed" and entry.state ~= "deploy_scattering" then
+		return false
+	end
+	return doesTargetInRangeLatchMatchContact(entry, contact)
+end
+
+local function getEffectiveTargetsInRange(entry, contact, now)
+	if entry == nil or entry.element == nil then
+		return false, false
+	end
+	if entry.element.targetsInRange == true then
+		return true, false
+	end
+	local latched = isTargetInRangeLatchActive(entry, contact, now)
+	return latched, latched
 end
 
 local function hasRecentMoveFireContactSession(entry, now)
@@ -1631,7 +1733,12 @@ function SkynetIADSMobilePatrol:getUnitTypeName(unit)
 end
 
 function SkynetIADSMobilePatrol:traceAirUnitTrack(entry, unit, distanceMeters, details, functionName)
-	if entry == nil or unit == nil or self.iads == nil or self.iads.traceAirUnit == nil then
+	if entry == nil
+		or unit == nil
+		or self.iads == nil
+		or self.iads.traceAirUnit == nil
+		or self.traceAirContactsEnabled ~= true
+	then
 		return false
 	end
 	local payload = details or {}
@@ -1645,7 +1752,7 @@ function SkynetIADSMobilePatrol:traceAirUnitTrack(entry, unit, distanceMeters, d
 end
 
 function SkynetIADSMobilePatrol:traceThreatProbe(entry, details)
-	if entry == nil then
+	if entry == nil or self.traceThreatProbeEnabled ~= true then
 		return false
 	end
 	local payload = details or {}
@@ -1711,6 +1818,9 @@ function SkynetIADSMobilePatrol:traceLaunchMonitor(entry, details, originFunctio
 		toThreatProbeSignatureValue(payload.launchConstraintOk),
 		toThreatProbeSignatureValue(payload.launchRangeCheck),
 		toThreatProbeSignatureValue(payload.harmGatePassed),
+		toThreatProbeSignatureValue(payload.targetsInRangeEffective),
+		toThreatProbeSignatureValue(payload.targetInRangeLatched),
+		toThreatProbeSignatureValue(payload.targetInRangeLatchRemainingSeconds),
 		toThreatProbeSignatureValue(payload.searchRadarInRange),
 		toThreatProbeSignatureValue(payload.trackingRadarInRange),
 		toThreatProbeSignatureValue(payload.launcherHorizontalInRange),
@@ -2005,6 +2115,9 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 			summary.contactsInformed = summary.contactsInformed + 1
 			if isPreferred == true then
 				summary.preferredContactInformed = true
+			end
+			if entry.element.targetsInRange == true then
+				touchTargetInRangeLatch(entry, contact)
 			end
 		end
 		local issuedPayload = {
@@ -2490,6 +2603,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	if threatDecision == nil then
 		entry.combatMode = "searching"
 		entry.debugLastCombatAnnouncementKey = nil
+		clearTargetInRangeLatch(entry)
 		return false
 	end
 
@@ -2592,6 +2706,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
 			weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
 		}, "applyMSAMThreatDecision")
+		clearTargetInRangeLatch(entry)
 		forceElementIntoPatrolDarkState(entry.element)
 	end
 
@@ -2897,6 +3012,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.launchAwaitSince = nil
 	entry.launchAwaitContactName = nil
 	entry.launchAwaitContactType = nil
+	clearTargetInRangeLatch(entry)
 	entry.lastLaunchMonitorSignature = nil
 	entry.lastLaunchMonitorTime = nil
 	resetMoveFireContactSession(entry)
@@ -3208,6 +3324,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.combatCommitted = false
 		entry.combatNoTargetSince = nil
 		entry.noThreatSince = nil
+		clearTargetInRangeLatch(entry)
 		if entry.state == "deployed" then
 			entry.state = "patrolling"
 			entry.combatMode = "patrolling"
@@ -3223,6 +3340,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		entry.combatNoTargetSince = nil
 		entry.noThreatSince = nil
 		entry.lastThreatTime = now
+		clearTargetInRangeLatch(entry)
 		if entry.state ~= "deployed" then
 			entry.state = "deployed"
 			entry.combatMode = "sibling_standby"
@@ -3346,8 +3464,13 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 					if okWorkingPower == true then
 						workingPower = hasWorkingPower == true and "Y" or "N"
 					end
+					local effectiveTargetsInRange, targetInRangeLatched = getEffectiveTargetsInRange(entry, monitoredContact, now)
+					local targetInRangeLatchRemainingSeconds =
+						targetInRangeLatched == true
+						and mist.utils.round(getTargetInRangeLatchRemainingSeconds(entry, now), 1)
+						or nil
 					local launchReady =
-						(entry.element.targetsInRange == true)
+						(effectiveTargetsInRange == true)
 						and (launchConstraintOk ~= "N")
 						and (launchRangeCheck ~= "N")
 						and (entry.element.harmSilenceID == nil)
@@ -3367,6 +3490,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 						workingRadar = workingRadar,
 						workingPower = workingPower,
 						targetsInRange = entry.element.targetsInRange == true and "Y" or "N",
+						targetsInRangeEffective = effectiveTargetsInRange == true and "Y" or "N",
+						targetInRangeLatched = targetInRangeLatched == true and "Y" or "N",
+						targetInRangeLatchRemainingSeconds = targetInRangeLatchRemainingSeconds,
 						missilesInFlight = missilesInFlight,
 					}
 					applyRangeBreakdown(launchPayload, launchRangeDetails)
@@ -3585,6 +3711,10 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		moveFireLastSeenTime = nil,
 		moveFireLastContactName = nil,
 		moveFireRouteResumeLockUntil = 0,
+		targetInRangeLatchSeconds = (options and options.targetInRangeLatchSeconds) or self.defaultTargetInRangeLatchSeconds,
+		targetInRangeLatchedUntil = 0,
+		targetInRangeLatchedContactName = nil,
+		targetInRangeLatchedContactType = nil,
 		launchAwaitSince = nil,
 		launchAwaitContactName = nil,
 		launchAwaitContactType = nil,
@@ -3649,11 +3779,14 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		sa11MSAMEngageDistanceNm = (config and config.sa11MSAMEngageDistanceNm) or SkynetIADSMobilePatrol.DEFAULT_SA11_MSAM_ENGAGE_DISTANCE_NM,
 		defaultCombatExitNoTargetSeconds = (config and config.defaultCombatExitNoTargetSeconds) or SkynetIADSMobilePatrol.DEFAULT_COMBAT_EXIT_NO_TARGET_SECONDS,
 		defaultPostCombatMobileSeconds = (config and config.defaultPostCombatMobileSeconds) or SkynetIADSMobilePatrol.DEFAULT_POST_COMBAT_MOBILE_SECONDS,
+		defaultTargetInRangeLatchSeconds = (config and config.defaultTargetInRangeLatchSeconds) or SkynetIADSMobilePatrol.DEFAULT_TARGET_IN_RANGE_LATCH_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultRouteReissueFallbackCount = (config and config.defaultRouteReissueFallbackCount) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT,
 		defaultMinMovementMeters = (config and config.defaultMinMovementMeters) or SkynetIADSMobilePatrol.DEFAULT_MIN_MOVEMENT_METERS,
 		defaultPatrolRefreshDelays = (config and config.defaultPatrolRefreshDelays) or SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS,
+		traceAirContactsEnabled = (config and config.traceAirContactsEnabled) or SkynetIADSMobilePatrol.DEFAULT_TRACE_AIR_CONTACTS_ENABLED,
+		traceThreatProbeEnabled = (config and config.traceThreatProbeEnabled) or SkynetIADSMobilePatrol.DEFAULT_TRACE_THREAT_PROBE_ENABLED,
 		moveFireNatoNames = mist.utils.deepCopy((config and config.moveFireNatoNames) or SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES),
 		moveFireLauncherTypeNames = mist.utils.deepCopy((config and config.moveFireLauncherTypeNames) or SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_LAUNCHER_TYPE_NAMES),
 	}
@@ -3696,10 +3829,35 @@ function SkynetIADSMobilePatrol.installHooks()
 	end
 
 	local originalSAMTargetCycleUpdateEnd = SkynetIADSSamSite.targetCycleUpdateEnd
+	local originalSAMTargetCycleUpdateStart = SkynetIADSSamSite.targetCycleUpdateStart
+	function SkynetIADSSamSite:targetCycleUpdateStart()
+		local result = originalSAMTargetCycleUpdateStart(self)
+		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
+		if entry and entry.manager then
+			local now = timer.getTime()
+			local effectiveTargetsInRange, targetInRangeLatched = getEffectiveTargetsInRange(entry, entry.lastThreatContact, now)
+			if effectiveTargetsInRange == true and targetInRangeLatched == true then
+				self.targetsInRange = true
+			end
+		end
+		return result
+	end
+
 	function SkynetIADSSamSite:targetCycleUpdateEnd()
 		local entry = SkynetIADSMobilePatrol.getEntryForElement(self)
+		local effectiveTargetsInRange = self.targetsInRange == true
+		local targetInRangeLatched = false
+		local targetInRangeLatchRemainingSeconds = nil
+		if entry and entry.manager then
+			local now = timer.getTime()
+			effectiveTargetsInRange, targetInRangeLatched = getEffectiveTargetsInRange(entry, entry.lastThreatContact, now)
+			if targetInRangeLatched == true then
+				targetInRangeLatchRemainingSeconds = mist.utils.round(getTargetInRangeLatchRemainingSeconds(entry, now), 1)
+				self.targetsInRange = true
+			end
+		end
 		local autoDarkWouldTrigger =
-			self.targetsInRange == false
+			effectiveTargetsInRange ~= true
 			and self.actAsEW == false
 			and self:getAutonomousState() == false
 			and self:getAutonomousBehaviour() == SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DCS_AI
@@ -3710,6 +3868,9 @@ function SkynetIADSMobilePatrol.installHooks()
 					entry.manager:traceStateSnapshot(entry, "target_cycle_hold_live", {
 						source = "target_cycle_update_end",
 						note = "auto_dark_suppressed",
+						targetsInRangeEffective = effectiveTargetsInRange == true and "Y" or "N",
+						targetInRangeLatched = targetInRangeLatched == true and "Y" or "N",
+						targetInRangeLatchRemainingSeconds = targetInRangeLatchRemainingSeconds,
 					}, "SkynetIADSSamSite:targetCycleUpdateEnd")
 				end
 				return
@@ -3718,6 +3879,9 @@ function SkynetIADSMobilePatrol.installHooks()
 				entry.manager:setOrderTraceContext(entry, "target_cycle_auto_dark", {
 					source = "target_cycle_update_end",
 					note = "targetsInRange=N",
+					targetsInRangeEffective = effectiveTargetsInRange == true and "Y" or "N",
+					targetInRangeLatched = targetInRangeLatched == true and "Y" or "N",
+					targetInRangeLatchRemainingSeconds = targetInRangeLatchRemainingSeconds,
 				}, "SkynetIADSSamSite:targetCycleUpdateEnd")
 			end
 		end
@@ -3965,6 +4129,9 @@ function SkynetIADSMobilePatrol.installHooks()
 			result = goSilentToEvadeHARMWhileMoving(self, timeToImpact)
 		else
 			result = originalGoSilentToEvadeHARM(self, timeToImpact)
+		end
+		if result ~= false and entry then
+			clearTargetInRangeLatch(entry)
 		end
 		if result ~= false and entry and (self.harmRelocationInProgress == true or moveFireCapable) then
 			if moveFireCapable then
