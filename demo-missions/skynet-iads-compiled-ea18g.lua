@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-firelatch5-movefire-repush | BUILD TIME: 04.04.2026 0137Z ---")
+env.info("--- SKYNET VERSION: ea18g-launchready-latch8 | BUILD TIME: 04.04.2026 0159Z ---")
 
 do
 --this file contains the required units per sam type
@@ -6369,6 +6369,7 @@ SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
 SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS = 5
+SkynetIADSMobilePatrol.DEFAULT_LAUNCH_READY_STABLE_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -7985,6 +7986,9 @@ function SkynetIADSMobilePatrol:traceLaunchMonitor(entry, details, originFunctio
 		toThreatProbeSignatureValue(payload.launchReady),
 		toThreatProbeSignatureValue(payload.launchConstraintOk),
 		toThreatProbeSignatureValue(payload.launchRangeCheck),
+		toThreatProbeSignatureValue(payload.launchReadyLatched),
+		toThreatProbeSignatureValue(payload.launchReadySinceSeconds),
+		toThreatProbeSignatureValue(payload.launchDroppedSinceSeconds),
 	}, "|")
 	local now = timer.getTime()
 	if entry.lastLaunchMonitorSignature == signature and entry.lastLaunchMonitorTime ~= nil and (now - entry.lastLaunchMonitorTime) < 3 then
@@ -8924,6 +8928,9 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			entry.launchAwaitContactType = nil
 			entry.lastPreferredContactFeedName = nil
 			entry.lastPreferredContactFeedTime = nil
+			entry.launchReadyLatchedUntil = 0
+			entry.launchReadyLastSeenTime = nil
+			entry.launchReadyDroppedAt = nil
 		end
 	end
 	entry.lastThreatTime = now
@@ -9192,6 +9199,9 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.lastLaunchMonitorTime = nil
 	entry.lastPreferredContactFeedName = nil
 	entry.lastPreferredContactFeedTime = nil
+	entry.launchReadyLatchedUntil = 0
+	entry.launchReadyLastSeenTime = nil
+	entry.launchReadyDroppedAt = nil
 	resetMoveFireContactSession(entry)
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
@@ -9630,11 +9640,31 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 					if okWorkingPower == true then
 						workingPower = hasWorkingPower == true and "Y" or "N"
 					end
-					local launchReady =
+					local instantaneousLaunchReady =
 						(entry.element.targetsInRange == true)
 						and (launchConstraintOk ~= "N")
 						and (launchRangeCheck ~= "N")
 						and (entry.element.harmSilenceID == nil)
+					if instantaneousLaunchReady == true then
+						entry.launchReadyLastSeenTime = now
+						entry.launchReadyLatchedUntil = now + SkynetIADSMobilePatrol.DEFAULT_LAUNCH_READY_STABLE_SECONDS
+						entry.launchReadyDroppedAt = nil
+					elseif entry.launchReadyLastSeenTime ~= nil and entry.launchReadyDroppedAt == nil then
+						entry.launchReadyDroppedAt = now
+					end
+					local launchReadyLatched =
+						entry.launchReadyLatchedUntil ~= nil
+						and entry.launchReadyLatchedUntil > now
+						and entry.element.harmSilenceID == nil
+					local launchReady = instantaneousLaunchReady == true or launchReadyLatched == true
+					local launchReadySinceSeconds = nil
+					if entry.launchReadyLastSeenTime ~= nil then
+						launchReadySinceSeconds = mist.utils.round(now - entry.launchReadyLastSeenTime, 1)
+					end
+					local launchDroppedSinceSeconds = nil
+					if instantaneousLaunchReady ~= true and entry.launchReadyDroppedAt ~= nil then
+						launchDroppedSinceSeconds = mist.utils.round(now - entry.launchReadyDroppedAt, 1)
+					end
 					self:traceLaunchMonitor(entry, {
 						outcome = "waiting_fire",
 						source = "combat_launch_gate",
@@ -9642,9 +9672,12 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 						contactType = entry.launchAwaitContactType or (threatDecision and threatDecision.triggerInfo and threatDecision.triggerInfo.contactType) or nil,
 						distanceNm = threatDecision and threatDecision.triggerInfo and (threatDecision.triggerInfo.effectiveDistanceNm or threatDecision.triggerInfo.distanceNm) or nil,
 						launchReady = launchReady == true and "Y" or "N",
+						launchReadyLatched = launchReadyLatched == true and "Y" or "N",
 						launchConstraintOk = launchConstraintOk,
 						launchRangeCheck = launchRangeCheck,
 						launchStateAgeSeconds = mist.utils.round(launchStateAgeSeconds, 1),
+						launchReadySinceSeconds = launchReadySinceSeconds,
+						launchDroppedSinceSeconds = launchDroppedSinceSeconds,
 						launchTimeoutSeconds = 4,
 						workingRadar = workingRadar,
 						workingPower = workingPower,
@@ -9872,6 +9905,9 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		lastLaunchMonitorTime = nil,
 		lastPreferredContactFeedName = nil,
 		lastPreferredContactFeedTime = nil,
+		launchReadyLatchedUntil = 0,
+		launchReadyLastSeenTime = nil,
+		launchReadyDroppedAt = nil,
 		lastThreatProbeSignature = nil,
 		lastThreatProbeTime = nil,
 		manager = self,
