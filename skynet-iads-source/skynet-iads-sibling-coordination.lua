@@ -573,6 +573,20 @@ function SkynetIADSSiblingCoordination:getSuppressedSwitchLockedMember(family)
     return member
 end
 
+function SkynetIADSSiblingCoordination:isMemberCombatFrozen(member)
+    if member == nil then
+        return false
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry == nil or entry.manager == nil or entry.manager.isStaticCombatFreezeActive == nil then
+        return false
+    end
+    local okFrozen, frozen = pcall(function()
+        return entry.manager:isStaticCombatFreezeActive(entry)
+    end)
+    return okFrozen == true and frozen == true
+end
+
 function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
     local family = SkynetIADSSiblingCoordination._familyByElement[element]
     local member = SkynetIADSSiblingCoordination._memberByElement[element]
@@ -602,6 +616,16 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
             return coverDecision, true
         end
         self:clearSuppressedSwitchLock(family)
+    end
+    if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isMemberCombatFrozen(currentPrimary) then
+        if currentPrimary ~= member then
+            return nil, false
+        end
+        local frozenEntry = self:getMobilePatrolEntry(member.element)
+        if frozenEntry and frozenEntry.kind == "MSAM" and frozenEntry.manager and frozenEntry.manager.findSAMThreatContact then
+            return frozenEntry.manager:findSAMThreatContact(frozenEntry), true
+        end
+        return nil, true
     end
     if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
         if currentPrimary ~= member then
@@ -716,6 +740,10 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
             return coverMember, "cover_for_" .. lockedPrimary.groupName, coverDecision
         end
         self:clearSuppressedSwitchLock(family)
+    end
+
+    if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isMemberCombatFrozen(currentPrimary) then
+        return currentPrimary, family.activeReason or "combat_freeze", self:getMemberThreatDecision(family, currentPrimary)
     end
 
     if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
