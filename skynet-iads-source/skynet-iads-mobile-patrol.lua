@@ -29,6 +29,7 @@ SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
+SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS = 3
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -485,7 +486,7 @@ local function setCombatROEForRepresentation(representation, weaponHold)
 		pcall(function()
 			controller:setOnOff(true)
 		end)
-		setCombatAlarmState(controller)
+		setPatrolAlarmState(controller)
 		setGroundROE(controller, weaponHold)
 		pcall(function()
 			representation:enableEmission(true)
@@ -506,7 +507,7 @@ local function setElementCombatROE(element, weaponHold)
 		pcall(function()
 			controller:setOnOff(true)
 		end)
-		setCombatAlarmState(controller)
+		setPatrolAlarmState(controller)
 		setGroundROE(controller, weaponHold)
 	end
 	if weaponHold then
@@ -1915,6 +1916,37 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 			}, "informEntryOfThreatContacts")
 			return false
 		end
+		local now = timer.getTime()
+		local samePreferredContact =
+			isPreferred == true
+			and entry.lastPreferredContactFeedName ~= nil
+			and contactName ~= nil
+			and contactName == entry.lastPreferredContactFeedName
+		local recentPreferredFeed =
+			samePreferredContact == true
+			and entry.lastPreferredContactFeedTime ~= nil
+			and (now - entry.lastPreferredContactFeedTime) < SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS
+		if recentPreferredFeed == true and entry.element.targetsInRange == true then
+			self:traceEntryCommand(entry, "contact_feed", {
+				event = "decision",
+				outcome = "skipped",
+				reason = "preferred_contact_latched",
+				source = "inform_entry_of_threat_contacts",
+				contact = contactName,
+				contactType = contactType,
+				distanceNm = distanceNm,
+				constraintOk = constraintOk,
+				targetInRangeCheck = targetInRangeCheck,
+				hadTargetInRange = hadTargetInRange,
+				targetsInRangeAfter = "Y",
+				preferredContactInformed = "Y",
+				note = "reissueCooldown="
+					.. tostring(SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS)
+					.. "s",
+			}, "informEntryOfThreatContacts")
+			summary.preferredContactInformed = true
+			return true
+		end
 		local okInform = pcall(function()
 			entry.element:informOfContact(contact)
 		end)
@@ -1925,6 +1957,8 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 			summary.contactsInformed = summary.contactsInformed + 1
 			if isPreferred == true then
 				summary.preferredContactInformed = true
+				entry.lastPreferredContactFeedName = contactName
+				entry.lastPreferredContactFeedTime = now
 			end
 		end
 		self:traceEntryCommand(entry, "contact_feed", {
@@ -2549,6 +2583,8 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 			entry.launchAwaitSince = nil
 			entry.launchAwaitContactName = nil
 			entry.launchAwaitContactType = nil
+			entry.lastPreferredContactFeedName = nil
+			entry.lastPreferredContactFeedTime = nil
 		end
 	end
 	entry.lastThreatTime = now
@@ -2815,6 +2851,8 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.launchAwaitContactType = nil
 	entry.lastLaunchMonitorSignature = nil
 	entry.lastLaunchMonitorTime = nil
+	entry.lastPreferredContactFeedName = nil
+	entry.lastPreferredContactFeedTime = nil
 	resetMoveFireContactSession(entry)
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
@@ -3493,6 +3531,8 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		launchAwaitContactType = nil,
 		lastLaunchMonitorSignature = nil,
 		lastLaunchMonitorTime = nil,
+		lastPreferredContactFeedName = nil,
+		lastPreferredContactFeedTime = nil,
 		lastThreatProbeSignature = nil,
 		lastThreatProbeTime = nil,
 		manager = self,
