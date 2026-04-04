@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-sa15-escape-hold | BUILD TIME: 04.04.2026 2348Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa15-escape-lockfix | BUILD TIME: 04.04.2026 2358Z ---")
 
 do
 --this file contains the required units per sam type
@@ -6841,6 +6841,18 @@ local function shouldIssueMoveFireRouteResume(entry, element, now)
 		return false
 	end
 	now = now or timer.getTime()
+	local isSA15MoveFire =
+		entry.manager
+		and entry.manager.isSA15MoveFire
+		and entry.manager:isSA15MoveFire(entry) == true
+	if isSA15MoveFire then
+		if entry.moveFireHarmEscapeActive == true then
+			return false
+		end
+		if entry.mobileLockUntil ~= nil and entry.mobileLockUntil > now then
+			return false
+		end
+	end
 	if entry.combatMode == "harm_silent" or entry.debugHarmActive == true then
 		return false
 	end
@@ -10572,6 +10584,7 @@ function SkynetIADSMobilePatrol.installHooks()
 		local now = timer.getTime()
 		local hadRecentMoveFireContact = hasRecentMoveFireContactSession(entry, now)
 		local moveFireCapable = entry and entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true
+		local sa15MoveFire = entry and entry.manager and entry.manager.isSA15MoveFire and entry.manager:isSA15MoveFire(entry) == true
 		local siblingInfo = entry and entry.manager and entry.manager.getSiblingInfo and entry.manager:getSiblingInfo(entry) or nil
 		local passiveSiblingBlocked =
 			siblingInfo ~= nil
@@ -10591,6 +10604,22 @@ function SkynetIADSMobilePatrol.installHooks()
 					outcome = "blocked",
 					source = "sibling_coord",
 					note = "mode=" .. tostring(siblingInfo.passiveMode),
+				}, "SkynetIADSSamSite:informOfContact")
+			end
+			return nil
+		end
+		if sa15MoveFire and (
+			entry.moveFireHarmEscapeActive == true
+			or (entry.mobileLockUntil ~= nil and entry.mobileLockUntil > now)
+		) then
+			if entry.manager and entry.manager.traceEntryCommand then
+				entry.manager:traceEntryCommand(entry, "sa15_escape_contact_block", {
+					event = "decision",
+					outcome = "blocked",
+					source = "inform_of_contact_move_fire",
+					reason = entry.moveFireHarmEscapeActive == true and "harm_escape_active" or "mobile_lock_active",
+					contact = entry.manager.getContactName and entry.manager:getContactName(contact) or "unknown",
+					contactType = entry.manager.getContactTypeName and entry.manager:getContactTypeName(contact) or "unknown",
 				}, "SkynetIADSSamSite:informOfContact")
 			end
 			return nil
