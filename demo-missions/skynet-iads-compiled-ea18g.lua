@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-sa15-harm-move-fix | BUILD TIME: 04.04.2026 1227Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa15-harm-roadmove-fix | BUILD TIME: 04.04.2026 2023Z ---")
 
 do
 --this file contains the required units per sam type
@@ -7188,6 +7188,34 @@ local function scheduleMoveFireMovementKick(entry, reason, functionName)
 	end
 end
 
+local function issueMoveFireEscapeRoute(manager, entry)
+	if manager == nil or entry == nil or entry.group == nil or entry.group:isExist() == false then
+		return false, false, nil
+	end
+	if entry.routePoints == nil or #entry.routePoints == 0 then
+		return false, false, nil
+	end
+	local escapeIndex = entry.currentWaypointIndex or 1
+	local destination = entry.routePoints[escapeIndex]
+	if destination and manager.getWaypointDistance and manager:getWaypointDistance(entry, destination) <= entry.arrivalToleranceMeters then
+		escapeIndex = (escapeIndex % #entry.routePoints) + 1
+		destination = entry.routePoints[escapeIndex]
+	end
+	if destination == nil then
+		return false, false, nil
+	end
+	entry.currentWaypointIndex = escapeIndex
+	local roadMoveIssued = false
+	local patrolRouteIssued = false
+	if manager.issueRoadMove then
+		roadMoveIssued = manager:issueRoadMove(entry, destination) == true
+	end
+	if roadMoveIssued ~= true and manager.issuePatrolRoute then
+		patrolRouteIssued = manager:issuePatrolRoute(entry) == true
+	end
+	return roadMoveIssued, patrolRouteIssued, escapeIndex
+end
+
 local function appendUniqueRepresentation(representations, representation, seenKeys)
 	if representation == nil or representation.isExist == nil or representation:isExist() == false then
 		return
@@ -10568,15 +10596,17 @@ function SkynetIADSMobilePatrol.installHooks()
 				if entry.manager and entry.manager.advancePatrol then
 					local resumedRoute = false
 					local fallbackPatrolRouteIssued = false
+					local roadMoveIssued = false
+					local escapeWaypoint = nil
 					local continueMovingIssued = false
 					local stopRouteCleared = false
 					local aiEnabled = false
 					pcall(function()
-						resumedRoute = entry.manager:advancePatrol(entry, true)
+						roadMoveIssued, fallbackPatrolRouteIssued, escapeWaypoint = issueMoveFireEscapeRoute(entry.manager, entry)
 					end)
-					if resumedRoute ~= true and entry.manager.issuePatrolRoute then
+					if roadMoveIssued ~= true and fallbackPatrolRouteIssued ~= true then
 						pcall(function()
-							fallbackPatrolRouteIssued = entry.manager:issuePatrolRoute(entry) == true
+							resumedRoute = entry.manager:advancePatrol(entry, true)
 						end)
 					end
 					continueMovingIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(entry.group)
@@ -10585,15 +10615,18 @@ function SkynetIADSMobilePatrol.installHooks()
 						entry.manager:traceEntryCommand(entry, "harm_move_resume", {
 							event = "decision",
 							outcome =
-								(resumedRoute == true or fallbackPatrolRouteIssued == true or continueMovingIssued == true or stopRouteCleared == true)
+								(roadMoveIssued == true or resumedRoute == true or fallbackPatrolRouteIssued == true or continueMovingIssued == true or stopRouteCleared == true)
 								and (
-									resumedRoute == true and "advance_patrol"
+									roadMoveIssued == true and "road_move"
+									or (resumedRoute == true and "advance_patrol")
 									or (fallbackPatrolRouteIssued == true and "patrol_route")
 									or "continue_moving"
 								)
 								or "failed",
 							reason = "harm_detected",
 							source = "move_fire_harm_resume",
+							escapeWaypoint = escapeWaypoint,
+							roadMoveResult = roadMoveIssued == true and "Y" or "N",
 							advancePatrolResult = resumedRoute == true and "Y" or "N",
 							issuePatrolRouteResult = fallbackPatrolRouteIssued == true and "Y" or "N",
 							continueMovingResult = continueMovingIssued == true and "Y" or "N",
