@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-launchready-latch8 | BUILD TIME: 04.04.2026 0159Z ---")
+env.info("--- SKYNET VERSION: ea18g-launchready-latch8-logfix | BUILD TIME: 04.04.2026 0212Z ---")
 
 do
 --this file contains the required units per sam type
@@ -2178,9 +2178,12 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"shouldGoLive",
 		"weaponHold",
 		"launchReady",
+		"launchReadyLatched",
 		"launchConstraintOk",
 		"launchRangeCheck",
 		"launchStateAgeSeconds",
+		"launchReadySinceSeconds",
+		"launchDroppedSinceSeconds",
 		"launchTimeoutSeconds",
 		"workingRadar",
 		"workingPower",
