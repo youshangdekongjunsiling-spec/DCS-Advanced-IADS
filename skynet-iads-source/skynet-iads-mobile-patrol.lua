@@ -29,7 +29,7 @@ SkynetIADSMobilePatrol.DEFAULT_DEPLOY_FORMATION_INTERVAL_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_CONTACT_LATCH_SECONDS = 4
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS = 8
 SkynetIADSMobilePatrol.DEFAULT_POST_LAUNCH_LIVE_HOLD_SECONDS = 12
-SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS = 5
+SkynetIADSMobilePatrol.DEFAULT_CONTACT_FEED_REISSUE_SECONDS = 3
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
 	["SA-8 Gecko"] = true,
 	["SA-15 Gauntlet"] = true,
@@ -3923,11 +3923,6 @@ function SkynetIADSMobilePatrol.installHooks()
 					if resumedRoute ~= true and entry.manager.issuePatrolRoute then
 						pcall(function()
 							fallbackPatrolRouteIssued = entry.manager:issuePatrolRoute(entry) == true
-						end)
-					end
-					if resumedRoute == true and entry.manager.issuePatrolRoute then
-						pcall(function()
-							entry.manager:issuePatrolRoute(entry)
 						end)
 					end
 					if entry.manager and entry.manager.traceEntryCommand then
