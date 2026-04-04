@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-targetinrange-latch-lite | BUILD TIME: 04.04.2026 0334Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa15-harm-move-fix | BUILD TIME: 04.04.2026 1227Z ---")
 
 do
 --this file contains the required units per sam type
@@ -7114,6 +7114,80 @@ local function setElementMovingSilenceState(element)
 	end
 end
 
+local function forceGroundGroupContinueMoving(group)
+	if group == nil or group.isExist == nil or group:isExist() == false then
+		return false, false, false
+	end
+	local continueIssued = false
+	local stopRouteCleared = false
+	local aiEnabled = false
+	if trigger and trigger.action and trigger.action.setGroupAIOn then
+		local okAI = pcall(function()
+			trigger.action.setGroupAIOn(group)
+		end)
+		if okAI then
+			aiEnabled = true
+		end
+	end
+	if trigger and trigger.action and trigger.action.groupContinueMoving then
+		local okContinue = pcall(function()
+			trigger.action.groupContinueMoving(group)
+		end)
+		if okContinue then
+			continueIssued = true
+		end
+	end
+	local controller = group.getController and group:getController() or nil
+	if controller then
+		local okCommand = pcall(function()
+			controller:setCommand({
+				id = "StopRoute",
+				params = { value = false }
+			})
+		end)
+		if okCommand then
+			stopRouteCleared = true
+		end
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+	end
+	return continueIssued, stopRouteCleared, aiEnabled
+end
+
+local function scheduleMoveFireMovementKick(entry, reason, functionName)
+	if entry == nil or entry.element == nil or mist == nil or mist.scheduleFunction == nil then
+		return
+	end
+	local element = entry.element
+	local delays = { 0.4, 1.2, 2.5 }
+	for i = 1, #delays do
+		local delaySeconds = delays[i]
+		mist.scheduleFunction(function(args)
+			local scheduledElement = args[1]
+			local scheduledReason = args[2]
+			local scheduledFunction = args[3]
+			local liveEntry = SkynetIADSMobilePatrol.getEntryForElement(scheduledElement)
+			if liveEntry == nil or liveEntry.group == nil or liveEntry.group:isExist() == false then
+				return
+			end
+			local continued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(liveEntry.group)
+			if liveEntry.manager and liveEntry.manager.traceEntryCommand then
+				liveEntry.manager:traceEntryCommand(liveEntry, "harm_move_resume_kick", {
+					event = "decision",
+					outcome = (continued or stopRouteCleared or aiEnabled) and "issued" or "failed",
+					reason = scheduledReason,
+					source = "move_fire_harm_resume_kick",
+					continueMovingResult = continued and "Y" or "N",
+					stopRouteClearResult = stopRouteCleared and "Y" or "N",
+					setGroupAIOnResult = aiEnabled and "Y" or "N",
+					delaySeconds = delaySeconds,
+				}, scheduledFunction or "scheduleMoveFireMovementKick")
+			end
+		end, { element, reason, functionName }, timer.getTime() + delaySeconds)
+	end
+end
+
 local function appendUniqueRepresentation(representations, representation, seenKeys)
 	if representation == nil or representation.isExist == nil or representation:isExist() == false then
 		return
@@ -10494,6 +10568,9 @@ function SkynetIADSMobilePatrol.installHooks()
 				if entry.manager and entry.manager.advancePatrol then
 					local resumedRoute = false
 					local fallbackPatrolRouteIssued = false
+					local continueMovingIssued = false
+					local stopRouteCleared = false
+					local aiEnabled = false
 					pcall(function()
 						resumedRoute = entry.manager:advancePatrol(entry, true)
 					end)
@@ -10502,17 +10579,26 @@ function SkynetIADSMobilePatrol.installHooks()
 							fallbackPatrolRouteIssued = entry.manager:issuePatrolRoute(entry) == true
 						end)
 					end
+					continueMovingIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(entry.group)
+					scheduleMoveFireMovementKick(entry, "harm_detected", "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
 					if entry.manager and entry.manager.traceEntryCommand then
 						entry.manager:traceEntryCommand(entry, "harm_move_resume", {
 							event = "decision",
 							outcome =
-								resumedRoute == true and "advance_patrol"
-								or (fallbackPatrolRouteIssued == true and "patrol_route")
+								(resumedRoute == true or fallbackPatrolRouteIssued == true or continueMovingIssued == true or stopRouteCleared == true)
+								and (
+									resumedRoute == true and "advance_patrol"
+									or (fallbackPatrolRouteIssued == true and "patrol_route")
+									or "continue_moving"
+								)
 								or "failed",
 							reason = "harm_detected",
 							source = "move_fire_harm_resume",
 							advancePatrolResult = resumedRoute == true and "Y" or "N",
 							issuePatrolRouteResult = fallbackPatrolRouteIssued == true and "Y" or "N",
+							continueMovingResult = continueMovingIssued == true and "Y" or "N",
+							stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+							setGroupAIOnResult = aiEnabled == true and "Y" or "N",
 						}, "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
 					end
 				end
@@ -10561,6 +10647,9 @@ function SkynetIADSMobilePatrol.installHooks()
 				if entry.manager.advancePatrol then
 					local resumedRoute = false
 					local fallbackPatrolRouteIssued = false
+					local continueMovingIssued = false
+					local stopRouteCleared = false
+					local aiEnabled = false
 					pcall(function()
 						resumedRoute = entry.manager:advancePatrol(entry, true)
 					end)
@@ -10574,17 +10663,26 @@ function SkynetIADSMobilePatrol.installHooks()
 							fallbackPatrolRouteIssued = entry.manager:issuePatrolRoute(entry) == true
 						end)
 					end
+					continueMovingIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(entry.group)
+					scheduleMoveFireMovementKick(entry, "harm_silence_expired", "SkynetIADSAbstractRadarElement.finishHarmDefence")
 					if entry.manager and entry.manager.traceEntryCommand then
 						entry.manager:traceEntryCommand(entry, "harm_move_resume", {
 							event = "decision",
 							outcome =
-								resumedRoute == true and "advance_patrol"
-								or (fallbackPatrolRouteIssued == true and "patrol_route")
+								(resumedRoute == true or fallbackPatrolRouteIssued == true or continueMovingIssued == true or stopRouteCleared == true)
+								and (
+									resumedRoute == true and "advance_patrol"
+									or (fallbackPatrolRouteIssued == true and "patrol_route")
+									or "continue_moving"
+								)
 								or "failed",
 							reason = "harm_silence_expired",
 							source = "move_fire_harm_resume",
 							advancePatrolResult = resumedRoute == true and "Y" or "N",
 							issuePatrolRouteResult = fallbackPatrolRouteIssued == true and "Y" or "N",
+							continueMovingResult = continueMovingIssued == true and "Y" or "N",
+							stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+							setGroupAIOnResult = aiEnabled == true and "Y" or "N",
 						}, "SkynetIADSAbstractRadarElement.finishHarmDefence")
 					end
 				end
