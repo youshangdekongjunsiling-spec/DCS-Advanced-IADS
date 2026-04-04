@@ -508,12 +508,10 @@ local function setElementCombatROE(element, weaponHold)
 		pcall(function()
 			controller:setOnOff(true)
 		end)
-		setPatrolAlarmState(controller)
+		setCombatAlarmState(controller)
 		setGroundROE(controller, weaponHold)
 	end
-	if weaponHold then
-		element.aiState = true
-	end
+	element.aiState = true
 end
 
 local function setMovingCombatROEForRepresentation(representation, weaponHold)

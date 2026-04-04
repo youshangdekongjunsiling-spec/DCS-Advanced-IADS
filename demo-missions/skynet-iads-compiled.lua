@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-launchready-latch8-logfix | BUILD TIME: 04.04.2026 0212Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa11-combat-alarm-fix | BUILD TIME: 04.04.2026 0218Z ---")
 
 do
 --this file contains the required units per sam type
@@ -6850,12 +6850,10 @@ local function setElementCombatROE(element, weaponHold)
 		pcall(function()
 			controller:setOnOff(true)
 		end)
-		setPatrolAlarmState(controller)
+		setCombatAlarmState(controller)
 		setGroundROE(controller, weaponHold)
 	end
-	if weaponHold then
-		element.aiState = true
-	end
+	element.aiState = true
 end
 
 local function setMovingCombatROEForRepresentation(representation, weaponHold)
