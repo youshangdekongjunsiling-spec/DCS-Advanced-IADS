@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-launch-harm-debug | BUILD TIME: 04.04.2026 0055Z ---")
+env.info("--- SKYNET VERSION: ea18g-range-breakdown-debug | BUILD TIME: 04.04.2026 0311Z ---")
 
 do
 --this file contains the required units per sam type
@@ -2170,7 +2170,15 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"hadTargetInRange",
 		"targetsInRangeAfter",
 		"constraintOk",
+		"goLiveConstraintCount",
 		"targetInRangeCheck",
+		"harmGatePassed",
+		"engagementZone",
+		"searchRadarInRange",
+		"trackingRadarInRange",
+		"launcherHorizontalInRange",
+		"launcherHeightInRange",
+		"launcherInRange",
 		"contactsInformed",
 		"preferredContactInformed",
 		"closureNmps",
@@ -4691,13 +4699,18 @@ function SkynetIADSAbstractRadarElement:isJammed()
 	return self.lastJammerUpdate > 0 and (timer.getTime() - self.lastJammerUpdate) <= 10
 end
 
-function SkynetIADSAbstractRadarElement:isTargetInRange(target)
+function SkynetIADSAbstractRadarElement:getTargetInRangeDetails(target)
+	local details = {
+		engagementZone = self.goLiveRange == SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_KILL_ZONE and "kill_zone" or "search_range",
+		searchRadarInRange = false,
+		trackingRadarInRange = false,
+		launcherHorizontalInRange = false,
+		launcherHeightInRange = false,
+		launcherInRange = false,
+		targetInRange = false,
+	}
 
-	local isSearchRadarInRange = false
-	local isTrackingRadarInRange = false
-	local isLauncherInRange = false
-	
-	local isSearchRadarInRange = ( #self.searchRadars == 0 )
+	local isSearchRadarInRange = (#self.searchRadars == 0)
 	for i = 1, #self.searchRadars do
 		local searchRadar = self.searchRadars[i]
 		if searchRadar:isInRange(target) then
@@ -4705,19 +4718,32 @@ function SkynetIADSAbstractRadarElement:isTargetInRange(target)
 			break
 		end
 	end
-	
+	details.searchRadarInRange = isSearchRadarInRange
+
 	if self.goLiveRange == SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_KILL_ZONE then
-		
-		isLauncherInRange = ( #self.launchers == 0 )
+		local launcherHorizontalInRange = (#self.launchers == 0)
+		local launcherHeightInRange = (#self.launchers == 0)
+		local launcherInRange = (#self.launchers == 0)
 		for i = 1, #self.launchers do
 			local launcher = self.launchers[i]
-			if launcher:isInRange(target) then
-				isLauncherInRange = true
+			local horizontalOk = launcher.isInHorizontalRange and launcher:isInHorizontalRange(target) or launcher:isInRange(target)
+			local heightOk = launcher.isWithinFiringHeight and launcher:isWithinFiringHeight(target) or launcher:isInRange(target)
+			if horizontalOk then
+				launcherHorizontalInRange = true
+			end
+			if heightOk then
+				launcherHeightInRange = true
+			end
+			if horizontalOk and heightOk then
+				launcherInRange = true
 				break
 			end
 		end
-		
-		isTrackingRadarInRange = ( #self.trackingRadars == 0 )
+		details.launcherHorizontalInRange = launcherHorizontalInRange
+		details.launcherHeightInRange = launcherHeightInRange
+		details.launcherInRange = launcherInRange
+
+		local isTrackingRadarInRange = (#self.trackingRadars == 0)
 		for i = 1, #self.trackingRadars do
 			local trackingRadar = self.trackingRadars[i]
 			if trackingRadar:isInRange(target) then
@@ -4725,11 +4751,21 @@ function SkynetIADSAbstractRadarElement:isTargetInRange(target)
 				break
 			end
 		end
+		details.trackingRadarInRange = isTrackingRadarInRange
 	else
-		isLauncherInRange = true
-		isTrackingRadarInRange = true
+		details.launcherHorizontalInRange = true
+		details.launcherHeightInRange = true
+		details.launcherInRange = true
+		details.trackingRadarInRange = true
 	end
-	return  (isSearchRadarInRange and isTrackingRadarInRange and isLauncherInRange )
+
+	details.targetInRange = details.searchRadarInRange and details.trackingRadarInRange and details.launcherInRange
+	return details
+end
+
+function SkynetIADSAbstractRadarElement:isTargetInRange(target)
+	local details = self:getTargetInRangeDetails(target)
+	return details.targetInRange == true
 end
 
 function SkynetIADSAbstractRadarElement:isInRadarDetectionRangeOf(abstractRadarElement)
@@ -6587,6 +6623,71 @@ local function toRoundedNm(distanceMeters)
 	return mist.utils.round(mist.utils.metersToNM(distanceMeters), 1)
 end
 
+local function toBoolFlag(value)
+	if value == nil then
+		return nil
+	end
+	return value == true and "Y" or "N"
+end
+
+local function countTableEntries(value)
+	if type(value) ~= "table" then
+		return 0
+	end
+	local count = 0
+	for _ in pairs(value) do
+		count = count + 1
+	end
+	return count
+end
+
+local function getHarmGatePassed(element, contact)
+	if element == nil or contact == nil then
+		return nil
+	end
+	local okIsHarm, isHarm = pcall(function()
+		return contact:isIdentifiedAsHARM()
+	end)
+	if okIsHarm ~= true then
+		return nil
+	end
+	if isHarm ~= true then
+		return "Y"
+	end
+	local okCanEngageHARM, canEngageHARM = pcall(function()
+		return element:getCanEngageHARM()
+	end)
+	if okCanEngageHARM ~= true then
+		return nil
+	end
+	return canEngageHARM == true and "Y" or "N"
+end
+
+local function getRangeBreakdownForContact(element, contact)
+	if element == nil or contact == nil or element.getTargetInRangeDetails == nil then
+		return nil
+	end
+	local okDetails, details = pcall(function()
+		return element:getTargetInRangeDetails(contact)
+	end)
+	if okDetails ~= true or type(details) ~= "table" then
+		return nil
+	end
+	return details
+end
+
+local function applyRangeBreakdown(payload, details)
+	if payload == nil or details == nil then
+		return
+	end
+	payload.engagementZone = details.engagementZone or payload.engagementZone
+	payload.searchRadarInRange = toBoolFlag(details.searchRadarInRange)
+	payload.trackingRadarInRange = toBoolFlag(details.trackingRadarInRange)
+	payload.launcherHorizontalInRange = toBoolFlag(details.launcherHorizontalInRange)
+	payload.launcherHeightInRange = toBoolFlag(details.launcherHeightInRange)
+	payload.launcherInRange = toBoolFlag(details.launcherInRange)
+end
+
 local function resetMoveFireContactSession(entry)
 	if entry == nil then
 		return
@@ -7959,6 +8060,12 @@ function SkynetIADSMobilePatrol:traceLaunchMonitor(entry, details, originFunctio
 		toThreatProbeSignatureValue(payload.launchReady),
 		toThreatProbeSignatureValue(payload.launchConstraintOk),
 		toThreatProbeSignatureValue(payload.launchRangeCheck),
+		toThreatProbeSignatureValue(payload.harmGatePassed),
+		toThreatProbeSignatureValue(payload.searchRadarInRange),
+		toThreatProbeSignatureValue(payload.trackingRadarInRange),
+		toThreatProbeSignatureValue(payload.launcherHorizontalInRange),
+		toThreatProbeSignatureValue(payload.launcherHeightInRange),
+		toThreatProbeSignatureValue(payload.launcherInRange),
 	}, "|")
 	local now = timer.getTime()
 	if entry.lastLaunchMonitorSignature == signature and entry.lastLaunchMonitorTime ~= nil and (now - entry.lastLaunchMonitorTime) < 3 then
@@ -8167,32 +8274,37 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 
 	local function evaluateContact(contact)
 		if contact == nil then
-			return false, "contact_nil", nil, nil
+			return false, "contact_nil", nil, nil, nil, nil, nil
 		end
 		if isAirContact(contact) ~= true then
-			return false, "non_air_contact", nil, nil
+			return false, "non_air_contact", nil, nil, nil, nil, nil
 		end
 		if isLikelyGroundedResidualAirContact(contact) == true then
-			return false, "residual_contact", nil, nil
+			return false, "residual_contact", nil, nil, nil, nil, nil
 		end
 		if contact.isIdentifiedAsHARM and contact:isIdentifiedAsHARM() == true then
-			return false, "harm_contact", nil, nil
+			return false, "harm_contact", nil, nil, nil, nil, nil
 		end
+		local goLiveConstraintCount = countTableEntries(entry.element.getGoLiveConstraints and entry.element:getGoLiveConstraints() or nil)
 		local okConstraints, constraintsSatisfied = pcall(function()
 			return entry.element:areGoLiveConstraintsSatisfied(contact)
 		end)
 		local constraintOk = okConstraints == true and constraintsSatisfied == true
-		local targetInRangeCheck = nil
-		local okTargetInRange, inRange = pcall(function()
-			return entry.element:isTargetInRange(contact)
-		end)
-		if okTargetInRange == true then
-			targetInRangeCheck = inRange == true and "Y" or "N"
+		local rangeDetails = getRangeBreakdownForContact(entry.element, contact)
+		local targetInRangeCheck = rangeDetails and toBoolFlag(rangeDetails.targetInRange) or nil
+		if targetInRangeCheck == nil then
+			local okTargetInRange, inRange = pcall(function()
+				return entry.element:isTargetInRange(contact)
+			end)
+			if okTargetInRange == true then
+				targetInRangeCheck = inRange == true and "Y" or "N"
+			end
 		end
+		local harmGatePassed = getHarmGatePassed(entry.element, contact)
 		if constraintOk ~= true then
-			return false, "constraints_failed", "N", targetInRangeCheck
+			return false, "constraints_failed", "N", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount
 		end
-		return true, "eligible", "Y", targetInRangeCheck
+		return true, "eligible", "Y", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount
 	end
 
 	local summary = {
@@ -8202,7 +8314,7 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 	}
 
 	local function inform(contact, isPreferred)
-		local canInformContact, outcomeReason, constraintOk, targetInRangeCheck = evaluateContact(contact)
+		local canInformContact, outcomeReason, constraintOk, targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount = evaluateContact(contact)
 		local hadTargetInRange = entry.element.targetsInRange == true and "Y" or "N"
 		local contactName = self:getContactName(contact)
 		local contactType = self:getContactTypeName(contact)
@@ -8214,7 +8326,7 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 			end
 		end
 		if canInformContact ~= true then
-			self:traceEntryCommand(entry, "contact_feed", {
+			local blockedPayload = {
 				event = "decision",
 				outcome = "blocked",
 				reason = outcomeReason,
@@ -8224,9 +8336,13 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 				distanceNm = distanceNm,
 				constraintOk = constraintOk,
 				targetInRangeCheck = targetInRangeCheck,
+				harmGatePassed = harmGatePassed,
+				goLiveConstraintCount = goLiveConstraintCount,
 				hadTargetInRange = hadTargetInRange,
 				preferredContactInformed = isPreferred == true and "Y" or "N",
-			}, "informEntryOfThreatContacts")
+			}
+			applyRangeBreakdown(blockedPayload, rangeDetails)
+			self:traceEntryCommand(entry, "contact_feed", blockedPayload, "informEntryOfThreatContacts")
 			return false
 		end
 		local okInform = pcall(function()
@@ -8241,7 +8357,7 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 				summary.preferredContactInformed = true
 			end
 		end
-		self:traceEntryCommand(entry, "contact_feed", {
+		local issuedPayload = {
 			event = "decision",
 			outcome = issued == true and "issued" or "failed",
 			reason = issued == true and "inform_called" or "inform_error",
@@ -8251,10 +8367,14 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 			distanceNm = distanceNm,
 			constraintOk = constraintOk,
 			targetInRangeCheck = targetInRangeCheck,
+			harmGatePassed = harmGatePassed,
+			goLiveConstraintCount = goLiveConstraintCount,
 			hadTargetInRange = hadTargetInRange,
 			targetsInRangeAfter = targetsInRangeAfter,
 			preferredContactInformed = isPreferred == true and "Y" or "N",
-		}, "informEntryOfThreatContacts")
+		}
+		applyRangeBreakdown(issuedPayload, rangeDetails)
+		self:traceEntryCommand(entry, "contact_feed", issuedPayload, "informEntryOfThreatContacts")
 		return issued
 	end
 
@@ -9539,6 +9659,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 					end
 					local launchConstraintOk = nil
 					local launchRangeCheck = nil
+					local launchRangeDetails = nil
+					local harmGatePassed = nil
+					local goLiveConstraintCount = countTableEntries(entry.element.getGoLiveConstraints and entry.element:getGoLiveConstraints() or nil)
 					if monitoredContact ~= nil then
 						local okConstraintCheck, constraintSatisfied = pcall(function()
 							return entry.element:areGoLiveConstraintsSatisfied(monitoredContact)
@@ -9546,12 +9669,18 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 						if okConstraintCheck == true then
 							launchConstraintOk = constraintSatisfied == true and "Y" or "N"
 						end
-						local okRangeCheck, inRange = pcall(function()
-							return entry.element:isTargetInRange(monitoredContact)
-						end)
-						if okRangeCheck == true then
-							launchRangeCheck = inRange == true and "Y" or "N"
+						launchRangeDetails = getRangeBreakdownForContact(entry.element, monitoredContact)
+						if launchRangeDetails ~= nil then
+							launchRangeCheck = toBoolFlag(launchRangeDetails.targetInRange)
+						else
+							local okRangeCheck, inRange = pcall(function()
+								return entry.element:isTargetInRange(monitoredContact)
+							end)
+							if okRangeCheck == true then
+								launchRangeCheck = inRange == true and "Y" or "N"
+							end
 						end
+						harmGatePassed = getHarmGatePassed(entry.element, monitoredContact)
 					end
 					local workingRadar = nil
 					local okWorkingRadar, hasWorkingRadar = pcall(function()
@@ -9572,7 +9701,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 						and (launchConstraintOk ~= "N")
 						and (launchRangeCheck ~= "N")
 						and (entry.element.harmSilenceID == nil)
-					self:traceLaunchMonitor(entry, {
+					local launchPayload = {
 						outcome = "waiting_fire",
 						source = "combat_launch_gate",
 						contact = entry.launchAwaitContactName or (threatDecision and threatDecision.triggerInfo and threatDecision.triggerInfo.contactName) or nil,
@@ -9581,13 +9710,17 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 						launchReady = launchReady == true and "Y" or "N",
 						launchConstraintOk = launchConstraintOk,
 						launchRangeCheck = launchRangeCheck,
+						harmGatePassed = harmGatePassed,
+						goLiveConstraintCount = goLiveConstraintCount,
 						launchStateAgeSeconds = mist.utils.round(launchStateAgeSeconds, 1),
 						launchTimeoutSeconds = 4,
 						workingRadar = workingRadar,
 						workingPower = workingPower,
 						targetsInRange = entry.element.targetsInRange == true and "Y" or "N",
 						missilesInFlight = missilesInFlight,
-					}, "updateEntry")
+					}
+					applyRangeBreakdown(launchPayload, launchRangeDetails)
+					self:traceLaunchMonitor(entry, launchPayload, "updateEntry")
 				end
 			end
 

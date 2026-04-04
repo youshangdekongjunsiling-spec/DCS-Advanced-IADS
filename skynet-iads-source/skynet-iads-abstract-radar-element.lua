@@ -1021,13 +1021,18 @@ function SkynetIADSAbstractRadarElement:isJammed()
 	return self.lastJammerUpdate > 0 and (timer.getTime() - self.lastJammerUpdate) <= 10
 end
 
-function SkynetIADSAbstractRadarElement:isTargetInRange(target)
+function SkynetIADSAbstractRadarElement:getTargetInRangeDetails(target)
+	local details = {
+		engagementZone = self.goLiveRange == SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_KILL_ZONE and "kill_zone" or "search_range",
+		searchRadarInRange = false,
+		trackingRadarInRange = false,
+		launcherHorizontalInRange = false,
+		launcherHeightInRange = false,
+		launcherInRange = false,
+		targetInRange = false,
+	}
 
-	local isSearchRadarInRange = false
-	local isTrackingRadarInRange = false
-	local isLauncherInRange = false
-	
-	local isSearchRadarInRange = ( #self.searchRadars == 0 )
+	local isSearchRadarInRange = (#self.searchRadars == 0)
 	for i = 1, #self.searchRadars do
 		local searchRadar = self.searchRadars[i]
 		if searchRadar:isInRange(target) then
@@ -1035,19 +1040,32 @@ function SkynetIADSAbstractRadarElement:isTargetInRange(target)
 			break
 		end
 	end
-	
+	details.searchRadarInRange = isSearchRadarInRange
+
 	if self.goLiveRange == SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_KILL_ZONE then
-		
-		isLauncherInRange = ( #self.launchers == 0 )
+		local launcherHorizontalInRange = (#self.launchers == 0)
+		local launcherHeightInRange = (#self.launchers == 0)
+		local launcherInRange = (#self.launchers == 0)
 		for i = 1, #self.launchers do
 			local launcher = self.launchers[i]
-			if launcher:isInRange(target) then
-				isLauncherInRange = true
+			local horizontalOk = launcher.isInHorizontalRange and launcher:isInHorizontalRange(target) or launcher:isInRange(target)
+			local heightOk = launcher.isWithinFiringHeight and launcher:isWithinFiringHeight(target) or launcher:isInRange(target)
+			if horizontalOk then
+				launcherHorizontalInRange = true
+			end
+			if heightOk then
+				launcherHeightInRange = true
+			end
+			if horizontalOk and heightOk then
+				launcherInRange = true
 				break
 			end
 		end
-		
-		isTrackingRadarInRange = ( #self.trackingRadars == 0 )
+		details.launcherHorizontalInRange = launcherHorizontalInRange
+		details.launcherHeightInRange = launcherHeightInRange
+		details.launcherInRange = launcherInRange
+
+		local isTrackingRadarInRange = (#self.trackingRadars == 0)
 		for i = 1, #self.trackingRadars do
 			local trackingRadar = self.trackingRadars[i]
 			if trackingRadar:isInRange(target) then
@@ -1055,11 +1073,21 @@ function SkynetIADSAbstractRadarElement:isTargetInRange(target)
 				break
 			end
 		end
+		details.trackingRadarInRange = isTrackingRadarInRange
 	else
-		isLauncherInRange = true
-		isTrackingRadarInRange = true
+		details.launcherHorizontalInRange = true
+		details.launcherHeightInRange = true
+		details.launcherInRange = true
+		details.trackingRadarInRange = true
 	end
-	return  (isSearchRadarInRange and isTrackingRadarInRange and isLauncherInRange )
+
+	details.targetInRange = details.searchRadarInRange and details.trackingRadarInRange and details.launcherInRange
+	return details
+end
+
+function SkynetIADSAbstractRadarElement:isTargetInRange(target)
+	local details = self:getTargetInRangeDetails(target)
+	return details.targetInRange == true
 end
 
 function SkynetIADSAbstractRadarElement:isInRadarDetectionRangeOf(abstractRadarElement)
