@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-tick-instancefix | BUILD TIME: 05.04.2026 1313Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-timer-schedulefix | BUILD TIME: 05.04.2026 1328Z ---")
 
 do
 --this file contains the required units per sam type
@@ -2220,6 +2220,9 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"rotationReason",
 		"rotationMinMoveMeters",
 		"rotationIntervalSeconds",
+		"deployedForSeconds",
+		"dueInSeconds",
+		"rotationDue",
 		"movedMeters",
 		"waypoint",
 		"routePoints",
@@ -6410,6 +6413,7 @@ SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_PROGRESS_METERS = 10
 SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_POST_ESCAPE_LOCK_SECONDS = 10
 SkynetIADSMobilePatrol.DEFAULT_MEW_MIN_LIVE_COUNT = 1
 SkynetIADSMobilePatrol.DEFAULT_MEW_LIVE_DUTY_SECONDS = 120
+SkynetIADSMobilePatrol.DEFAULT_DEPLOY_PROGRESS_INTERVAL_SECONDS = 15
 SkynetIADSMobilePatrol.DEFAULT_TRACE_AIR_CONTACTS_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_TRACE_THREAT_PROBE_ENABLED = false
 SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES = {
@@ -7474,6 +7478,96 @@ function SkynetIADSMobilePatrol:notifyDebug(message)
 	if _G.SkynetRuntimeDebugNotify and message then
 		pcall(_G.SkynetRuntimeDebugNotify, message)
 	end
+end
+
+function SkynetIADSMobilePatrol:isDeploymentObservedState(entry)
+	return entry ~= nil
+		and entry.kind == "MSAM"
+		and (entry.state == "deployed" or entry.state == "deploy_scattering")
+end
+
+function SkynetIADSMobilePatrol:markDeploymentObserved(entry, now)
+	if self:isDeploymentObservedState(entry) ~= true then
+		return false
+	end
+	now = now or timer.getTime()
+	if entry.deployedStateSince == nil then
+		entry.deployedStateSince = now
+		entry.lastDeploymentProgressAt = 0
+	end
+	entry.deployedStateLastSeen = now
+	return true
+end
+
+function SkynetIADSMobilePatrol:clearDeploymentObserved(entry)
+	if entry == nil then
+		return
+	end
+	entry.deployedStateSince = nil
+	entry.deployedStateLastSeen = nil
+	entry.lastDeploymentProgressAt = nil
+end
+
+function SkynetIADSMobilePatrol:updateDeploymentObserved(entry, now)
+	if entry == nil then
+		return
+	end
+	if self:isDeploymentObservedState(entry) and self:isHarmEvading(entry) ~= true then
+		self:markDeploymentObserved(entry, now)
+	else
+		self:clearDeploymentObserved(entry)
+	end
+end
+
+function SkynetIADSMobilePatrol:reportDeploymentProgress(entry, now)
+	if entry == nil or entry.deployedStateSince == nil then
+		return
+	end
+	now = now or timer.getTime()
+	local interval = self.defaultDeployProgressIntervalSeconds or SkynetIADSMobilePatrol.DEFAULT_DEPLOY_PROGRESS_INTERVAL_SECONDS
+	local lastReportedAt = entry.lastDeploymentProgressAt or 0
+	if (now - lastReportedAt) < interval then
+		return
+	end
+	entry.lastDeploymentProgressAt = now
+	local deployedForSeconds = mist.utils.round(now - entry.deployedStateSince, 1)
+	local siblingInfo = SkynetIADSSiblingCoordination
+		and SkynetIADSSiblingCoordination.getFamilyForElement
+		and SkynetIADSSiblingCoordination.getFamilyForElement(entry.element)
+		or nil
+	local dueInSeconds = nil
+	if siblingInfo and siblingInfo.rotationIntervalSeconds then
+		dueInSeconds = math.max(0, siblingInfo.rotationIntervalSeconds - deployedForSeconds)
+	end
+	self:traceEntryCommand(entry, "deploy_rotation_progress", {
+		event = "decision",
+		outcome = "observed",
+		source = "deployment_timer",
+		deployedForSeconds = deployedForSeconds,
+		dueInSeconds = dueInSeconds and mist.utils.round(dueInSeconds, 1) or nil,
+		rotationIntervalSeconds = siblingInfo and siblingInfo.rotationIntervalSeconds or nil,
+		rotationDue = dueInSeconds ~= nil and dueInSeconds <= 0 and "Y" or "N",
+		family = siblingInfo and siblingInfo.name or nil,
+		familyRole = siblingInfo and siblingInfo.role or nil,
+		passiveMode = siblingInfo and siblingInfo.passiveMode or nil,
+	}, "reportDeploymentProgress")
+	local message = entry.groupName
+		.. " deploy timer | state="
+		.. tostring(entry.state)
+		.. " | deployedFor="
+		.. tostring(deployedForSeconds)
+		.. "s"
+	if siblingInfo and siblingInfo.name then
+		message = message
+			.. " | family="
+			.. tostring(siblingInfo.name)
+			.. " | role="
+			.. tostring(siblingInfo.role or "-")
+	end
+	if dueInSeconds ~= nil then
+		message = message .. " | dueIn=" .. tostring(mist.utils.round(dueInSeconds, 1)) .. "s"
+	end
+	self:notifyDebug(message)
 end
 
 function SkynetIADSMobilePatrol:withOrderTraceOrigin(details, functionName)
@@ -10089,6 +10183,7 @@ function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 	else
 		entry.state = "deploy_scattering"
 	end
+	self:markDeploymentObserved(entry, timer.getTime())
 	entry.noThreatSince = nil
 	entry.lastThreatTime = timer.getTime()
 	entry.debugLastCombatAnnouncementKey = nil
@@ -10124,6 +10219,7 @@ end
 
 function SkynetIADSMobilePatrol:beginPatrol(entry)
 	local previousState = entry.state
+	self:clearDeploymentObserved(entry)
 	entry.state = "patrolling"
 	entry.combatMode = "patrolling"
 	entry.combatCommitted = false
@@ -10355,6 +10451,8 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 	end
 
 	local now = timer.getTime()
+	self:updateDeploymentObserved(entry, now)
+	self:reportDeploymentProgress(entry, now)
 	local moveFireCapable = self:isMoveFireCapable(entry)
 	local sa15MoveFire = moveFireCapable and self:isSA15MoveFire(entry)
 
@@ -10933,6 +11031,9 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		mewLastNetworkSignature = nil,
 		mewMinimumLiveCount = (options and options.mewMinimumLiveCount) or self.defaultMEWMinimumLiveCount,
 		mewLiveDutySeconds = (options and options.mewLiveDutySeconds) or self.defaultMEWLiveDutySeconds,
+		deployedStateSince = nil,
+		deployedStateLastSeen = nil,
+		lastDeploymentProgressAt = nil,
 		targetInRangeLatchSeconds = (options and options.targetInRangeLatchSeconds) or self.defaultTargetInRangeLatchSeconds,
 		targetInRangeLatchedUntil = 0,
 		targetInRangeLatchedContactName = nil,
@@ -11009,6 +11110,7 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultSA15HarmPostEscapeLockSeconds = (config and config.defaultSA15HarmPostEscapeLockSeconds) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_POST_ESCAPE_LOCK_SECONDS,
 		defaultMEWMinimumLiveCount = (config and config.defaultMEWMinimumLiveCount) or SkynetIADSMobilePatrol.DEFAULT_MEW_MIN_LIVE_COUNT,
 		defaultMEWLiveDutySeconds = (config and config.defaultMEWLiveDutySeconds) or SkynetIADSMobilePatrol.DEFAULT_MEW_LIVE_DUTY_SECONDS,
+		defaultDeployProgressIntervalSeconds = (config and config.defaultDeployProgressIntervalSeconds) or SkynetIADSMobilePatrol.DEFAULT_DEPLOY_PROGRESS_INTERVAL_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultRouteReissueFallbackCount = (config and config.defaultRouteReissueFallbackCount) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT,
@@ -11615,7 +11717,7 @@ SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM = 25
 SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS = 10
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS = 8
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM = 1.5
-SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 180
+SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 120
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS = 1000
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS = 30
 SkynetIADSSiblingCoordination.DEFAULT_DEBUG_PROGRESS_INTERVAL_SECONDS = 15
@@ -11788,6 +11890,8 @@ function SkynetIADSSiblingCoordination.getFamilyForElement(element)
         sharedReason = family.activeReason,
         passiveAction = family.passiveAction,
         passiveMode = member.passiveMode,
+        rotationIntervalSeconds = family.rotationIntervalSeconds,
+        rotationMinMoveMeters = family.rotationMinMoveMeters,
     }
 end
 
@@ -12011,6 +12115,14 @@ function SkynetIADSSiblingCoordination:refreshMemberDeploymentObserved(member, n
         return nil, false
     end
     local entry = self:getMobilePatrolEntry(member.element)
+    local entryObservedSince = entry and entry.deployedStateSince or nil
+    if entryObservedSince ~= nil then
+        member.deployedObservedSince = entryObservedSince
+        member.deployedLostObservedSince = nil
+        member.currentlyObservedDeployed = true
+        member.lastObservedEntryState = entry and entry.state or nil
+        return entry, true
+    end
     local deployed = self:isMSAMDeployState(entry) and self:isSuppressed(member) ~= true
     member.currentlyObservedDeployed = deployed
     member.lastObservedEntryState = entry and entry.state or nil
@@ -12031,6 +12143,17 @@ function SkynetIADSSiblingCoordination:refreshMemberDeploymentObserved(member, n
         end
     end
     return entry, deployed
+end
+
+function SkynetIADSSiblingCoordination:getMemberDeploymentObservedSince(member)
+    if member == nil then
+        return nil
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry and entry.deployedStateSince ~= nil then
+        return entry.deployedStateSince
+    end
+    return member.deployedObservedSince
 end
 
 function SkynetIADSSiblingCoordination:getRotationMoveDistanceMeters(member)
@@ -12192,8 +12315,9 @@ function SkynetIADSSiblingCoordination:formatRotationProgressMember(family, memb
     local entry = self:getMobilePatrolEntry(member.element)
     local entryState = entry and entry.state or "nil"
     local deployedForSeconds = 0
-    if member.deployedObservedSince ~= nil then
-        deployedForSeconds = roundSeconds(now - member.deployedObservedSince)
+    local deployedObservedSince = self:getMemberDeploymentObservedSince(member)
+    if deployedObservedSince ~= nil then
+        deployedForSeconds = roundSeconds(now - deployedObservedSince)
     end
     local rotationDue = self:isRotationDue(family, member, now) and "Y" or "N"
     local moveMeters = member.rotationMoveActive == true and math.floor(self:getRotationMoveDistanceMeters(member) + 0.5) or 0
@@ -12253,14 +12377,15 @@ function SkynetIADSSiblingCoordination:isRotationDue(family, member, now)
     local entry = self:getMobilePatrolEntry(member.element)
     local isObservedDeployed = member.currentlyObservedDeployed == true
         or self:isMSAMDeployState(entry) == true
-        or member.deployedObservedSince ~= nil
+        or self:getMemberDeploymentObservedSince(member) ~= nil
     if isObservedDeployed ~= true then
         return false
     end
-    if member.deployedObservedSince == nil then
+    local deployedObservedSince = self:getMemberDeploymentObservedSince(member)
+    if deployedObservedSince == nil then
         return false
     end
-    return (now - member.deployedObservedSince) >= (family.rotationIntervalSeconds or self.defaultRotationIntervalSeconds)
+    return (now - deployedObservedSince) >= (family.rotationIntervalSeconds or self.defaultRotationIntervalSeconds)
 end
 
 function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, primary, now)
@@ -12272,7 +12397,7 @@ function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, prim
     for i = 1, #family.members do
         local member = family.members[i]
         if member ~= primary and member.passiveMode == "standby" and self:isRotationDue(family, member, now) then
-            local observedSince = member.deployedObservedSince or now
+            local observedSince = self:getMemberDeploymentObservedSince(member) or now
             if observedSince < bestObservedSince then
                 bestMember = member
                 bestObservedSince = observedSince
@@ -12291,7 +12416,7 @@ function SkynetIADSSiblingCoordination:pickDeployedRotationCandidate(family, exc
     for i = 1, #family.members do
         local member = family.members[i]
         if member.groupName ~= excludedGroupName and self:isRotationDue(family, member, now) then
-            local observedSince = member.deployedObservedSince or now
+            local observedSince = self:getMemberDeploymentObservedSince(member) or now
             if observedSince < bestObservedSince then
                 bestMember = member
                 bestObservedSince = observedSince
@@ -12310,7 +12435,7 @@ function SkynetIADSSiblingCoordination:hasReleasedDeployedMembers(family)
         local entry = self:getMobilePatrolEntry(member.element)
         local isObservedDeployed = member.currentlyObservedDeployed == true
             or self:isMSAMDeployState(entry) == true
-            or member.deployedObservedSince ~= nil
+            or self:getMemberDeploymentObservedSince(member) ~= nil
         if isObservedDeployed == true and self:isSuppressed(member) ~= true then
             return true
         end
@@ -13146,12 +13271,9 @@ function SkynetIADSSiblingCoordination:start()
     if self.taskID ~= nil or #self.families == 0 then
         return
     end
-    self.taskID = mist.scheduleFunction(
-        SkynetIADSSiblingCoordination._tick,
-        { instanceId = self.instanceId },
-        timer.getTime() + self.checkInterval,
-        self.checkInterval
-    )
+    self.taskID = timer.scheduleFunction(function(params, time)
+        return SkynetIADSSiblingCoordination._tick(params, time)
+    end, { instanceId = self.instanceId }, timer.getTime() + self.checkInterval)
     self:log(
         "started | families=" .. tostring(#self.families)
         .. " | interval=" .. tostring(self.checkInterval) .. "s"

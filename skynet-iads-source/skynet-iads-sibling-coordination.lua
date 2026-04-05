@@ -1569,12 +1569,9 @@ function SkynetIADSSiblingCoordination:start()
     if self.taskID ~= nil or #self.families == 0 then
         return
     end
-    self.taskID = mist.scheduleFunction(
-        SkynetIADSSiblingCoordination._tick,
-        { instanceId = self.instanceId },
-        timer.getTime() + self.checkInterval,
-        self.checkInterval
-    )
+    self.taskID = timer.scheduleFunction(function(params, time)
+        return SkynetIADSSiblingCoordination._tick(params, time)
+    end, { instanceId = self.instanceId }, timer.getTime() + self.checkInterval)
     self:log(
         "started | families=" .. tostring(#self.families)
         .. " | interval=" .. tostring(self.checkInterval) .. "s"
