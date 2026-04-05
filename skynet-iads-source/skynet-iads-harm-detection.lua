@@ -3,7 +3,7 @@ do
 SkynetIADSHARMDetection = {}
 SkynetIADSHARMDetection.__index = SkynetIADSHARMDetection
 
-SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS = 400
+SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS = 600
 SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS = 10
 
 function SkynetIADSHARMDetection:create(iads)

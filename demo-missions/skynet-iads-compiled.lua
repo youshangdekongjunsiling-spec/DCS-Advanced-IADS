@@ -1,5 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-harm-evade-hold-v1 | BUILD TIME: 05.04.2026 2154Z ---")
-
+env.info("--- SKYNET VERSION: ea18g-harm-speed600 | BUILD TIME: 05.04.2026 2217Z ---")
 do
 --this file contains the required units per sam type
 samTypesDB = {	
@@ -7046,7 +7045,7 @@ do
 SkynetIADSHARMDetection = {}
 SkynetIADSHARMDetection.__index = SkynetIADSHARMDetection
 
-SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS = 400
+SkynetIADSHARMDetection.HARM_THRESHOLD_SPEED_KTS = 600
 SkynetIADSHARMDetection.DIRECT_TARGET_BACKSTOP_DELAY_SECONDS = 10
 
 function SkynetIADSHARMDetection:create(iads)
