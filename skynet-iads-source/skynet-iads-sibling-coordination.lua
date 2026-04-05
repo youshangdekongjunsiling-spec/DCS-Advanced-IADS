@@ -239,8 +239,19 @@ function SkynetIADSSiblingCoordination:traceElementCommand(element, command, det
 end
 
 function SkynetIADSSiblingCoordination:getMobilePatrolEntry(element)
+    local entry = nil
     if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
-        return SkynetIADSMobilePatrol.getEntryForElement(element)
+        entry = SkynetIADSMobilePatrol.getEntryForElement(element)
+    end
+    local member = SkynetIADSSiblingCoordination._memberByElement[element]
+    if entry ~= nil then
+        if member ~= nil then
+            member.mobileEntry = entry
+        end
+        return entry
+    end
+    if member ~= nil then
+        return member.mobileEntry
     end
     return nil
 end
@@ -1269,6 +1280,9 @@ end
 
 function SkynetIADSSiblingCoordination:releaseMember(member)
     local previousRole = member.lastRole
+    if previousRole == "released" and member.rotationMoveActive ~= true then
+        return
+    end
     member.forcedPassive = false
     member.passiveMode = nil
     member.lastRole = "released"
@@ -1281,9 +1295,6 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
         return
     end
     local entry = self:getMobilePatrolEntry(member.element)
-    if previousRole == "released" then
-        return
-    end
     if entry and entry.manager and entry.manager.beginPatrol and entry.kind == "MSAM" then
         if entry.state ~= "patrolling" then
             entry.manager:beginPatrol(entry)
@@ -1384,10 +1395,16 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
 end
 
 function SkynetIADSSiblingCoordination:tick(time)
+    local nextRunTime = timer.getTime() + self.checkInterval
     for i = 1, #self.families do
-        self:updateFamily(self.families[i])
+        local ok, err = pcall(function()
+            self:updateFamily(self.families[i])
+        end)
+        if ok ~= true then
+            self:log("tick error | familyIndex=" .. tostring(i) .. " | err=" .. tostring(err))
+        end
     end
-    return time + self.checkInterval
+    return nextRunTime
 end
 
 function SkynetIADSSiblingCoordination._tick(params, time)
@@ -1404,7 +1421,12 @@ function SkynetIADSSiblingCoordination:requestImmediateEvaluation(reason)
     end
     self._immediateEvaluationInProgress = true
     for i = 1, #self.families do
-        self:updateFamily(self.families[i])
+        local ok, err = pcall(function()
+            self:updateFamily(self.families[i])
+        end)
+        if ok ~= true then
+            self:log("immediate evaluation error | familyIndex=" .. tostring(i) .. " | err=" .. tostring(err))
+        end
     end
     self._immediateEvaluationInProgress = false
     if reason then
@@ -1464,6 +1486,7 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
             local member = {
                 groupName = groupName,
                 element = samSite,
+                mobileEntry = self:getMobilePatrolEntry(samSite),
                 family = family,
                 forcedPassive = false,
                 lastRole = "released",

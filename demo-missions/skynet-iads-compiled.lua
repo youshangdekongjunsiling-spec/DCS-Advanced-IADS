@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-mew-ew-network | BUILD TIME: 05.04.2026 0236Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-release-rotation-fix | BUILD TIME: 05.04.2026 0327Z ---")
 
 do
 --this file contains the required units per sam type
@@ -11614,7 +11614,7 @@ SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS = 10
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS = 8
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM = 1.5
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 180
-SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS = 500
+SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS = 1000
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS = 30
 
 local function setGroundROE(controller, weaponHold)
@@ -11839,8 +11839,19 @@ function SkynetIADSSiblingCoordination:traceElementCommand(element, command, det
 end
 
 function SkynetIADSSiblingCoordination:getMobilePatrolEntry(element)
+    local entry = nil
     if SkynetIADSMobilePatrol and SkynetIADSMobilePatrol.getEntryForElement then
-        return SkynetIADSMobilePatrol.getEntryForElement(element)
+        entry = SkynetIADSMobilePatrol.getEntryForElement(element)
+    end
+    local member = SkynetIADSSiblingCoordination._memberByElement[element]
+    if entry ~= nil then
+        if member ~= nil then
+            member.mobileEntry = entry
+        end
+        return entry
+    end
+    if member ~= nil then
+        return member.mobileEntry
     end
     return nil
 end
@@ -12170,6 +12181,39 @@ function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, prim
         end
     end
     return bestMember
+end
+
+function SkynetIADSSiblingCoordination:pickDeployedRotationCandidate(family, excludedGroupName, now)
+    if family == nil then
+        return nil
+    end
+    local bestMember = nil
+    local bestObservedSince = math.huge
+    for i = 1, #family.members do
+        local member = family.members[i]
+        if member.groupName ~= excludedGroupName and self:isRotationDue(family, member, now) then
+            local observedSince = member.deployedObservedSince or now
+            if observedSince < bestObservedSince then
+                bestMember = member
+                bestObservedSince = observedSince
+            end
+        end
+    end
+    return bestMember
+end
+
+function SkynetIADSSiblingCoordination:hasReleasedDeployedMembers(family)
+    if family == nil then
+        return false
+    end
+    for i = 1, #family.members do
+        local member = family.members[i]
+        local entry = self:getMobilePatrolEntry(member.element)
+        if self:isMSAMDeployState(entry) == true and self:isSuppressed(member) ~= true then
+            return true
+        end
+    end
+    return false
 end
 
 function SkynetIADSSiblingCoordination:findMemberByGroupName(family, groupName)
@@ -12836,6 +12880,9 @@ end
 
 function SkynetIADSSiblingCoordination:releaseMember(member)
     local previousRole = member.lastRole
+    if previousRole == "released" and member.rotationMoveActive ~= true then
+        return
+    end
     member.forcedPassive = false
     member.passiveMode = nil
     member.lastRole = "released"
@@ -12909,6 +12956,26 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
         return
     end
 
+    local now = timer.getTime()
+    local hasReleasedDeployedMembers = self:hasReleasedDeployedMembers(family)
+    if family.rotationActiveGroupName ~= nil or hasReleasedDeployedMembers == true then
+        if family.rotationActiveGroupName == nil and (family.rotationCooldownUntil or 0) <= now then
+            local rotatingMember = self:pickDeployedRotationCandidate(family, nil, now)
+            if rotatingMember ~= nil then
+                local coverMember = self:pickCoverMember(family, rotatingMember.groupName)
+                self:startRotation(family, rotatingMember, coverMember, "released_standby_rotate")
+            end
+        end
+        self:clearSuppressedSwitchLock(family)
+        self:clearPrimarySelectionLock(family)
+        family.activeGroupName = nil
+        family.activeReason = nil
+        for i = 1, #family.members do
+            self:setPassiveMember(family, family.members[i])
+        end
+        return
+    end
+
     if family.activeGroupName ~= nil then
         self:log("Family released | family=" .. family.name)
     end
@@ -12928,10 +12995,16 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
 end
 
 function SkynetIADSSiblingCoordination:tick(time)
+    local nextRunTime = timer.getTime() + self.checkInterval
     for i = 1, #self.families do
-        self:updateFamily(self.families[i])
+        local ok, err = pcall(function()
+            self:updateFamily(self.families[i])
+        end)
+        if ok ~= true then
+            self:log("tick error | familyIndex=" .. tostring(i) .. " | err=" .. tostring(err))
+        end
     end
-    return time + self.checkInterval
+    return nextRunTime
 end
 
 function SkynetIADSSiblingCoordination._tick(params, time)
@@ -12948,7 +13021,12 @@ function SkynetIADSSiblingCoordination:requestImmediateEvaluation(reason)
     end
     self._immediateEvaluationInProgress = true
     for i = 1, #self.families do
-        self:updateFamily(self.families[i])
+        local ok, err = pcall(function()
+            self:updateFamily(self.families[i])
+        end)
+        if ok ~= true then
+            self:log("immediate evaluation error | familyIndex=" .. tostring(i) .. " | err=" .. tostring(err))
+        end
     end
     self._immediateEvaluationInProgress = false
     if reason then
@@ -13008,6 +13086,7 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
             local member = {
                 groupName = groupName,
                 element = samSite,
+                mobileEntry = self:getMobilePatrolEntry(samSite),
                 family = family,
                 forcedPassive = false,
                 lastRole = "released",
