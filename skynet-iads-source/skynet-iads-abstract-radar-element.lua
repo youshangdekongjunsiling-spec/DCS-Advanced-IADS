@@ -11,6 +11,8 @@ SkynetIADSAbstractRadarElement.GO_LIVE_WHEN_IN_SEARCH_RANGE = 2
 
 SkynetIADSAbstractRadarElement.HARM_TO_SAM_ASPECT = 5
 SkynetIADSAbstractRadarElement.HARM_LOOKAHEAD_NM = 20
+SkynetIADSAbstractRadarElement.HARM_EVADE_HOLD_TICK_SECONDS = 0.5
+SkynetIADSAbstractRadarElement.HARM_EVADE_HOLD_SAFETY_BUFFER_SECONDS = 2
 
 function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	local instance = self:superClass():create(dcsElementWithRadar, iads)
@@ -52,6 +54,14 @@ function SkynetIADSAbstractRadarElement:create(dcsElementWithRadar, iads)
 	instance.harmRelocationMinimumCompletionMeters = 0
 	instance.harmReactionCooldownSeconds = 3
 	instance.harmReactionLockUntil = 0
+	instance.harmEvadeHoldID = nil
+	instance.harmEvadeHoldImpactTime = 0
+	instance.harmEvadeHoldStartTime = 0
+	instance.harmEvadeHoldContact = nil
+	instance.harmEvadeHoldLastMissileTTI = nil
+	instance.harmEvadeHoldLastTargetName = nil
+	instance.harmEvadeHoldSafetyBufferSeconds = SkynetIADSAbstractRadarElement.HARM_EVADE_HOLD_SAFETY_BUFFER_SECONDS
+	instance.harmEvadeHoldTickSeconds = SkynetIADSAbstractRadarElement.HARM_EVADE_HOLD_TICK_SECONDS
 	instance.firingRangePercent = 100
 	instance.actAsEW = false
 	instance.cachedTargets = {}
@@ -119,6 +129,7 @@ function SkynetIADSAbstractRadarElement:cleanUp()
 	end
 	mist.removeFunction(self.harmScanID)
 	mist.removeFunction(self.harmSilenceID)
+	mist.removeFunction(self.harmEvadeHoldID)
 	--call method from super class
 	--调用父类方法
 	self:removeEventHandlers()
@@ -1162,6 +1173,274 @@ function SkynetIADSAbstractRadarElement:isDefendingHARM()
 	return self.harmSilenceID ~= nil
 end
 
+function SkynetIADSAbstractRadarElement:isHoldingHARMEvade()
+	return self.harmEvadeHoldID ~= nil
+end
+
+function SkynetIADSAbstractRadarElement:getHARMEvadeHoldRemainingSeconds()
+	if self.harmEvadeHoldImpactTime == nil or self.harmEvadeHoldImpactTime <= 0 then
+		return 0
+	end
+	return math.max(0, self.harmEvadeHoldImpactTime - timer.getTime())
+end
+
+function SkynetIADSAbstractRadarElement:clearHARMEvadeHold()
+	if self.harmEvadeHoldID ~= nil then
+		mist.removeFunction(self.harmEvadeHoldID)
+	end
+	self.harmEvadeHoldID = nil
+	self.harmEvadeHoldImpactTime = 0
+	self.harmEvadeHoldStartTime = 0
+	self.harmEvadeHoldContact = nil
+	self.harmEvadeHoldLastMissileTTI = nil
+	self.harmEvadeHoldLastTargetName = nil
+end
+
+function SkynetIADSAbstractRadarElement:getHARMEvadeHoldFallbackTarget()
+	local mobilePatrolClass = rawget(_G, "SkynetIADSMobilePatrol")
+	if mobilePatrolClass and mobilePatrolClass.getEntryForElement then
+		local okEntry, entry = pcall(function()
+			return mobilePatrolClass.getEntryForElement(self)
+		end)
+		if okEntry and entry and entry.lastThreatContact and entry.lastThreatContact.isExist and entry.lastThreatContact:isExist() then
+			return entry.lastThreatContact
+		end
+	end
+	local detectedTargets = self:getDetectedTargets()
+	for i = 1, #detectedTargets do
+		local contact = detectedTargets[i]
+		if contact and contact.isExist and contact:isExist() and contact:isIdentifiedAsHARM() ~= true then
+			return contact
+		end
+	end
+	return nil
+end
+
+function SkynetIADSAbstractRadarElement:estimateBestMissileInterceptTTI(fallbackContact)
+	local bestTTI = nil
+	local bestTargetName = nil
+	for i = 1, #self.missilesInFlight do
+		local missile = self.missilesInFlight[i]
+		if missile and missile.isExist and missile:isExist() then
+			local missilePoint = nil
+			local missileVelocity = nil
+			pcall(function()
+				missilePoint = missile:getPoint()
+			end)
+			pcall(function()
+				missileVelocity = missile:getVelocity()
+			end)
+			if missilePoint ~= nil and missileVelocity ~= nil then
+				local speedMps = math.sqrt(
+					(missileVelocity.x or 0) * (missileVelocity.x or 0)
+					+ (missileVelocity.y or 0) * (missileVelocity.y or 0)
+					+ (missileVelocity.z or 0) * (missileVelocity.z or 0)
+				)
+				if speedMps > 1 then
+					local targetObject = nil
+					local targetPoint = nil
+					local targetName = nil
+					pcall(function()
+						targetObject = Weapon.getTarget(missile)
+					end)
+					if targetObject and targetObject.isExist and targetObject:isExist() then
+						pcall(function()
+							targetPoint = targetObject:getPoint()
+						end)
+						pcall(function()
+							targetName = targetObject:getName()
+						end)
+					elseif fallbackContact and fallbackContact.isExist and fallbackContact:isExist() then
+						targetPoint = fallbackContact:getPosition().p
+						targetName = fallbackContact.getName and fallbackContact:getName() or nil
+					end
+					if targetPoint ~= nil then
+						local distanceMeters = mist.utils.get3DDist(missilePoint, targetPoint)
+						if distanceMeters ~= nil and distanceMeters >= 0 then
+							local tti = distanceMeters / speedMps
+							if bestTTI == nil or tti < bestTTI then
+								bestTTI = tti
+								bestTargetName = targetName
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	return bestTTI, bestTargetName
+end
+
+function SkynetIADSAbstractRadarElement:updateHARMEvadeHold(secondsToImpact, harmContact)
+	local now = timer.getTime()
+	if secondsToImpact ~= nil and secondsToImpact >= 0 then
+		local impactTime = now + secondsToImpact
+		if self.harmEvadeHoldImpactTime == nil or self.harmEvadeHoldImpactTime <= 0 or impactTime < self.harmEvadeHoldImpactTime then
+			self.harmEvadeHoldImpactTime = impactTime
+		end
+	end
+	if harmContact ~= nil then
+		self.harmEvadeHoldContact = harmContact
+	end
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_evade_hold_tick", {
+			event = "decision",
+			outcome = "holding",
+			holdReason = "updated_harm_tti",
+			harmTTI = mist.utils.round(self:getHARMEvadeHoldRemainingSeconds(), 1),
+			samInterceptTTI = self.harmEvadeHoldLastMissileTTI and mist.utils.round(self.harmEvadeHoldLastMissileTTI, 1) or nil,
+			releaseReason = nil,
+			safetyMarginPassed = "Y",
+			note = "target=" .. tostring(self.harmEvadeHoldLastTargetName or "unknown"),
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "updateHARMEvadeHold",
+		})
+	end
+	return true
+end
+
+function SkynetIADSAbstractRadarElement:tryStartHARMEvadeHold(secondsToImpact, harmContact)
+	if secondsToImpact == nil or secondsToImpact <= 0 then
+		return false
+	end
+	if self:hasMissilesInFlight() ~= true then
+		return false
+	end
+	if self:isDefendingHARM() == true or self.harmRelocationInProgress == true then
+		return false
+	end
+	if self:isHoldingHARMEvade() == true then
+		return self:updateHARMEvadeHold(secondsToImpact, harmContact)
+	end
+	local fallbackContact = self:getHARMEvadeHoldFallbackTarget()
+	local samInterceptTTI, targetName = self:estimateBestMissileInterceptTTI(fallbackContact)
+	if samInterceptTTI == nil then
+		return false
+	end
+	local safetyBuffer = self.harmEvadeHoldSafetyBufferSeconds or SkynetIADSAbstractRadarElement.HARM_EVADE_HOLD_SAFETY_BUFFER_SECONDS
+	if samInterceptTTI + safetyBuffer >= secondsToImpact then
+		return false
+	end
+	local now = timer.getTime()
+	self.harmEvadeHoldImpactTime = now + secondsToImpact
+	self.harmEvadeHoldStartTime = now
+	self.harmEvadeHoldContact = harmContact
+	self.harmEvadeHoldLastMissileTTI = samInterceptTTI
+	self.harmEvadeHoldLastTargetName = targetName
+	self.harmEvadeHoldID = mist.scheduleFunction(
+		SkynetIADSAbstractRadarElement.evaluateHARMEvadeHold,
+		{self},
+		now + self.harmEvadeHoldTickSeconds,
+		self.harmEvadeHoldTickSeconds
+	)
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_evade_hold_start", {
+			event = "decision",
+			outcome = "started",
+			holdReason = "missile_can_hit_before_harm",
+			harmTTI = mist.utils.round(secondsToImpact, 1),
+			samInterceptTTI = mist.utils.round(samInterceptTTI, 1),
+			releaseReason = nil,
+			safetyMarginPassed = "Y",
+			note = "target=" .. tostring(targetName or "unknown"),
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "tryStartHARMEvadeHold",
+		})
+	end
+	return true
+end
+
+function SkynetIADSAbstractRadarElement:releaseHARMEvadeHoldAndEvade(releaseReason)
+	local remainingTTI = self:getHARMEvadeHoldRemainingSeconds()
+	local lastMissileTTI = self.harmEvadeHoldLastMissileTTI
+	local targetName = self.harmEvadeHoldLastTargetName
+	self:clearHARMEvadeHold()
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_evade_hold_release", {
+			event = "decision",
+			outcome = "release_to_evade",
+			holdReason = nil,
+			harmTTI = mist.utils.round(remainingTTI, 1),
+			samInterceptTTI = lastMissileTTI and mist.utils.round(lastMissileTTI, 1) or nil,
+			releaseReason = releaseReason,
+			safetyMarginPassed = releaseReason == "safety_margin_lost" and "N" or "Y",
+			note = "target=" .. tostring(targetName or "unknown"),
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "releaseHARMEvadeHoldAndEvade",
+		})
+	end
+	self:goSilentToEvadeHARM(remainingTTI)
+end
+
+function SkynetIADSAbstractRadarElement.abortHARMEvadeHold(self, abortReason)
+	local remainingTTI = self:getHARMEvadeHoldRemainingSeconds()
+	local lastMissileTTI = self.harmEvadeHoldLastMissileTTI
+	local targetName = self.harmEvadeHoldLastTargetName
+	self:clearHARMEvadeHold()
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_evade_hold_abort", {
+			event = "decision",
+			outcome = "aborted",
+			holdReason = nil,
+			harmTTI = mist.utils.round(remainingTTI, 1),
+			samInterceptTTI = lastMissileTTI and mist.utils.round(lastMissileTTI, 1) or nil,
+			releaseReason = abortReason,
+			safetyMarginPassed = nil,
+			note = "target=" .. tostring(targetName or "unknown"),
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "abortHARMEvadeHold",
+		})
+	end
+end
+
+function SkynetIADSAbstractRadarElement.evaluateHARMEvadeHold(self)
+	if self.harmEvadeHoldID == nil then
+		return
+	end
+	if self:isDestroyed() == true then
+		SkynetIADSAbstractRadarElement.abortHARMEvadeHold(self, "site_destroyed")
+		return
+	end
+	local harmContact = self.harmEvadeHoldContact
+	if harmContact == nil or harmContact.isExist == nil or harmContact:isExist() ~= true then
+		SkynetIADSAbstractRadarElement.abortHARMEvadeHold(self, "harm_lost")
+		return
+	end
+	self:updateMissilesInFlight()
+	local harmRemaining = self:getHARMEvadeHoldRemainingSeconds()
+	if self:hasMissilesInFlight() ~= true then
+		self:releaseHARMEvadeHoldAndEvade("missile_flight_complete")
+		return
+	end
+	local fallbackContact = self:getHARMEvadeHoldFallbackTarget()
+	local samInterceptTTI, targetName = self:estimateBestMissileInterceptTTI(fallbackContact)
+	if samInterceptTTI == nil then
+		self:releaseHARMEvadeHoldAndEvade("target_lost")
+		return
+	end
+	self.harmEvadeHoldLastMissileTTI = samInterceptTTI
+	self.harmEvadeHoldLastTargetName = targetName
+	local safetyBuffer = self.harmEvadeHoldSafetyBufferSeconds or SkynetIADSAbstractRadarElement.HARM_EVADE_HOLD_SAFETY_BUFFER_SECONDS
+	if harmRemaining <= 0 or (samInterceptTTI + safetyBuffer) >= harmRemaining then
+		self:releaseHARMEvadeHoldAndEvade("safety_margin_lost")
+		return
+	end
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "harm_evade_hold_tick", {
+			event = "decision",
+			outcome = "holding",
+			holdReason = "missile_guidance_active",
+			harmTTI = mist.utils.round(harmRemaining, 1),
+			samInterceptTTI = mist.utils.round(samInterceptTTI, 1),
+			releaseReason = nil,
+			safetyMarginPassed = "Y",
+			note = "target=" .. tostring(targetName or "unknown"),
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "evaluateHARMEvadeHold",
+		})
+	end
+end
+
 function SkynetIADSAbstractRadarElement:stopScanningForHARMs()
 	mist.removeFunction(self.harmScanID)
 	self.harmScanID = nil
@@ -1388,6 +1667,9 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 			and (self:isDefendingHARM() == false or (self:getHARMShutdownTime() < secondsToImpact))
 		local shouldIgnoreShutdown = mobileMoveFireCapable ~= true and self:shallIgnoreHARMShutdown() == true
 		if canReactToHARM and shouldIgnoreShutdown == false then
+			if self:tryStartHARMEvadeHold(secondsToImpact, harmContact) == true then
+				return
+			end
 			self:goSilentToEvadeHARM(secondsToImpact)
 		elseif shouldIgnoreShutdown and self.iads and self.iads.traceElementCommand then
 			self.iads:traceElementCommand(self, "harm_ignore_engage_capable", {
@@ -1434,6 +1716,9 @@ function SkynetIADSAbstractRadarElement:informOfHARM(harmContact)
 						and (self:isDefendingHARM() == false or (self:getHARMShutdownTime() < secondsToImpact))
 					local shouldIgnoreShutdown = mobileMoveFireCapable ~= true and self:shallIgnoreHARMShutdown() == true
 					if canReactToHARM and shouldIgnoreShutdown == false then
+						if self:tryStartHARMEvadeHold(secondsToImpact, harmContact) == true then
+							break
+						end
 						self:goSilentToEvadeHARM(secondsToImpact)
 						break
 					elseif shouldIgnoreShutdown and self.iads and self.iads.traceElementCommand then
