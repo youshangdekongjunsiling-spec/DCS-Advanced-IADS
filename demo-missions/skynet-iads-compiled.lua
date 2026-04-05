@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-rotation-progress-15s | BUILD TIME: 05.04.2026 0359Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-rotation-progress-fallback | BUILD TIME: 05.04.2026 1303Z ---")
 
 do
 --this file contains the required units per sam type
@@ -11806,6 +11806,19 @@ function SkynetIADSSiblingCoordination:notifyDebug(message)
     end
 end
 
+function SkynetIADSSiblingCoordination:broadcastProgress(message)
+    if message == nil then
+        return
+    end
+    if _G.SkynetRuntimeDebugNotify then
+        pcall(_G.SkynetRuntimeDebugNotify, message)
+        return
+    end
+    if trigger and trigger.action and trigger.action.outText then
+        pcall(trigger.action.outText, "[SKYNET DBG] " .. tostring(message), 8)
+    end
+end
+
 function SkynetIADSSiblingCoordination:withOrderTraceOrigin(details, functionName)
     local payload = {}
     if details then
@@ -12195,7 +12208,7 @@ function SkynetIADSSiblingCoordination:formatRotationProgressMember(family, memb
 end
 
 function SkynetIADSSiblingCoordination:reportFamilyRotationProgress(family, now)
-    if family == nil or _G.SkynetRuntimeDebugNotify == nil then
+    if family == nil then
         return
     end
     local interval = family.debugProgressIntervalSeconds or self.defaultDebugProgressIntervalSeconds
@@ -12216,14 +12229,14 @@ function SkynetIADSSiblingCoordination:reportFamilyRotationProgress(family, now)
         self:hasReleasedDeployedMembers(family) and "Y" or "N",
         tostring(roundSeconds((family.rotationCooldownUntil or 0) - now))
     )
-    self:notifyDebug(header)
     self:log("progress | " .. header)
+    self:broadcastProgress(header)
 
     for i = 1, #family.members do
         local line = self:formatRotationProgressMember(family, family.members[i], now)
         if line ~= nil then
-            self:notifyDebug(line)
             self:log("progress | family=" .. family.name .. " | " .. line)
+            self:broadcastProgress(line)
         end
     end
 end
