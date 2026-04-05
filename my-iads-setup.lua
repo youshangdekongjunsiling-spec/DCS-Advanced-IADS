@@ -29,10 +29,12 @@ local ENABLE_MOBILE_PATROL = true
 local ENABLE_EWR_REPORTER = true
 local ENABLE_SIBLING_COORDINATION = true
 local ENABLE_TACTICAL_RUNTIME_DEBUG = true
+local ENABLE_GPS_SPOOFING = true
 local TACTICAL_RUNTIME_DEBUG_DURATION_SECONDS = 8
 local MobilePatrolModule = SkynetIADSMobilePatrol or MobileIADSPatrol
 local EWRReporterModule = SkynetIADSEWRReporter
 local SiblingCoordinationModule = SkynetIADSSiblingCoordination
+local GPS_SPOOFER_TYPE_NAMES = { "GPS_Spoofer_Red", "GPS_Spoofer_Blue" }
 local EWR_REPORT_INTERVAL_SECONDS = 15
 local EWR_REPORT_DURATION_SECONDS = 8
 local EWR_REPORT_MAX_CONTACTS = 3
@@ -41,19 +43,21 @@ local EWR_REPORT_DEBUG_ALL_PLAYERS = true
 local SIBLING_FAMILIES = {
     {
         name = "MSAM ambush pair 1",
-        members = { "MSAM-1", "MSAM-2" },
+        members = { "MSAM-1-叙利亚防空军第二防空旅第一营", "MSAM-2-叙利亚防空军第二防空旅第一营" },
         mode = "ambush", -- ambush | denial
-        primary = "MSAM-1",
+        primary = "MSAM-1-叙利亚防空军第二防空旅第一营",
         denialAlertDistanceNm = 25,
         passiveAction = "relocate",
+        rotationIntervalSeconds = 120,
     },
     {
         name = "MSAM ambush pair 2",
-        members = { "MSAM-3", "MSAM-4" },
+        members = { "MSAM-3-叙利亚防空军第二防空旅第二营", "MSAM-4-叙利亚防空军第二防空旅第二营" },
         mode = "ambush", -- ambush | denial
-        primary = "MSAM-3",
-        denialAlertDistanceNm = 25,
+        primary = "MSAM-3-叙利亚防空军第二防空旅第二营",
+        denialAlertDistanceNm = 25, -- 25nm | 50nm
         passiveAction = "relocate",
+        rotationIntervalSeconds = 120,
     },
 }
 
@@ -94,6 +98,85 @@ local function startsWithAnyPrefix(value, prefixes)
         end
     end
     return false
+end
+
+local function pruneUnexpectedSAMSites(iads, prefixes)
+    if iads == nil or iads.samSites == nil then
+        return 0, ""
+    end
+    local keptSites = {}
+    local removedNames = {}
+    for i = 1, #iads.samSites do
+        local samSite = iads.samSites[i]
+        local okName, groupName = pcall(function()
+            return samSite:getDCSName()
+        end)
+        if okName and groupName and startsWithAnyPrefix(groupName, prefixes) then
+            keptSites[#keptSites + 1] = samSite
+        else
+            removedNames[#removedNames + 1] = groupName or ("sam-site-" .. tostring(i))
+            pcall(function()
+                samSite:goDark()
+            end)
+        end
+    end
+    iads.samSites = keptSites
+    return #removedNames, table.concat(removedNames, ", ")
+end
+
+local function isSA15LikeSamSite(samSite)
+    if samSite == nil then
+        return false
+    end
+    local okNato, natoName = pcall(function()
+        return samSite:getNatoName()
+    end)
+    if okNato and natoName and string.find(tostring(natoName), "SA%-15") then
+        return true
+    end
+    local okGroup, groupName = pcall(function()
+        return samSite:getDCSName()
+    end)
+    if okGroup and groupName and string.find(tostring(groupName), "SAM%-13", 1, true) then
+        return true
+    end
+    return false
+end
+
+local function disableSA15HARMIntercept(iads)
+    if iads == nil or iads.samSites == nil then
+        return 0, ""
+    end
+    local changedNames = {}
+    for i = 1, #iads.samSites do
+        local samSite = iads.samSites[i]
+        if isSA15LikeSamSite(samSite) then
+            pcall(function()
+                samSite.dataBaseSupportedTypesCanEngageHARM = false
+            end)
+            local okDisable = pcall(function()
+                samSite:setCanEngageHARM(false)
+            end)
+            if okDisable then
+                local okName, groupName = pcall(function()
+                    return samSite:getDCSName()
+                end)
+                changedNames[#changedNames + 1] = groupName or ("sam-site-" .. tostring(i))
+            end
+        end
+    end
+    return #changedNames, table.concat(changedNames, ", ")
+end
+
+local originalMissionAddSAMSite = SkynetIADS.addSAMSite
+SkynetIADS.addSAMSite = function(self, samSiteName)
+    if self == redIADS and startsWithAnyPrefix(tostring(samSiteName or ""), SAM_PREFIXES) == false then
+        if self.printOutputToLog then
+            self:printOutputToLog("mission filter skipped non-prefixed SAM group: " .. tostring(samSiteName), false)
+        end
+        return nil
+    end
+    return originalMissionAddSAMSite(self, samSiteName)
 end
 
 local function groupHasUnitWithAnyPrefix(group, prefixes)
@@ -149,7 +232,7 @@ local function countMobileGroupCandidates(prefix)
     local names = {}
     for groupName, _ in pairs(mist.DBs.groupsByName) do
         local group = Group.getByName(groupName)
-        if group and group:isExist() and (string.find(groupName, prefix, 1, true) == 1 or groupHasUnitWithAnyPrefix(group, { prefix })) then
+        if group and group:isExist() and string.find(groupName, prefix, 1, true) == 1 then
             count = count + 1
             names[#names + 1] = groupName
         end
@@ -178,8 +261,7 @@ local function getRegisteredSAMNamesByPrefix(iads, prefix)
     for i = 1, #samSites do
         local samSite = samSites[i]
         local groupName = samSite:getDCSName()
-        local group = Group.getByName(groupName)
-        if string.find(groupName, prefix, 1, true) == 1 or groupHasUnitWithAnyPrefix(group, { prefix }) then
+        if string.find(groupName, prefix, 1, true) == 1 then
             names[#names + 1] = groupName
         end
     end
@@ -210,7 +292,7 @@ local function addSAMSitesByPrefixes(iads, prefixes)
     local failedDetails = {}
     for groupName, _ in pairs(mist.DBs.groupsByName) do
         local group = Group.getByName(groupName)
-        if group and group:isExist() and (startsWithAnyPrefix(groupName, prefixes) or groupHasUnitWithAnyPrefix(group, prefixes)) then
+        if group and group:isExist() and startsWithAnyPrefix(groupName, prefixes) then
             matchedCandidates = matchedCandidates + 1
             matchedNames[#matchedNames + 1] = groupName
             local beforeCount = #iads.samSites
@@ -229,6 +311,7 @@ end
 
 addEarlyWarningRadarsByPrefixes(redIADS, EW_PREFIXES)
 local matchedSAMCandidates, registeredSAMSites, matchedSAMNames, registeredSAMNames, failedSAMNames, failedSAMDetails = addSAMSitesByPrefixes(redIADS, SAM_PREFIXES)
+local prunedUnexpectedSAMCount, prunedUnexpectedSAMNames = pruneUnexpectedSAMSites(redIADS, SAM_PREFIXES)
 local mobileSAMCandidateCount, mobileSAMCandidateNames = countMobileGroupCandidates(MOBILE_SAM_PREFIX)
 local mobileEWCandidateCount, mobileEWCandidateNames = countMobileUnitCandidates(MOBILE_EW_PREFIX)
 
@@ -237,6 +320,31 @@ if ENABLE_RADIO_MENU then
 end
 
 redIADS:activate()
+
+if ENABLE_GPS_SPOOFING and redIADS.enableGPSSpoofing then
+    local gpsSpoofer = redIADS:enableGPSSpoofing({
+        spoofRadiusNm = 40,
+        offsetMinMeters = 50,
+        offsetMaxMeters = 200,
+        checkIntervalSeconds = 0.5,
+        terminalAglMeters = 180,
+        terminalDistanceMeters = 450,
+        spoofTimeoutSeconds = 180,
+        spooferTypeNames = GPS_SPOOFER_TYPE_NAMES,
+    })
+    local registeredSpoofers, registeredSpooferNames = gpsSpoofer:registerBySpooferTypeNames(GPS_SPOOFER_TYPE_NAMES)
+    trigger.action.outText("my-iads-setup: GPS spoofing active | spoofers=" .. registeredSpoofers .. " | radius=40nm", 10)
+    if registeredSpooferNames ~= "" then
+        trigger.action.outText("my-iads-setup: GPS spoofers -> " .. registeredSpooferNames, 15)
+    end
+elseif ENABLE_GPS_SPOOFING then
+    trigger.action.outText("my-iads-setup: GPS spoofing module missing | reselect latest skynet-iads-compiled-ea18g.lua in Mission Editor", 15)
+end
+
+local disabledSA15HARMInterceptCount, disabledSA15HARMInterceptNames = disableSA15HARMIntercept(redIADS)
+if disabledSA15HARMInterceptCount > 0 then
+    trigger.action.outText("my-iads-setup: SA-15 HARM intercept disabled -> " .. disabledSA15HARMInterceptNames, 10)
+end
 
 if ENABLE_MOBILE_PATROL and MobilePatrolModule then
     _G.redIADSMobilePatrol = MobilePatrolModule.create(redIADS, {
@@ -247,7 +355,11 @@ if ENABLE_MOBILE_PATROL and MobilePatrolModule then
     })
     local registeredMobileSAMNames = getRegisteredSAMNamesByPrefix(redIADS, MOBILE_SAM_PREFIX)
     _G.redIADSMobilePatrol:start()
+    local disabledMobileSA15HARMInterceptCount, disabledMobileSA15HARMInterceptNames = disableSA15HARMIntercept(redIADS)
     trigger.action.outText("my-iads-setup: mobile patrol active | MSAM=" .. registeredSAM .. " | MEW=" .. registeredEW, 10)
+    if disabledMobileSA15HARMInterceptCount > 0 then
+        trigger.action.outText("my-iads-setup: SA-15 HARM intercept disabled after mobile patrol -> " .. disabledMobileSA15HARMInterceptNames, 10)
+    end
     if registeredMobileSAMNames ~= "" then
         trigger.action.outText("my-iads-setup: registered MSAM sites -> " .. registeredMobileSAMNames, 15)
     end
@@ -267,6 +379,7 @@ if ENABLE_SIBLING_COORDINATION and SiblingCoordinationModule then
         defaultPassiveAction = "hold_dark",
         defaultMode = "ambush",
         defaultDenialAlertDistanceNm = 25,
+        defaultRotationIntervalSeconds = 120,
     })
     local registeredSiblingFamilies, registeredSiblingMembers = _G.redIADSSiblingCoordination:registerFamilies(SIBLING_FAMILIES)
     if registeredSiblingFamilies > 0 then
@@ -318,6 +431,9 @@ trigger.action.outText("my-iads-setup: IADS active, jammer polling enabled", 10)
 trigger.action.outText("my-iads-setup: SAM candidates=" .. matchedSAMCandidates .. " | registered=" .. registeredSAMSites, 10)
 if matchedSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM matched -> " .. matchedSAMNames, 15)
+end
+if prunedUnexpectedSAMCount > 0 then
+    trigger.action.outText("my-iads-setup: pruned non-prefixed SAM groups -> " .. prunedUnexpectedSAMNames, 15)
 end
 if registeredSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM registered -> " .. registeredSAMNames, 15)
