@@ -13,6 +13,9 @@ SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM = 25
 SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS = 10
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS = 8
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM = 1.5
+SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 180
+SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS = 500
+SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS = 30
 
 local function setGroundROE(controller, weaponHold)
     pcall(function()
@@ -242,6 +245,12 @@ function SkynetIADSSiblingCoordination:getMobilePatrolEntry(element)
     return nil
 end
 
+function SkynetIADSSiblingCoordination:isMSAMDeployState(entry)
+    return entry ~= nil
+        and entry.kind == "MSAM"
+        and (entry.state == "deployed" or entry.state == "deploy_scattering")
+end
+
 function SkynetIADSSiblingCoordination:isSuppressed(member)
     local element = member.element
     return element.harmSilenceID ~= nil or element.harmRelocationInProgress == true
@@ -357,6 +366,210 @@ function SkynetIADSSiblingCoordination:canParticipate(member)
         and element:hasWorkingPowerSource()
         and element:hasRemainingAmmo()
         and self:hasLiveRadarUnits(member)
+end
+
+function SkynetIADSSiblingCoordination:refreshMemberDeploymentObserved(member, now)
+    if member == nil then
+        return nil, false
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    local deployed = self:isMSAMDeployState(entry) and self:isSuppressed(member) ~= true
+    if deployed then
+        if member.deployedObservedSince == nil then
+            member.deployedObservedSince = now
+        end
+    else
+        member.deployedObservedSince = nil
+    end
+    return entry, deployed
+end
+
+function SkynetIADSSiblingCoordination:getRotationMoveDistanceMeters(member)
+    if member == nil or member.rotationMoveStartPoint == nil then
+        return 0
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry == nil or entry.manager == nil or entry.manager.getPatrolReferencePoint == nil then
+        return 0
+    end
+    local currentPoint = entry.manager:getPatrolReferencePoint(entry)
+    if currentPoint == nil then
+        return 0
+    end
+    return mist.utils.get2DDist(currentPoint, member.rotationMoveStartPoint)
+end
+
+function SkynetIADSSiblingCoordination:clearRotationState(family, member)
+    if member ~= nil then
+        member.rotationMoveActive = false
+        member.rotationMoveStartPoint = nil
+        member.rotationStartedAt = nil
+        member.rotationReason = nil
+    end
+    if family ~= nil then
+        family.rotationActiveGroupName = nil
+        family.rotationCoverGroupName = nil
+        family.rotationStartedAt = nil
+    end
+end
+
+function SkynetIADSSiblingCoordination:finishRotation(family, member, outcome, note)
+    if family == nil or member == nil then
+        return
+    end
+    local movedMeters = mist.utils.round(self:getRotationMoveDistanceMeters(member), 1)
+    self:traceElementCommand(member.element, outcome == "complete" and "family_rotation_complete" or "family_rotation_abort", {
+        outcome = outcome,
+        source = "family_rotation",
+        family = family.name,
+        familyMode = family.mode,
+        familyRole = member.lastRole or "passive",
+        coverGroup = family.rotationCoverGroupName,
+        movedMeters = movedMeters,
+        rotationReason = member.rotationReason,
+        rotationMinMoveMeters = family.rotationMinMoveMeters,
+        rotationIntervalSeconds = family.rotationIntervalSeconds,
+        note = note,
+    }, "finishRotation")
+    self:log(
+        "rotation " .. tostring(outcome)
+        .. " | family=" .. family.name
+        .. " | group=" .. member.groupName
+        .. " | moved=" .. tostring(movedMeters) .. "m"
+        .. " | cover=" .. tostring(family.rotationCoverGroupName)
+        .. " | reason=" .. tostring(member.rotationReason)
+        .. (note and (" | note=" .. tostring(note)) or "")
+    )
+    if outcome == "complete" then
+        self:notifyDebug(member.groupName .. " rotation complete | family=" .. family.name)
+    elseif note ~= "family_released" then
+        self:notifyDebug(member.groupName .. " rotation abort | family=" .. family.name .. " | note=" .. tostring(note))
+    end
+    self:clearRotationState(family, member)
+    family.rotationCooldownUntil = timer.getTime() + (family.rotationCooldownSeconds or self.defaultRotationCooldownSeconds)
+end
+
+function SkynetIADSSiblingCoordination:startRotation(family, member, coverMember, reason)
+    if family == nil or member == nil then
+        return false
+    end
+    if family.rotationActiveGroupName ~= nil and family.rotationActiveGroupName ~= member.groupName then
+        return false
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry == nil or entry.manager == nil or entry.manager.getPatrolReferencePoint == nil then
+        return false
+    end
+    local startPoint = entry.manager:getPatrolReferencePoint(entry)
+    member.rotationMoveActive = true
+    member.rotationMoveStartPoint = startPoint and mist.utils.deepCopy(startPoint) or nil
+    member.rotationStartedAt = timer.getTime()
+    member.rotationReason = reason
+    family.rotationActiveGroupName = member.groupName
+    family.rotationCoverGroupName = coverMember and coverMember.groupName or nil
+    family.rotationStartedAt = timer.getTime()
+    self:traceElementCommand(member.element, "family_rotation_start", {
+        outcome = "issued",
+        source = "family_rotation",
+        family = family.name,
+        familyMode = family.mode,
+        familyRole = member.lastRole or "passive",
+        coverGroup = family.rotationCoverGroupName,
+        rotationReason = reason,
+        rotationMinMoveMeters = family.rotationMinMoveMeters,
+        rotationIntervalSeconds = family.rotationIntervalSeconds,
+    }, "startRotation")
+    if coverMember and coverMember.element then
+        self:traceElementCommand(coverMember.element, "family_rotation_cover_takeover", {
+            outcome = "issued",
+            source = "family_rotation",
+            family = family.name,
+            familyMode = family.mode,
+            familyRole = "primary",
+            coverGroup = member.groupName,
+            rotationReason = reason,
+            rotationMinMoveMeters = family.rotationMinMoveMeters,
+            rotationIntervalSeconds = family.rotationIntervalSeconds,
+        }, "startRotation")
+    end
+    self:log(
+        "rotation start | family=" .. family.name
+        .. " | rotate=" .. member.groupName
+        .. " | cover=" .. tostring(family.rotationCoverGroupName)
+        .. " | reason=" .. tostring(reason)
+        .. " | minMove=" .. tostring(family.rotationMinMoveMeters) .. "m"
+        .. " | interval=" .. tostring(family.rotationIntervalSeconds) .. "s"
+    )
+    self:notifyDebug(member.groupName .. " rotate out | family=" .. family.name)
+    if coverMember and coverMember.groupName ~= nil then
+        self:notifyDebug(coverMember.groupName .. " cover active | family=" .. family.name)
+    end
+    return true
+end
+
+function SkynetIADSSiblingCoordination:refreshFamilyRotation(family)
+    if family == nil then
+        return
+    end
+    local now = timer.getTime()
+    for i = 1, #family.members do
+        self:refreshMemberDeploymentObserved(family.members[i], now)
+    end
+    local rotatingMember = self:findMemberByGroupName(family, family.rotationActiveGroupName)
+    if rotatingMember == nil then
+        if family.rotationActiveGroupName ~= nil then
+            self:clearRotationState(family, nil)
+        end
+        return
+    end
+    if rotatingMember.element:isDestroyed() then
+        self:finishRotation(family, rotatingMember, "abort", "destroyed")
+        return
+    end
+    if self:isSuppressed(rotatingMember) then
+        self:finishRotation(family, rotatingMember, "abort", "suppressed")
+        return
+    end
+    local movedMeters = self:getRotationMoveDistanceMeters(rotatingMember)
+    if movedMeters >= (family.rotationMinMoveMeters or self.defaultRotationMinMoveMeters) then
+        self:finishRotation(family, rotatingMember, "complete", "min_move_reached")
+    end
+end
+
+function SkynetIADSSiblingCoordination:isRotationDue(family, member, now)
+    if family == nil or member == nil then
+        return false
+    end
+    if member.rotationMoveActive == true or self:isSuppressed(member) then
+        return false
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if self:isMSAMDeployState(entry) ~= true then
+        return false
+    end
+    if member.deployedObservedSince == nil then
+        return false
+    end
+    return (now - member.deployedObservedSince) >= (family.rotationIntervalSeconds or self.defaultRotationIntervalSeconds)
+end
+
+function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, primary, now)
+    if family == nil then
+        return nil
+    end
+    local bestMember = nil
+    local bestObservedSince = math.huge
+    for i = 1, #family.members do
+        local member = family.members[i]
+        if member ~= primary and member.passiveMode == "standby" and self:isRotationDue(family, member, now) then
+            local observedSince = member.deployedObservedSince or now
+            if observedSince < bestObservedSince then
+                bestMember = member
+                bestObservedSince = observedSince
+            end
+        end
+    end
+    return bestMember
 end
 
 function SkynetIADSSiblingCoordination:findMemberByGroupName(family, groupName)
@@ -701,6 +914,7 @@ end
 
 function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
+    local now = timer.getTime()
     if currentPrimary and self:isSuppressed(currentPrimary) then
         self:ensureSuppressedSwitchLock(family, currentPrimary)
     end
@@ -719,6 +933,12 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     end
 
     if currentPrimary and self:isSuppressed(currentPrimary) == false and self:isEngaged(currentPrimary) then
+        if family.rotationActiveGroupName == nil and (family.rotationCooldownUntil or 0) <= now and self:isRotationDue(family, currentPrimary, now) then
+            local coverMember, coverDecision = self:getBestThreatCandidate(family, currentPrimary.groupName)
+            if coverMember and coverMember ~= currentPrimary then
+                return coverMember, "rotation_cover_for_" .. currentPrimary.groupName, coverDecision
+            end
+        end
         return currentPrimary, "engaged", nil
     end
 
@@ -747,6 +967,9 @@ end
 function SkynetIADSSiblingCoordination:activateMember(family, member, reason, threatDecision)
     if self:isSuppressed(member) then
         return
+    end
+    if member.rotationMoveActive == true then
+        self:finishRotation(family, member, "abort", "reactivated:" .. tostring(reason))
     end
     local switchedPrimary = family.activeGroupName ~= member.groupName or family.activeReason ~= reason
     member.forcedPassive = false
@@ -912,6 +1135,7 @@ end
 
 function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     local previousPassiveMode = member.passiveMode
+    local entry = self:getMobilePatrolEntry(member.element)
     if self:isSuppressed(member) then
         member.lastRole = "suppressed"
         member.passiveMode = "suppressed"
@@ -923,7 +1147,16 @@ function SkynetIADSSiblingCoordination:setPassiveMember(family, member)
     local previousRole = member.lastRole
     member.forcedPassive = true
     member.lastRole = "passive"
-    local entry = self:getMobilePatrolEntry(member.element)
+    if member.rotationMoveActive == true and entry and entry.manager and entry.manager.beginPatrol then
+        member.passiveMode = "relocate"
+        if entry.state ~= "patrolling" then
+            entry.manager:beginPatrol(entry)
+        end
+        if previousPassiveMode ~= "relocate" then
+            self:notifyDebug(member.groupName .. " rotation relocating | family=" .. family.name)
+        end
+        return
+    end
     if family.passiveAction == "relocate" and entry and entry.kind == "MSAM" then
         if entry.manager and entry.manager.isMoveFireCapable and entry.manager:isMoveFireCapable(entry) == true then
             member.passiveMode = "relocate"
@@ -1006,6 +1239,11 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
     member.forcedPassive = false
     member.passiveMode = nil
     member.lastRole = "released"
+    member.rotationMoveActive = false
+    member.rotationMoveStartPoint = nil
+    member.rotationStartedAt = nil
+    member.rotationReason = nil
+    member.deployedObservedSince = nil
     if self:isSuppressed(member) then
         return
     end
@@ -1033,12 +1271,28 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
 end
 
 function SkynetIADSSiblingCoordination:updateFamily(family)
+    self:refreshFamilyRotation(family)
     local primary, reason, threatDecision = self:choosePrimaryMember(family)
     if primary then
+        local now = timer.getTime()
         local switchLockActive = reason ~= nil and string.find(reason, "switch_lock_", 1, true) == 1
         if switchLockActive then
             family.activeGroupName = primary.groupName
             family.activeReason = reason
+        end
+        if switchLockActive ~= true and family.rotationActiveGroupName == nil and (family.rotationCooldownUntil or 0) <= now then
+            if reason ~= nil and string.find(reason, "rotation_cover_for_", 1, true) == 1 then
+                local rotatingGroupName = string.sub(reason, string.len("rotation_cover_for_") + 1)
+                local rotatingMember = self:findMemberByGroupName(family, rotatingGroupName)
+                if rotatingMember then
+                    self:startRotation(family, rotatingMember, primary, reason)
+                end
+            else
+                local standbyRotationMember = self:pickStandbyRotationCandidate(family, primary, now)
+                if standbyRotationMember then
+                    self:startRotation(family, standbyRotationMember, primary, "standby_rotate")
+                end
+            end
         end
         for i = 1, #family.members do
             local member = family.members[i]
@@ -1057,6 +1311,12 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
 
     if family.activeGroupName ~= nil then
         self:log("Family released | family=" .. family.name)
+    end
+    local rotatingMember = self:findMemberByGroupName(family, family.rotationActiveGroupName)
+    if rotatingMember ~= nil then
+        self:finishRotation(family, rotatingMember, "abort", "family_released")
+    else
+        self:clearRotationState(family, nil)
     end
     self:clearSuppressedSwitchLock(family)
     self:clearPrimarySelectionLock(family)
@@ -1122,6 +1382,9 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         suppressedSwitchDelaySeconds = definition.suppressedSwitchDelaySeconds or self.defaultSuppressedSwitchDelaySeconds,
         primaryLatchSeconds = definition.primaryLatchSeconds or self.defaultPrimaryLatchSeconds,
         primaryDistanceHysteresisNm = definition.primaryDistanceHysteresisNm or self.defaultPrimaryDistanceHysteresisNm,
+        rotationIntervalSeconds = definition.rotationIntervalSeconds or self.defaultRotationIntervalSeconds,
+        rotationMinMoveMeters = definition.rotationMinMoveMeters or self.defaultRotationMinMoveMeters,
+        rotationCooldownSeconds = definition.rotationCooldownSeconds or self.defaultRotationCooldownSeconds,
         members = {},
         activeGroupName = nil,
         activeReason = nil,
@@ -1132,6 +1395,10 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         suppressedSwitchUntil = 0,
         primarySelectionGroupName = nil,
         primarySelectionUntil = 0,
+        rotationActiveGroupName = nil,
+        rotationCoverGroupName = nil,
+        rotationStartedAt = nil,
+        rotationCooldownUntil = 0,
     }
 
     for i = 1, #definition.members do
@@ -1144,6 +1411,11 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
                 family = family,
                 forcedPassive = false,
                 lastRole = "released",
+                deployedObservedSince = nil,
+                rotationMoveActive = false,
+                rotationMoveStartPoint = nil,
+                rotationStartedAt = nil,
+                rotationReason = nil,
             }
             family.members[#family.members + 1] = member
             SkynetIADSSiblingCoordination._familyByElement[samSite] = family
@@ -1171,6 +1443,8 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         .. " | passiveAction=" .. tostring(family.passiveAction)
         .. " | primaryLatch=" .. tostring(family.primaryLatchSeconds) .. "s"
         .. " | primaryHysteresis=" .. tostring(family.primaryDistanceHysteresisNm) .. "nm"
+        .. " | rotationInterval=" .. tostring(family.rotationIntervalSeconds) .. "s"
+        .. " | rotationMinMove=" .. tostring(family.rotationMinMoveMeters) .. "m"
     )
     return true, #family.members
 end
@@ -1202,6 +1476,9 @@ function SkynetIADSSiblingCoordination.create(iads, config)
     self.defaultSuppressedSwitchDelaySeconds = (config and config.defaultSuppressedSwitchDelaySeconds) or SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS
     self.defaultPrimaryLatchSeconds = (config and config.defaultPrimaryLatchSeconds) or SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS
     self.defaultPrimaryDistanceHysteresisNm = (config and config.defaultPrimaryDistanceHysteresisNm) or SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM
+    self.defaultRotationIntervalSeconds = (config and config.defaultRotationIntervalSeconds) or SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS
+    self.defaultRotationMinMoveMeters = (config and config.defaultRotationMinMoveMeters) or SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS
+    self.defaultRotationCooldownSeconds = (config and config.defaultRotationCooldownSeconds) or SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS
     self.families = {}
     self.taskID = nil
     self._immediateEvaluationInProgress = false
