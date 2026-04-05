@@ -572,6 +572,39 @@ function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, prim
     return bestMember
 end
 
+function SkynetIADSSiblingCoordination:pickDeployedRotationCandidate(family, excludedGroupName, now)
+    if family == nil then
+        return nil
+    end
+    local bestMember = nil
+    local bestObservedSince = math.huge
+    for i = 1, #family.members do
+        local member = family.members[i]
+        if member.groupName ~= excludedGroupName and self:isRotationDue(family, member, now) then
+            local observedSince = member.deployedObservedSince or now
+            if observedSince < bestObservedSince then
+                bestMember = member
+                bestObservedSince = observedSince
+            end
+        end
+    end
+    return bestMember
+end
+
+function SkynetIADSSiblingCoordination:hasReleasedDeployedMembers(family)
+    if family == nil then
+        return false
+    end
+    for i = 1, #family.members do
+        local member = family.members[i]
+        local entry = self:getMobilePatrolEntry(member.element)
+        if self:isMSAMDeployState(entry) == true and self:isSuppressed(member) ~= true then
+            return true
+        end
+    end
+    return false
+end
+
 function SkynetIADSSiblingCoordination:findMemberByGroupName(family, groupName)
     for i = 1, #family.members do
         local member = family.members[i]
@@ -1305,6 +1338,26 @@ function SkynetIADSSiblingCoordination:updateFamily(family)
             else
                 self:setPassiveMember(family, member)
             end
+        end
+        return
+    end
+
+    local now = timer.getTime()
+    local hasReleasedDeployedMembers = self:hasReleasedDeployedMembers(family)
+    if family.rotationActiveGroupName ~= nil or hasReleasedDeployedMembers == true then
+        if family.rotationActiveGroupName == nil and (family.rotationCooldownUntil or 0) <= now then
+            local rotatingMember = self:pickDeployedRotationCandidate(family, nil, now)
+            if rotatingMember ~= nil then
+                local coverMember = self:pickCoverMember(family, rotatingMember.groupName)
+                self:startRotation(family, rotatingMember, coverMember, "released_standby_rotate")
+            end
+        end
+        self:clearSuppressedSwitchLock(family)
+        self:clearPrimarySelectionLock(family)
+        family.activeGroupName = nil
+        family.activeReason = nil
+        for i = 1, #family.members do
+            self:setPassiveMember(family, family.members[i])
         end
         return
     end
