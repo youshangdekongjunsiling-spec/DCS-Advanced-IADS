@@ -1005,6 +1005,15 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
     local currentDecision = nil
     if currentPrimary and self:isSuppressed(currentPrimary) == false then
         currentDecision = self:getMemberThreatDecision(family, currentPrimary)
+        if family.rotationActiveGroupName == nil
+            and (family.rotationCooldownUntil or 0) <= now
+            and self:isRotationDue(family, currentPrimary, now)
+            and currentDecision ~= nil then
+            local coverMember, coverDecision = self:getBestThreatCandidate(family, currentPrimary.groupName)
+            if coverMember and coverMember ~= currentPrimary then
+                return coverMember, "rotation_cover_for_" .. currentPrimary.groupName, coverDecision
+            end
+        end
     end
     local bestMember, bestDecision = self:getBestThreatCandidate(family, nil)
     if self:shouldRetainCurrentPrimary(family, currentPrimary, currentDecision, bestMember, bestDecision) then

@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-timer-schedulefix | BUILD TIME: 05.04.2026 1328Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-primary-rotation | BUILD TIME: 05.04.2026 1403Z ---")
 
 do
 --this file contains the required units per sam type
@@ -12707,6 +12707,15 @@ function SkynetIADSSiblingCoordination:arbitrateThreatDecision(element)
     local currentDecision = nil
     if currentPrimary and self:isSuppressed(currentPrimary) == false then
         currentDecision = self:getMemberThreatDecision(family, currentPrimary)
+        if family.rotationActiveGroupName == nil
+            and (family.rotationCooldownUntil or 0) <= now
+            and self:isRotationDue(family, currentPrimary, now)
+            and currentDecision ~= nil then
+            local coverMember, coverDecision = self:getBestThreatCandidate(family, currentPrimary.groupName)
+            if coverMember and coverMember ~= currentPrimary then
+                return coverMember, "rotation_cover_for_" .. currentPrimary.groupName, coverDecision
+            end
+        end
     end
     local bestMember, bestDecision = self:getBestThreatCandidate(family, nil)
     if self:shouldRetainCurrentPrimary(family, currentPrimary, currentDecision, bestMember, bestDecision) then
