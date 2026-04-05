@@ -1281,6 +1281,9 @@ function SkynetIADSSiblingCoordination:releaseMember(member)
         return
     end
     local entry = self:getMobilePatrolEntry(member.element)
+    if previousRole == "released" then
+        return
+    end
     if entry and entry.manager and entry.manager.beginPatrol and entry.kind == "MSAM" then
         if entry.state ~= "patrolling" then
             entry.manager:beginPatrol(entry)
