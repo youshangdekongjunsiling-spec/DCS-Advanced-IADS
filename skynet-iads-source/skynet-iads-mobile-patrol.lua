@@ -354,6 +354,8 @@ local function resetMoveFireContactSession(entry)
 	entry.moveFireLastSeenTime = nil
 	entry.moveFireLastContactName = nil
 	entry.moveFireRouteResumeLockUntil = 0
+	entry.moveFireCombatStateSignature = nil
+	entry.moveFireCombatStateIssuedAt = nil
 end
 
 local function resetMoveFireHarmEscapeState(entry)
@@ -516,6 +518,50 @@ local function markMoveFireRouteResumeIssued(entry, now)
 	now = now or timer.getTime()
 	entry.moveFireRouteResumeLockUntil =
 		now + SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_ROUTE_RESUME_COOLDOWN_SECONDS
+end
+
+local function getMoveFireCombatStateSignature(entry, threatDecision)
+	if entry == nil or threatDecision == nil then
+		return nil
+	end
+	local contactName = "none"
+	if threatDecision.triggerInfo and threatDecision.triggerInfo.contactName then
+		contactName = tostring(threatDecision.triggerInfo.contactName)
+	elseif threatDecision.contact and entry.manager and entry.manager.getContactName then
+		contactName = tostring(entry.manager:getContactName(threatDecision.contact) or "none")
+	end
+	return table.concat({
+		tostring(threatDecision.combatMode or "default"),
+		contactName,
+		threatDecision.shouldWeaponHold == true and "hold" or "free",
+	}, "|")
+end
+
+local function shouldIssueMoveFireCombatState(entry, threatDecision, now)
+	if entry == nil or threatDecision == nil then
+		return true
+	end
+	now = now or timer.getTime()
+	local signature = getMoveFireCombatStateSignature(entry, threatDecision)
+	if signature == nil then
+		return true
+	end
+	if entry.moveFireCombatStateSignature ~= signature then
+		return true
+	end
+	if entry.moveFireCombatStateIssuedAt == nil then
+		return true
+	end
+	return (now - entry.moveFireCombatStateIssuedAt) >= 8
+end
+
+local function markMoveFireCombatStateIssued(entry, threatDecision, now)
+	if entry == nil or threatDecision == nil then
+		return
+	end
+	now = now or timer.getTime()
+	entry.moveFireCombatStateSignature = getMoveFireCombatStateSignature(entry, threatDecision)
+	entry.moveFireCombatStateIssuedAt = now
 end
 
 local function setThreatProbeCandidate(details, prefix, name, typeName, distanceMeters)
@@ -2915,16 +2961,20 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 
 	if threatDecision.shouldGoLive then
 		if moveFireCapable then
-			self:traceEntryCommand(entry, "moving_combat_state", {
-				outcome = "issued",
-				reason = "msam_threat_decision",
-				source = triggerInfo and triggerInfo.source or "move_fire",
-				triggerInfo = triggerInfo,
-				shouldDeploy = threatDecision.shouldDeploy == true and "Y" or "N",
-				shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
-				weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
-			}, "applyMSAMThreatDecision")
-			setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
+			local shouldIssueCombatState = shouldIssueMoveFireCombatState(entry, threatDecision, timer.getTime())
+			if shouldIssueCombatState then
+				self:traceEntryCommand(entry, "moving_combat_state", {
+					outcome = "issued",
+					reason = "msam_threat_decision",
+					source = triggerInfo and triggerInfo.source or "move_fire",
+					triggerInfo = triggerInfo,
+					shouldDeploy = threatDecision.shouldDeploy == true and "Y" or "N",
+					shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
+					weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
+				}, "applyMSAMThreatDecision")
+				setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
+				markMoveFireCombatStateIssued(entry, threatDecision, timer.getTime())
+			end
 			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
 				pcall(function()
 					entry.element:informOfContact(threatDecision.contact)
@@ -4038,6 +4088,8 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		moveFireLastSeenTime = nil,
 		moveFireLastContactName = nil,
 		moveFireRouteResumeLockUntil = 0,
+		moveFireCombatStateSignature = nil,
+		moveFireCombatStateIssuedAt = nil,
 		moveFireHarmEscapeActive = false,
 		moveFireHarmEscapeDestination = nil,
 		moveFireHarmEscapeRouteCount = 0,
