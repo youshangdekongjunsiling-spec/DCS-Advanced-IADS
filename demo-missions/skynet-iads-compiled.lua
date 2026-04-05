@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-sa15-combatstate-dedupe | BUILD TIME: 05.04.2026 0011Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa15-no-harm-intercept | BUILD TIME: 05.04.2026 0031Z ---")
 
 do
 --this file contains the required units per sam type
@@ -335,8 +335,7 @@ samTypesDB = {
 		['name'] = {
 			['NATO'] = 'SA-15 Gauntlet',
 		},
-		['harm_detection_chance'] = 90,
-		['can_engage_harm'] = true
+		['harm_detection_chance'] = 90
 		
 	},
 	['Gepard'] = {

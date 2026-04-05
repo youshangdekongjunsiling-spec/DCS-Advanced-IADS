@@ -333,8 +333,7 @@ samTypesDB = {
 		['name'] = {
 			['NATO'] = 'SA-15 Gauntlet',
 		},
-		['harm_detection_chance'] = 90,
-		['can_engage_harm'] = true
+		['harm_detection_chance'] = 90
 		
 	},
 	['Gepard'] = {
