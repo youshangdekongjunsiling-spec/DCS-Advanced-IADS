@@ -3454,6 +3454,241 @@ function SkynetIADSMobilePatrol:findMEWThreat(entry)
 	return self:hasAircraftWithinRange(entry, searchRange)
 end
 
+function SkynetIADSMobilePatrol:isMEWEntryAvailable(entry)
+	if entry == nil or entry.kind ~= "MEW" then
+		return false
+	end
+	local element = entry.element
+	return element:isDestroyed() == false
+		and element:hasWorkingPowerSource()
+		and element:hasWorkingRadar()
+		and element.harmSilenceID == nil
+		and element.harmRelocationInProgress ~= true
+end
+
+function SkynetIADSMobilePatrol:isMEWEntryLive(entry)
+	return self:isMEWEntryAvailable(entry) and entry.element:isActive() == true
+end
+
+function SkynetIADSMobilePatrol:getEWNetworkState(now)
+	local state = {
+		fixedUsableCount = 0,
+		fixedLiveCount = 0,
+		mobileAvailableCount = 0,
+		mobileLiveCount = 0,
+		currentCoverEntry = nil,
+		selectedCoverEntry = nil,
+		reason = "no_available_mew",
+	}
+
+	local ewRadars = self.iads and self.iads.earlyWarningRadars or {}
+	for i = 1, #ewRadars do
+		local ewRadar = ewRadars[i]
+		local mobileEntry = SkynetIADSMobilePatrol.getEntryForElement(ewRadar)
+		if mobileEntry == nil or mobileEntry.kind ~= "MEW" then
+			local usable = ewRadar:isDestroyed() == false
+				and ewRadar:hasWorkingPowerSource()
+				and ewRadar:hasWorkingRadar()
+			if usable then
+				state.fixedUsableCount = state.fixedUsableCount + 1
+				if ewRadar:isActive() == true and ewRadar.harmSilenceID == nil and ewRadar.harmRelocationInProgress ~= true then
+					state.fixedLiveCount = state.fixedLiveCount + 1
+				end
+			end
+		end
+	end
+
+	local candidateData = {}
+	for i = 1, #self.entries do
+		local candidate = self.entries[i]
+		if candidate.kind == "MEW" and self:isMEWEntryAvailable(candidate) then
+			state.mobileAvailableCount = state.mobileAvailableCount + 1
+			if self:isMEWEntryLive(candidate) then
+				state.mobileLiveCount = state.mobileLiveCount + 1
+			end
+			if candidate.mewCoverActive == true and self:isMEWEntryLive(candidate) then
+				state.currentCoverEntry = candidate
+			end
+			local threatRangeMeters = self:getThreatRangeMeters(candidate)
+			local nearestUnit = nil
+			local nearestDistanceMeters = math.huge
+			if threatRangeMeters > 0 then
+				nearestUnit, nearestDistanceMeters = self:findNearestEnemyAircraftUnit(candidate, threatRangeMeters)
+			end
+			candidateData[#candidateData + 1] = {
+				entry = candidate,
+				threatPresent = nearestUnit ~= nil,
+				threatDistanceMeters = nearestDistanceMeters,
+				lastCoverEndedAt = candidate.mewLastCoverEndedAt or 0,
+			}
+		end
+	end
+
+	if state.fixedLiveCount >= self.defaultMEWMinimumLiveCount then
+		state.reason = "fixed_live_present"
+		return state
+	end
+
+	if #candidateData == 0 then
+		state.reason = "no_available_mew"
+		return state
+	end
+
+	local function chooseBestCandidate(excludedGroupName)
+		local best = nil
+		for i = 1, #candidateData do
+			local candidate = candidateData[i]
+			local entry = candidate.entry
+			if excludedGroupName == nil or entry.groupName ~= excludedGroupName then
+				local isBetter = false
+				if best == nil then
+					isBetter = true
+				elseif candidate.threatPresent ~= best.threatPresent then
+					isBetter = candidate.threatPresent == true
+				elseif candidate.threatDistanceMeters ~= best.threatDistanceMeters then
+					isBetter = candidate.threatDistanceMeters < best.threatDistanceMeters
+				elseif candidate.lastCoverEndedAt ~= best.lastCoverEndedAt then
+					isBetter = candidate.lastCoverEndedAt < best.lastCoverEndedAt
+				else
+					isBetter = tostring(entry.groupName) < tostring(best.entry.groupName)
+				end
+				if isBetter then
+					best = candidate
+				end
+			end
+		end
+		return best and best.entry or nil
+	end
+
+	local currentCover = state.currentCoverEntry
+	if currentCover ~= nil then
+		local coverAgeSeconds = currentCover.mewCoverStartedAt and (now - currentCover.mewCoverStartedAt) or 0
+		local alternateEntry = chooseBestCandidate(currentCover.groupName)
+		if coverAgeSeconds < (currentCover.mewLiveDutySeconds or self.defaultMEWLiveDutySeconds) or alternateEntry == nil then
+			state.selectedCoverEntry = currentCover
+			state.reason = "retain_mobile_cover"
+			return state
+		end
+		state.selectedCoverEntry = alternateEntry
+		state.reason = "rotate_mobile_cover"
+		return state
+	end
+
+	state.selectedCoverEntry = chooseBestCandidate(nil)
+	state.reason = "fixed_gap_cover"
+	return state
+end
+
+function SkynetIADSMobilePatrol:traceMEWNetworkState(entry, networkState)
+	if entry == nil or networkState == nil then
+		return
+	end
+	local signature = table.concat({
+		tostring(networkState.reason or "none"),
+		tostring(networkState.selectedCoverEntry and networkState.selectedCoverEntry.groupName or "none"),
+		tostring(networkState.fixedLiveCount or 0),
+		tostring(networkState.fixedUsableCount or 0),
+		tostring(networkState.mobileAvailableCount or 0),
+		tostring(networkState.mobileLiveCount or 0),
+	}, "|")
+	if entry.mewLastNetworkSignature == signature then
+		return
+	end
+	entry.mewLastNetworkSignature = signature
+	self:traceEntryCommand(entry, "mew_network_state", {
+		outcome = "evaluated",
+		reason = networkState.reason,
+		source = "mew_network",
+		fixedLiveCount = networkState.fixedLiveCount,
+		fixedUsableCount = networkState.fixedUsableCount,
+		mobileAvailableCount = networkState.mobileAvailableCount,
+		mobileLiveCount = networkState.mobileLiveCount,
+		selectedCoverGroup = networkState.selectedCoverEntry and networkState.selectedCoverEntry.groupName or nil,
+		coverActive = networkState.selectedCoverEntry == entry and "Y" or "N",
+		liveDutySeconds = entry.mewLiveDutySeconds,
+	}, "traceMEWNetworkState")
+end
+
+function SkynetIADSMobilePatrol:applyMEWCoverState(entry, networkState, now)
+	local wasCoverActive = entry.mewCoverActive == true
+	if entry.state ~= "patrolling" then
+		self:beginPatrol(entry)
+	end
+	entry.state = "patrolling"
+	entry.combatMode = "mew_cover_live"
+	entry.lastThreatTime = now
+	entry.noThreatSince = nil
+	entry.mewCoverActive = true
+	entry.mewCoverReason = networkState.reason
+	if wasCoverActive ~= true then
+		entry.mewCoverStartedAt = now
+		self:traceEntryCommand(entry, "mew_cover_live", {
+			outcome = "issued",
+			reason = networkState.reason,
+			source = "mew_network",
+			fixedLiveCount = networkState.fixedLiveCount,
+			fixedUsableCount = networkState.fixedUsableCount,
+			selectedCoverGroup = entry.groupName,
+			liveDutySeconds = entry.mewLiveDutySeconds,
+		}, "applyMEWCoverState")
+		self:notifyDebug(entry.groupName .. " MEW cover live | reason=" .. tostring(networkState.reason))
+	end
+	entry.element:goLive()
+	self:handlePatrolStationaryRecovery(entry, "mew_cover_stationary")
+	self:traceStateSnapshot(entry, "mew_cover_live", {
+		source = "mew_network",
+		note = "reason=" .. tostring(networkState.reason),
+	}, "applyMEWCoverState")
+end
+
+function SkynetIADSMobilePatrol:applyMEWDarkPatrolState(entry, networkState, now)
+	local wasCoverActive = entry.mewCoverActive == true
+	local needsDarkCommand =
+		wasCoverActive
+		or entry.state ~= "patrolling"
+		or entry.combatMode ~= "mew_patrolling_dark"
+		or entry.element:isActive() == true
+	if entry.state ~= "patrolling" then
+		self:beginPatrol(entry)
+	elseif needsDarkCommand then
+		forceElementIntoPatrolDarkState(entry.element)
+	end
+	entry.state = "patrolling"
+	entry.combatMode = "mew_patrolling_dark"
+	entry.mewCoverActive = false
+	entry.mewCoverReason = nil
+	entry.mewCoverStartedAt = nil
+	entry.noThreatSince = nil
+	if wasCoverActive then
+		entry.mewLastCoverEndedAt = now
+		self:traceEntryCommand(entry, "mew_cover_release", {
+			outcome = "issued",
+			reason = networkState.reason,
+			source = "mew_network",
+			fixedLiveCount = networkState.fixedLiveCount,
+			fixedUsableCount = networkState.fixedUsableCount,
+			selectedCoverGroup = networkState.selectedCoverEntry and networkState.selectedCoverEntry.groupName or nil,
+		}, "applyMEWDarkPatrolState")
+		self:notifyDebug(entry.groupName .. " MEW cover dark | reason=" .. tostring(networkState.reason))
+	end
+	self:handlePatrolStationaryRecovery(entry, "mew_dark_stationary")
+	self:traceStateSnapshot(entry, "mew_patrolling_dark", {
+		source = "mew_network",
+		note = "reason=" .. tostring(networkState.reason),
+	}, "applyMEWDarkPatrolState")
+end
+
+function SkynetIADSMobilePatrol:updateMEWEntry(entry, now)
+	local networkState = self:getEWNetworkState(now)
+	self:traceMEWNetworkState(entry, networkState)
+	if networkState.selectedCoverEntry ~= nil and networkState.selectedCoverEntry == entry then
+		self:applyMEWCoverState(entry, networkState, now)
+	else
+		self:applyMEWDarkPatrolState(entry, networkState, now)
+	end
+	return true
+end
+
 function SkynetIADSMobilePatrol:isHarmEvading(entry)
 	return entry.element.harmSilenceID ~= nil or entry.element.harmRelocationInProgress == true
 end
@@ -3535,6 +3770,10 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.lastLaunchMonitorTime = nil
 	resetMoveFireContactSession(entry)
 	resetMoveFireHarmEscapeState(entry)
+	entry.mewCoverActive = false
+	entry.mewCoverStartedAt = nil
+	entry.mewCoverReason = nil
+	entry.mewLastNetworkSignature = nil
 	forceElementIntoPatrolDarkState(entry.element)
 	applyFormationIntervalToEntry(entry, SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS)
 	entry.currentDestination = nil
@@ -4165,15 +4404,8 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 			}, "updateEntry")
 		end
 	elseif entry.kind ~= "MSAM" then
-		threatPresent = self:findMEWThreat(entry)
-		if threatPresent and entry.state ~= "deployed" then
-			self:pausePatrolForDeployment(entry)
-			self:setOrderTraceContext(entry, "mew_threat_detected", {
-				source = "mew_threat_scan",
-			}, "updateEntry")
-			entry.element:goLive()
-			entry.combatMode = "default_fire"
-		end
+		self:updateMEWEntry(entry, now)
+		return
 	end
 
 	if threatPresent then
@@ -4190,6 +4422,9 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 		if self:isMoveFireCapable(entry) then
 			entry.state = "patrolling"
 			entry.combatMode = "patrolling"
+		elseif entry.kind == "MEW" then
+			entry.state = "patrolling"
+			entry.combatMode = "mew_patrolling_dark"
 		else
 			entry.state = "deployed"
 		end
@@ -4318,6 +4553,13 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		moveFireHarmEscapeActive = false,
 		moveFireHarmEscapeDestination = nil,
 		moveFireHarmEscapeRouteCount = 0,
+		mewCoverActive = false,
+		mewCoverStartedAt = nil,
+		mewCoverReason = nil,
+		mewLastCoverEndedAt = 0,
+		mewLastNetworkSignature = nil,
+		mewMinimumLiveCount = (options and options.mewMinimumLiveCount) or self.defaultMEWMinimumLiveCount,
+		mewLiveDutySeconds = (options and options.mewLiveDutySeconds) or self.defaultMEWLiveDutySeconds,
 		targetInRangeLatchSeconds = (options and options.targetInRangeLatchSeconds) or self.defaultTargetInRangeLatchSeconds,
 		targetInRangeLatchedUntil = 0,
 		targetInRangeLatchedContactName = nil,
@@ -4392,6 +4634,8 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultSA15HarmEscapeReissueSeconds = (config and config.defaultSA15HarmEscapeReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_REISSUE_SECONDS,
 		defaultSA15HarmEscapeMinProgressMeters = (config and config.defaultSA15HarmEscapeMinProgressMeters) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_ESCAPE_MIN_PROGRESS_METERS,
 		defaultSA15HarmPostEscapeLockSeconds = (config and config.defaultSA15HarmPostEscapeLockSeconds) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_POST_ESCAPE_LOCK_SECONDS,
+		defaultMEWMinimumLiveCount = (config and config.defaultMEWMinimumLiveCount) or SkynetIADSMobilePatrol.DEFAULT_MEW_MIN_LIVE_COUNT,
+		defaultMEWLiveDutySeconds = (config and config.defaultMEWLiveDutySeconds) or SkynetIADSMobilePatrol.DEFAULT_MEW_LIVE_DUTY_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
 		defaultRouteReissueFallbackCount = (config and config.defaultRouteReissueFallbackCount) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT,
