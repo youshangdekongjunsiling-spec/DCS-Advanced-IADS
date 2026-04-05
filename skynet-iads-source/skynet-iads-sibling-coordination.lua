@@ -479,6 +479,7 @@ function SkynetIADSSiblingCoordination:clearRotationState(family, member)
     if family ~= nil then
         family.rotationActiveGroupName = nil
         family.rotationCoverGroupName = nil
+        family.rotationCoverThreatDecision = nil
         family.rotationStartedAt = nil
     end
 end
@@ -537,6 +538,7 @@ function SkynetIADSSiblingCoordination:startRotation(family, member, coverMember
     member.rotationReason = reason
     family.rotationActiveGroupName = member.groupName
     family.rotationCoverGroupName = coverMember and coverMember.groupName or nil
+    family.rotationCoverThreatDecision = coverMember and self:getMemberThreatDecision(family, coverMember) or nil
     family.rotationStartedAt = timer.getTime()
     self:traceElementCommand(member.element, "family_rotation_start", {
         outcome = "issued",
@@ -1097,8 +1099,13 @@ function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     local rotationCoverMember = self:findMemberByGroupName(family, family.rotationCoverGroupName)
     if rotatingMember ~= nil and rotationCoverMember ~= nil then
         local coverDecision = self:getMemberThreatDecision(family, rotationCoverMember)
-        if self:isSuppressed(rotationCoverMember) == false and coverDecision ~= nil then
-            return rotationCoverMember, family.activeReason or ("rotation_cover_for_" .. rotatingMember.groupName), coverDecision
+        if coverDecision ~= nil then
+            family.rotationCoverThreatDecision = coverDecision
+        else
+            coverDecision = family.rotationCoverThreatDecision
+        end
+        if self:isSuppressed(rotationCoverMember) == false and self:canParticipate(rotationCoverMember) then
+            return rotationCoverMember, "rotation_cover_for_" .. rotatingMember.groupName, coverDecision
         end
     end
     if currentPrimary and self:isSuppressed(currentPrimary) then
@@ -1634,6 +1641,7 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         primarySelectionUntil = 0,
         rotationActiveGroupName = nil,
         rotationCoverGroupName = nil,
+        rotationCoverThreatDecision = nil,
         rotationStartedAt = nil,
         rotationCooldownUntil = 0,
         lastDebugProgressAt = 0,
