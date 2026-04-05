@@ -1093,6 +1093,14 @@ end
 function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
     local now = timer.getTime()
+    local rotatingMember = self:findMemberByGroupName(family, family.rotationActiveGroupName)
+    local rotationCoverMember = self:findMemberByGroupName(family, family.rotationCoverGroupName)
+    if rotatingMember ~= nil and rotationCoverMember ~= nil then
+        local coverDecision = self:getMemberThreatDecision(family, rotationCoverMember)
+        if self:isSuppressed(rotationCoverMember) == false and coverDecision ~= nil then
+            return rotationCoverMember, family.activeReason or ("rotation_cover_for_" .. rotatingMember.groupName), coverDecision
+        end
+    end
     if currentPrimary and self:isSuppressed(currentPrimary) then
         self:ensureSuppressedSwitchLock(family, currentPrimary)
     end

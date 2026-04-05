@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-primary-rotation-fix2 | BUILD TIME: 05.04.2026 1456Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-rotation-lock-cover | BUILD TIME: 05.04.2026 1704Z ---")
 
 do
 --this file contains the required units per sam type
@@ -12795,6 +12795,14 @@ end
 function SkynetIADSSiblingCoordination:choosePrimaryMember(family)
     local currentPrimary = self:findMemberByGroupName(family, family.activeGroupName)
     local now = timer.getTime()
+    local rotatingMember = self:findMemberByGroupName(family, family.rotationActiveGroupName)
+    local rotationCoverMember = self:findMemberByGroupName(family, family.rotationCoverGroupName)
+    if rotatingMember ~= nil and rotationCoverMember ~= nil then
+        local coverDecision = self:getMemberThreatDecision(family, rotationCoverMember)
+        if self:isSuppressed(rotationCoverMember) == false and coverDecision ~= nil then
+            return rotationCoverMember, family.activeReason or ("rotation_cover_for_" .. rotatingMember.groupName), coverDecision
+        end
+    end
     if currentPrimary and self:isSuppressed(currentPrimary) then
         self:ensureSuppressedSwitchLock(family, currentPrimary)
     end
