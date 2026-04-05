@@ -83,6 +83,12 @@ function SkynetIADSOrderTrace:create(iads, options)
 	trace.observationCache = {}
 	trace.filePath = trace:resolveLogPath()
 	trace.fileSinkAvailable = io ~= nil and io.open ~= nil
+	if env and env.info then
+		env.info(
+			"SKYNET ORDER TRACE INIT: file=" .. tostring(trace.filePath) .. " | fileSink=" .. tostring(trace.fileSinkAvailable),
+			false
+		)
+	end
 	trace:writeSessionBanner("START")
 	return trace
 end

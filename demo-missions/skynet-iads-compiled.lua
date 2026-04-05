@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-rotation-3min | BUILD TIME: 05.04.2026 0143Z ---")
+env.info("--- SKYNET VERSION: ea18g-msam-heightfix-traceinit | BUILD TIME: 05.04.2026 0152Z ---")
 
 do
 --this file contains the required units per sam type
@@ -1600,6 +1600,12 @@ function SkynetIADSOrderTrace:create(iads, options)
 	trace.observationCache = {}
 	trace.filePath = trace:resolveLogPath()
 	trace.fileSinkAvailable = io ~= nil and io.open ~= nil
+	if env and env.info then
+		env.info(
+			"SKYNET ORDER TRACE INIT: file=" .. tostring(trace.filePath) .. " | fileSink=" .. tostring(trace.fileSinkAvailable),
+			false
+		)
+	end
 	trace:writeSessionBanner("START")
 	return trace
 end
@@ -8432,14 +8438,11 @@ function SkynetIADSMobilePatrol:getThreatAltitudeDetails(entry, target)
 				if altitudeLimitMeters > maximumFiringAltitudeMeters then
 					maximumFiringAltitudeMeters = altitudeLimitMeters
 				end
-			end
-
-			if launcher.isWithinFiringHeight then
-				local okHeight, heightEligible = pcall(function()
-					return launcher:isWithinFiringHeight(target)
-				end)
-				if okHeight == true and heightEligible == true then
-					anyHeightEligible = true
+				if launcherPoint ~= nil and launcherPoint.y ~= nil then
+					local altitudeDeltaMeters = math.abs((targetPoint.y or 0) - (launcherPoint.y or 0))
+					if altitudeDeltaMeters <= altitudeLimitMeters then
+						anyHeightEligible = true
+					end
 				end
 			end
 		end

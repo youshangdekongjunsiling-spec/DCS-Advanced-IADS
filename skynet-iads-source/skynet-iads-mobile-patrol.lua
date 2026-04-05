@@ -2077,14 +2077,11 @@ function SkynetIADSMobilePatrol:getThreatAltitudeDetails(entry, target)
 				if altitudeLimitMeters > maximumFiringAltitudeMeters then
 					maximumFiringAltitudeMeters = altitudeLimitMeters
 				end
-			end
-
-			if launcher.isWithinFiringHeight then
-				local okHeight, heightEligible = pcall(function()
-					return launcher:isWithinFiringHeight(target)
-				end)
-				if okHeight == true and heightEligible == true then
-					anyHeightEligible = true
+				if launcherPoint ~= nil and launcherPoint.y ~= nil then
+					local altitudeDeltaMeters = math.abs((targetPoint.y or 0) - (launcherPoint.y or 0))
+					if altitudeDeltaMeters <= altitudeLimitMeters then
+						anyHeightEligible = true
+					end
 				end
 			end
 		end
