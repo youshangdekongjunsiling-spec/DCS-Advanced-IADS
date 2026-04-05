@@ -41,6 +41,7 @@ function SkynetIADS:create(name)
 	if SkynetIADSOrderTrace and SkynetIADSOrderTrace.create then
 		iads.orderTrace = SkynetIADSOrderTrace:create(iads)
 	end
+	iads.gpsSpoofer = nil
 	iads.contactUpdateInterval = 5         -- 目标更新间隔（秒）
 	
 	-- 确保名称不为空
@@ -60,6 +61,9 @@ end
 -- 参数: event - DCS 事件对象
 -- ============================================================================
 function SkynetIADS:onEvent(event)
+	if self.gpsSpoofer and self.gpsSpoofer.onEvent then
+		self.gpsSpoofer:onEvent(event)
+	end
 	-- 检查是否为新单位生成事件
 	if (event.id == world.event.S_EVENT_BIRTH ) then
 		-- 记录新单位生成信息到 DCS 日志
@@ -765,6 +769,22 @@ function SkynetIADS:traceWeaponContact(contact, details)
 	return false
 end
 
+function SkynetIADS:getGPSSpoofer()
+	return self.gpsSpoofer
+end
+
+function SkynetIADS:enableGPSSpoofing(options)
+	if self.gpsSpoofer == nil then
+		self.gpsSpoofer = SkynetIADSGPSSpoofer:create(self, options or {})
+	elseif options ~= nil then
+		self.gpsSpoofer.options = options
+	end
+	if self.ewRadarScanMistTaskID ~= nil and self.gpsSpoofer.start then
+		self.gpsSpoofer:start()
+	end
+	return self.gpsSpoofer
+end
+
 -- ============================================================================
 -- 激活 IADS 系统
 -- 功能: 启动整个 IADS 系统，开始目标检测和跟踪
@@ -782,6 +802,9 @@ function SkynetIADS.activate(self)
 	
 	-- 构建雷达覆盖网络
 	self:buildRadarCoverage()
+	if self.gpsSpoofer and self.gpsSpoofer.start then
+		self.gpsSpoofer:start()
+	end
 end
 
 -- ============================================================================
@@ -807,6 +830,9 @@ function SkynetIADS:deactivate()
 	-- 停止所有 MIST 定时任务
 	mist.removeFunction(self.ewRadarScanMistTaskID)
 	mist.removeFunction(self.samSetupMistTaskID)
+	if self.gpsSpoofer and self.gpsSpoofer.stop then
+		self.gpsSpoofer:stop()
+	end
 	
 	-- 停用所有组件
 	self:deativateSAMSites()           -- 停用所有 SAM 站点

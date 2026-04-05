@@ -28,6 +28,7 @@ $sources = @(
 	"../skynet-iads-source/skynet-iads-contact.lua",
 	"../skynet-iads-source/skynet-iads-early-warning-radar.lua",
 	"../skynet-iads-source/skynet-iads-jammer.lua",
+	"../skynet-iads-source/skynet-iads-gps-spoofer.lua",
 	"../skynet-iads-source/skynet-iads-sam-search-radar.lua",
 	"../skynet-iads-source/skynet-iads-sam-site.lua",
 	"../skynet-iads-source/skynet-iads-sam-tracking-radar.lua",
