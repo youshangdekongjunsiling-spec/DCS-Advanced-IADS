@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-msam-heightfix-traceinit | BUILD TIME: 05.04.2026 0152Z ---")
+env.info("--- SKYNET VERSION: ea18g-msam-harmisolate-sa6alt40k | BUILD TIME: 05.04.2026 0232Z ---")
 
 do
 --this file contains the required units per sam type
@@ -6412,6 +6412,9 @@ SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_LAUNCHER_TYPE_NAMES = {
 	["Gepard"] = true,
 	["ZSU-23-4 Shilka"] = true,
 }
+SkynetIADSMobilePatrol.DEFAULT_MSAM_MINIMUM_FIRING_ALTITUDE_FEET = {
+	["SA-6"] = 40000,
+}
 
 local function startsWith(value, prefix)
 	return value and prefix and string.find(value, prefix, 1, true) == 1
@@ -8313,6 +8316,21 @@ function SkynetIADSMobilePatrol:getMSAMCombatProfile(entry)
 	}
 end
 
+function SkynetIADSMobilePatrol:getMSAMMinimumFiringAltitudeOverrideMeters(entry)
+	if entry == nil or entry.kind ~= "MSAM" or entry.element == nil then
+		return 0
+	end
+	local natoName = entry.element.getNatoName and entry.element:getNatoName() or nil
+	if natoName == nil then
+		return 0
+	end
+	local altitudeFeet = self.msamMinimumFiringAltitudeFeetOverrides and self.msamMinimumFiringAltitudeFeetOverrides[natoName] or nil
+	if type(altitudeFeet) ~= "number" or altitudeFeet <= 0 then
+		return 0
+	end
+	return altitudeFeet * 0.3048
+end
+
 function SkynetIADSMobilePatrol:isMoveFireCapable(entry)
 	if entry == nil or entry.kind ~= "MSAM" then
 		return false
@@ -8414,6 +8432,7 @@ function SkynetIADSMobilePatrol:getThreatAltitudeDetails(entry, target)
 	local anyHeightEligible = false
 	local maximumFiringAltitudeMeters = 0
 	local minimumAltitudeDeltaMeters = math.huge
+	local altitudeOverrideMeters = self:getMSAMMinimumFiringAltitudeOverrideMeters(entry)
 
 	for i = 1, #launchers do
 		local launcher = launchers[i]
@@ -8432,6 +8451,9 @@ function SkynetIADSMobilePatrol:getThreatAltitudeDetails(entry, target)
 			end
 			if altitudeLimitMeters <= 0 and launcher.getRange then
 				altitudeLimitMeters = launcher:getRange() or 0
+			end
+			if altitudeOverrideMeters > altitudeLimitMeters then
+				altitudeLimitMeters = altitudeOverrideMeters
 			end
 			if altitudeLimitMeters > 0 then
 				hasLauncherData = true
@@ -8823,6 +8845,28 @@ end
 
 function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredContact)
 	if entry == nil or entry.element == nil or entry.element.informOfContact == nil then
+		return {
+			informedAny = false,
+			contactsInformed = 0,
+			preferredContactInformed = false,
+		}
+	end
+
+	if entry.kind == "MSAM" and self:isHarmEvading(entry) then
+		self:traceEntryCommand(entry, "msam_harm_contact_block", {
+			event = "decision",
+			outcome = "blocked",
+			reason = "harm_evading",
+			source = "inform_entry_of_threat_contacts",
+		}, "informEntryOfThreatContacts")
+		self:traceEntryCommand(entry, "contact_feed_summary", {
+			event = "decision",
+			outcome = "blocked",
+			reason = "harm_evading",
+			source = "inform_entry_of_threat_contacts",
+			contactsInformed = 0,
+			preferredContactInformed = "N",
+		}, "informEntryOfThreatContacts")
 		return {
 			informedAny = false,
 			contactsInformed = 0,
@@ -9426,6 +9470,16 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 	local wasCombatCommitted = entry.combatCommitted == true
 	local triggerInfo = threatDecision.triggerInfo
 	local moveFireCapable = self:isMoveFireCapable(entry)
+	if entry.kind == "MSAM" and self:isHarmEvading(entry) then
+		self:traceEntryCommand(entry, "msam_harm_contact_block", {
+			event = "decision",
+			outcome = "blocked",
+			reason = "harm_evading",
+			source = triggerInfo and triggerInfo.source or "apply_msam_threat_decision",
+			triggerInfo = triggerInfo,
+		}, "applyMSAMThreatDecision")
+		return false
+	end
 	if threatDecision.contact == nil and threatDecision.shouldGoLive == true and moveFireCapable ~= true then
 		local reusableContact, reusableDistanceMeters = self:getReusableThreatContact(entry, triggerInfo)
 		if reusableContact ~= nil then
@@ -10706,6 +10760,7 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		traceThreatProbeEnabled = (config and config.traceThreatProbeEnabled) or SkynetIADSMobilePatrol.DEFAULT_TRACE_THREAT_PROBE_ENABLED,
 		moveFireNatoNames = mist.utils.deepCopy((config and config.moveFireNatoNames) or SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_NATO_NAMES),
 		moveFireLauncherTypeNames = mist.utils.deepCopy((config and config.moveFireLauncherTypeNames) or SkynetIADSMobilePatrol.DEFAULT_MOVE_FIRE_LAUNCHER_TYPE_NAMES),
+		msamMinimumFiringAltitudeFeetOverrides = mist.utils.deepCopy((config and config.msamMinimumFiringAltitudeFeetOverrides) or SkynetIADSMobilePatrol.DEFAULT_MSAM_MINIMUM_FIRING_ALTITUDE_FEET),
 	}
 	setmetatable(patrol, SkynetIADSMobilePatrol)
 	return patrol
@@ -10824,6 +10879,19 @@ function SkynetIADSMobilePatrol.installHooks()
 				or siblingInfo.passiveMode == "relocate"
 			)
 		if entry and entry.kind == "MSAM" and isAirContact(contact) == false then
+			return nil
+		end
+		if entry and entry.kind == "MSAM" and entry.manager and entry.manager.isHarmEvading and entry.manager:isHarmEvading(entry) then
+			if entry.manager and entry.manager.traceEntryCommand then
+				entry.manager:traceEntryCommand(entry, "msam_harm_contact_block", {
+					event = "decision",
+					outcome = "blocked",
+					source = "inform_of_contact",
+					reason = "harm_evading",
+					contact = entry.manager.getContactName and entry.manager:getContactName(contact) or "unknown",
+					contactType = entry.manager.getContactTypeName and entry.manager:getContactTypeName(contact) or "unknown",
+				}, "SkynetIADSSamSite:informOfContact")
+			end
 			return nil
 		end
 		if entry and entry.kind == "MSAM" and passiveSiblingBlocked then
