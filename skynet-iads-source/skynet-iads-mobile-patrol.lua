@@ -346,6 +346,63 @@ local function applyRangeBreakdown(payload, details)
 	payload.launcherInRange = toBoolFlag(details.launcherInRange)
 end
 
+local function getTargetPositionPoint(target)
+	if target == nil then
+		return nil
+	end
+	if target.getPosition then
+		local okPosition, position = pcall(function()
+			return target:getPosition()
+		end)
+		local point = okPosition == true and position and position.p or nil
+		if point and point.x ~= nil and point.y ~= nil and point.z ~= nil then
+			return point
+		end
+	end
+	if target.getPoint then
+		local okPoint, point = pcall(function()
+			return target:getPoint()
+		end)
+		if okPoint == true and point and point.x ~= nil and point.y ~= nil and point.z ~= nil then
+			return point
+		end
+	end
+	return nil
+end
+
+local function getLauncherPositionPoint(launcher)
+	if launcher == nil then
+		return nil
+	end
+	local representation = launcher.getDCSRepresentation and launcher:getDCSRepresentation() or nil
+	if representation and representation.getPosition then
+		local okPosition, position = pcall(function()
+			return representation:getPosition()
+		end)
+		local point = okPosition == true and position and position.p or nil
+		if point and point.x ~= nil and point.y ~= nil and point.z ~= nil then
+			return point
+		end
+	end
+	return nil
+end
+
+local function metersToRoundedFeet(value)
+	if value == nil or value == math.huge then
+		return nil
+	end
+	return mist.utils.round(value * 3.28084)
+end
+
+local function applyAltitudeGate(payload, details)
+	if payload == nil or details == nil then
+		return
+	end
+	payload.altitudeEligible = details.altitudeEligible or payload.altitudeEligible
+	payload.targetAltitudeDeltaFeet = metersToRoundedFeet(details.targetAltitudeDeltaMeters)
+	payload.maxFiringAltitudeFeet = metersToRoundedFeet(details.maxFiringAltitudeMeters)
+end
+
 local function resetMoveFireContactSession(entry)
 	if entry == nil then
 		return
@@ -1969,6 +2026,90 @@ function SkynetIADSMobilePatrol:getCombatRangeMeters(entry)
 	return self:getThreatRangeMeters(entry)
 end
 
+function SkynetIADSMobilePatrol:getThreatAltitudeDetails(entry, target)
+	local details = {
+		altitudeEligible = nil,
+		targetAltitudeDeltaMeters = nil,
+		maxFiringAltitudeMeters = nil,
+	}
+	if entry == nil or entry.kind ~= "MSAM" or entry.element == nil or target == nil then
+		details.altitudeEligible = "Y"
+		return details
+	end
+
+	local launchers = entry.element.getLaunchers and entry.element:getLaunchers() or {}
+	if #launchers == 0 then
+		details.altitudeEligible = "Y"
+		return details
+	end
+
+	local targetPoint = getTargetPositionPoint(target)
+	if targetPoint == nil then
+		details.altitudeEligible = "Y"
+		return details
+	end
+
+	local hasLauncherData = false
+	local anyHeightEligible = false
+	local maximumFiringAltitudeMeters = 0
+	local minimumAltitudeDeltaMeters = math.huge
+
+	for i = 1, #launchers do
+		local launcher = launchers[i]
+		if launcher and launcher.isExist and launcher:isExist() then
+			local launcherPoint = getLauncherPositionPoint(launcher)
+			if launcherPoint ~= nil and launcherPoint.y ~= nil then
+				local altitudeDeltaMeters = math.abs((targetPoint.y or 0) - (launcherPoint.y or 0))
+				if altitudeDeltaMeters < minimumAltitudeDeltaMeters then
+					minimumAltitudeDeltaMeters = altitudeDeltaMeters
+				end
+			end
+
+			local altitudeLimitMeters = 0
+			if launcher.getMaximumFiringAltitude then
+				altitudeLimitMeters = launcher:getMaximumFiringAltitude() or 0
+			end
+			if altitudeLimitMeters <= 0 and launcher.getRange then
+				altitudeLimitMeters = launcher:getRange() or 0
+			end
+			if altitudeLimitMeters > 0 then
+				hasLauncherData = true
+				if altitudeLimitMeters > maximumFiringAltitudeMeters then
+					maximumFiringAltitudeMeters = altitudeLimitMeters
+				end
+			end
+
+			if launcher.isWithinFiringHeight then
+				local okHeight, heightEligible = pcall(function()
+					return launcher:isWithinFiringHeight(target)
+				end)
+				if okHeight == true and heightEligible == true then
+					anyHeightEligible = true
+				end
+			end
+		end
+	end
+
+	if minimumAltitudeDeltaMeters < math.huge then
+		details.targetAltitudeDeltaMeters = minimumAltitudeDeltaMeters
+	end
+	if maximumFiringAltitudeMeters > 0 then
+		details.maxFiringAltitudeMeters = maximumFiringAltitudeMeters
+	end
+
+	if hasLauncherData ~= true then
+		details.altitudeEligible = "Y"
+	else
+		details.altitudeEligible = anyHeightEligible == true and "Y" or "N"
+	end
+	return details
+end
+
+function SkynetIADSMobilePatrol:isThreatAltitudeEligible(entry, target)
+	local details = self:getThreatAltitudeDetails(entry, target)
+	return details.altitudeEligible ~= "N", details
+end
+
 function SkynetIADSMobilePatrol:getContactName(contact)
 	local targetName = "unknown"
 	local okName, name = pcall(function()
@@ -2184,10 +2325,13 @@ function SkynetIADSMobilePatrol:findMatchingEligibleContact(entry, unit, maxDist
 			and contact:isIdentifiedAsHARM() == false
 			and entry.element:areGoLiveConstraintsSatisfied(contact)
 			and self:doesContactMatchUnit(contact, unit) then
-			self:refreshThreatContact(contact)
-			local distanceMeters = self:getContactDistanceMeters(entry, contact)
-			if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
-				return contact, distanceMeters, "live_contact_match"
+			local altitudeEligible = self:isThreatAltitudeEligible(entry, contact)
+			if altitudeEligible == true then
+				self:refreshThreatContact(contact)
+				local distanceMeters = self:getContactDistanceMeters(entry, contact)
+				if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
+					return contact, distanceMeters, "live_contact_match"
+				end
 			end
 		end
 	end
@@ -2200,6 +2344,10 @@ function SkynetIADSMobilePatrol:findMatchingEligibleContact(entry, unit, maxDist
 		and cachedContact:isIdentifiedAsHARM() == false
 		and entry.element:areGoLiveConstraintsSatisfied(cachedContact)
 		and self:doesContactMatchUnit(cachedContact, unit) then
+		local altitudeEligible = self:isThreatAltitudeEligible(entry, cachedContact)
+		if altitudeEligible ~= true then
+			return nil, math.huge, nil
+		end
 		self:refreshThreatContact(cachedContact)
 		local distanceMeters = self:getContactDistanceMeters(entry, cachedContact)
 		if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
@@ -2235,7 +2383,8 @@ function SkynetIADSMobilePatrol:findCachedThreatContactFallback(entry, unit, max
 		or cachedContact:isExist() == false
 		or isLikelyGroundedResidualAirContact(cachedContact) == true
 		or cachedContact:isIdentifiedAsHARM() == true
-		or entry.element:areGoLiveConstraintsSatisfied(cachedContact) ~= true then
+		or entry.element:areGoLiveConstraintsSatisfied(cachedContact) ~= true
+		or self:isThreatAltitudeEligible(entry, cachedContact) ~= true then
 		return nil, math.huge, nil
 	end
 
@@ -2275,7 +2424,8 @@ function SkynetIADSMobilePatrol:getReusableThreatContact(entry, triggerInfo)
 		or cachedContact:isExist() == false
 		or isLikelyGroundedResidualAirContact(cachedContact) == true
 		or cachedContact:isIdentifiedAsHARM() == true
-		or entry.element:areGoLiveConstraintsSatisfied(cachedContact) ~= true then
+		or entry.element:areGoLiveConstraintsSatisfied(cachedContact) ~= true
+		or self:isThreatAltitudeEligible(entry, cachedContact) ~= true then
 		return nil, math.huge
 	end
 
@@ -2324,16 +2474,16 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 
 	local function evaluateContact(contact)
 		if contact == nil then
-			return false, "contact_nil", nil, nil, nil, nil, nil
+			return false, "contact_nil", nil, nil, nil, nil, nil, nil
 		end
 		if isAirContact(contact) ~= true then
-			return false, "non_air_contact", nil, nil, nil, nil, nil
+			return false, "non_air_contact", nil, nil, nil, nil, nil, nil
 		end
 		if isLikelyGroundedResidualAirContact(contact) == true then
-			return false, "residual_contact", nil, nil, nil, nil, nil
+			return false, "residual_contact", nil, nil, nil, nil, nil, nil
 		end
 		if contact.isIdentifiedAsHARM and contact:isIdentifiedAsHARM() == true then
-			return false, "harm_contact", nil, nil, nil, nil, nil
+			return false, "harm_contact", nil, nil, nil, nil, nil, nil
 		end
 		local goLiveConstraintCount = countTableEntries(entry.element.getGoLiveConstraints and entry.element:getGoLiveConstraints() or nil)
 		local okConstraints, constraintsSatisfied = pcall(function()
@@ -2352,9 +2502,13 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 		end
 		local harmGatePassed = getHarmGatePassed(entry.element, contact)
 		if constraintOk ~= true then
-			return false, "constraints_failed", "N", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount
+			return false, "constraints_failed", "N", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount, nil
 		end
-		return true, "eligible", "Y", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount
+		local altitudeEligible, altitudeDetails = self:isThreatAltitudeEligible(entry, contact)
+		if altitudeEligible ~= true then
+			return false, "altitude_out_of_envelope", "Y", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount, altitudeDetails
+		end
+		return true, "eligible", "Y", targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount, altitudeDetails
 	end
 
 	local summary = {
@@ -2364,7 +2518,7 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 	}
 
 	local function inform(contact, isPreferred)
-		local canInformContact, outcomeReason, constraintOk, targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount = evaluateContact(contact)
+		local canInformContact, outcomeReason, constraintOk, targetInRangeCheck, rangeDetails, harmGatePassed, goLiveConstraintCount, altitudeDetails = evaluateContact(contact)
 		local hadTargetInRange = entry.element.targetsInRange == true and "Y" or "N"
 		local contactName = self:getContactName(contact)
 		local contactType = self:getContactTypeName(contact)
@@ -2392,6 +2546,7 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 				preferredContactInformed = isPreferred == true and "Y" or "N",
 			}
 			applyRangeBreakdown(blockedPayload, rangeDetails)
+			applyAltitudeGate(blockedPayload, altitudeDetails)
 			self:traceEntryCommand(entry, "contact_feed", blockedPayload, "informEntryOfThreatContacts")
 			return false
 		end
@@ -2427,6 +2582,7 @@ function SkynetIADSMobilePatrol:informEntryOfThreatContacts(entry, preferredCont
 			preferredContactInformed = isPreferred == true and "Y" or "N",
 		}
 		applyRangeBreakdown(issuedPayload, rangeDetails)
+		applyAltitudeGate(issuedPayload, altitudeDetails)
 		self:traceEntryCommand(entry, "contact_feed", issuedPayload, "informEntryOfThreatContacts")
 		return issued
 	end
@@ -2469,7 +2625,8 @@ function SkynetIADSMobilePatrol:findFallbackEligibleContact(entry, unit, expecte
 			and isAirContact(contact)
 			and isLikelyGroundedResidualAirContact(contact) ~= true
 			and contact:isIdentifiedAsHARM() == false
-			and entry.element:areGoLiveConstraintsSatisfied(contact) then
+			and entry.element:areGoLiveConstraintsSatisfied(contact)
+			and self:isThreatAltitudeEligible(entry, contact) == true then
 			self:refreshThreatContact(contact)
 			local distanceMeters = self:getContactDistanceMeters(entry, contact)
 			if maxDistanceMeters == nil or distanceMeters <= maxDistanceMeters then
@@ -2529,7 +2686,8 @@ function SkynetIADSMobilePatrol:findNearestEligibleContact(entry, maxDistanceMet
 			and isAirContact(contact)
 			and isLikelyGroundedResidualAirContact(contact) ~= true
 			and contact:isIdentifiedAsHARM() == false
-			and entry.element:areGoLiveConstraintsSatisfied(contact) then
+			and entry.element:areGoLiveConstraintsSatisfied(contact)
+			and self:isThreatAltitudeEligible(entry, contact) == true then
 			local distanceMeters = self:getContactDistanceMeters(entry, contact)
 			if distanceMeters <= maxDistanceMeters and distanceMeters < nearestDistanceMeters then
 				nearestContact = contact
@@ -2582,7 +2740,7 @@ function SkynetIADSMobilePatrol:buildDeployTriggerInfo(entry, contact, source)
 	if okType and typeName then
 		targetType = typeName
 	end
-	return {
+	local triggerInfo = {
 		source = source or "unknown",
 		time = timer.getTime(),
 		contactName = targetName,
@@ -2590,6 +2748,8 @@ function SkynetIADSMobilePatrol:buildDeployTriggerInfo(entry, contact, source)
 		distanceNm = mist.utils.round(distanceNm, 1),
 		threatRangeNm = mist.utils.round(threatRangeNm, 1),
 	}
+	applyAltitudeGate(triggerInfo, self:getThreatAltitudeDetails(entry, contact))
+	return triggerInfo
 end
 
 function SkynetIADSMobilePatrol:buildAircraftUnitTriggerInfo(entry, unit, source, threatRangeMeters)
@@ -2617,7 +2777,7 @@ function SkynetIADSMobilePatrol:buildAircraftUnitTriggerInfo(entry, unit, source
 	if okType and typeName then
 		targetType = typeName
 	end
-	return {
+	local triggerInfo = {
 		source = source or "direct_unit_scan",
 		time = timer.getTime(),
 		contactName = targetName,
@@ -2627,6 +2787,8 @@ function SkynetIADSMobilePatrol:buildAircraftUnitTriggerInfo(entry, unit, source
 		effectiveDistanceNm = mist.utils.round(distanceNm, 1),
 		threatRangeNm = mist.utils.round(threatRangeNm, 1),
 	}
+	applyAltitudeGate(triggerInfo, self:getThreatAltitudeDetails(entry, unit))
+	return triggerInfo
 end
 
 function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
@@ -2655,6 +2817,9 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			local rejectReason = "no_alert_candidate"
 			if rawDirectUnit ~= nil and isLikelyGroundedResidualAirUnit(rawDirectUnit) and rawContact == nil then
 				rejectReason = "grounded_residual_air_unit"
+			elseif (rawDirectUnit ~= nil and self:isThreatAltitudeEligible(entry, rawDirectUnit) ~= true)
+				or (rawContact ~= nil and self:isThreatAltitudeEligible(entry, rawContact) ~= true) then
+				rejectReason = "outside_altitude_envelope"
 			elseif (rawDirectUnitDistanceMeters ~= nil and rawDirectUnitDistanceMeters < math.huge and rawDirectUnitDistanceMeters > profile.alertRangeMeters)
 				or (rawContactDistanceMeters ~= nil and rawContactDistanceMeters < math.huge and rawContactDistanceMeters > profile.alertRangeMeters) then
 				rejectReason = "outside_alert_range"
@@ -2782,6 +2947,8 @@ function SkynetIADSMobilePatrol:findSAMThreatContact(entry)
 			local rejectReason = "no_direct_candidate"
 			if rawDirectUnit ~= nil and isLikelyGroundedResidualAirUnit(rawDirectUnit) then
 				rejectReason = "grounded_residual_air_unit"
+			elseif rawDirectUnit ~= nil and self:isThreatAltitudeEligible(entry, rawDirectUnit) ~= true then
+				rejectReason = "outside_altitude_envelope"
 			elseif rawDirectUnitDistanceMeters ~= nil and rawDirectUnitDistanceMeters < math.huge and rawDirectUnitDistanceMeters > threatRangeMeters then
 				rejectReason = "outside_engage_range"
 			end
@@ -3193,6 +3360,7 @@ function SkynetIADSMobilePatrol:findNearestEnemyAircraftUnit(entry, maxDistanceM
 	for i = 1, #enemyAircraft do
 		local unit = enemyAircraft[i]
 		if isLikelyGroundedResidualAirUnit(unit) ~= true then
+			local altitudeEligible, altitudeDetails = self:isThreatAltitudeEligible(entry, unit)
 			local unitPoint = unit:getPoint()
 			if unitPoint then
 				local distanceMeters = mist.utils.get2DDist(center, unitPoint)
@@ -3201,10 +3369,13 @@ function SkynetIADSMobilePatrol:findNearestEnemyAircraftUnit(entry, maxDistanceM
 						outcome = "candidate",
 						command = "air_contact",
 						scope = "air_track",
-						note = "within_scan_range=Y",
+						note = "within_scan_range=Y | altitude_eligible=" .. tostring(altitudeEligible == true and "Y" or "N"),
+						altitudeEligible = altitudeDetails and altitudeDetails.altitudeEligible or nil,
+						targetAltitudeDeltaFeet = altitudeDetails and metersToRoundedFeet(altitudeDetails.targetAltitudeDeltaMeters) or nil,
+						maxFiringAltitudeFeet = altitudeDetails and metersToRoundedFeet(altitudeDetails.maxFiringAltitudeMeters) or nil,
 					}, "findNearestEnemyAircraftUnit")
 				end
-				if distanceMeters <= maxDistanceMeters and distanceMeters < nearestDistanceMeters then
+				if distanceMeters <= maxDistanceMeters and altitudeEligible == true and distanceMeters < nearestDistanceMeters then
 					nearestUnit = unit
 					nearestDistanceMeters = distanceMeters
 				end
@@ -3873,6 +4044,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 						missilesInFlight = missilesInFlight,
 					}
 					applyRangeBreakdown(launchPayload, launchRangeDetails)
+					applyAltitudeGate(launchPayload, self:getThreatAltitudeDetails(entry, monitoredContact))
 					self:traceLaunchMonitor(entry, launchPayload, "updateEntry")
 				end
 			end
@@ -4382,6 +4554,10 @@ function SkynetIADSMobilePatrol.installHooks()
 		if entry and entry.kind == "MSAM" then
 			local profile = entry.manager:getMSAMCombatProfile(entry)
 			if profile and isAirContact(contact) and contact:isIdentifiedAsHARM() == false and self:areGoLiveConstraintsSatisfied(contact) == true then
+				local altitudeEligible = entry.manager:isThreatAltitudeEligible(entry, contact)
+				if altitudeEligible ~= true then
+					return
+				end
 				local contactDistanceMeters = entry.manager:getContactDistanceMeters(entry, contact)
 				local directUnit, directUnitDistanceMeters = entry.manager:findNearestEnemyAircraftUnit(entry, profile.alertRangeMeters)
 				local effectiveDistanceMeters = contactDistanceMeters
@@ -4410,6 +4586,7 @@ function SkynetIADSMobilePatrol.installHooks()
 				isAirContact(contact)
 				and
 				self:areGoLiveConstraintsSatisfied(contact) == true
+				and entry.manager:isThreatAltitudeEligible(entry, contact) == true
 				and self:isTargetInRange(contact)
 				and (
 					contact:isIdentifiedAsHARM() == false
