@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-rotation-progress-fallback | BUILD TIME: 05.04.2026 1303Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-tick-instancefix | BUILD TIME: 05.04.2026 1313Z ---")
 
 do
 --this file contains the required units per sam type
@@ -11605,6 +11605,8 @@ SkynetIADSSiblingCoordination.__index = SkynetIADSSiblingCoordination
 
 SkynetIADSSiblingCoordination._familyByElement = setmetatable({}, { __mode = "k" })
 SkynetIADSSiblingCoordination._memberByElement = setmetatable({}, { __mode = "k" })
+SkynetIADSSiblingCoordination._instances = {}
+SkynetIADSSiblingCoordination._nextInstanceId = 1
 
 SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL = 1
 SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION = "hold_dark"
@@ -13113,7 +13115,8 @@ function SkynetIADSSiblingCoordination:tick(time)
 end
 
 function SkynetIADSSiblingCoordination._tick(params, time)
-    local self = params and params.self or nil
+    local instanceId = params and params.instanceId or nil
+    local self = instanceId and SkynetIADSSiblingCoordination._instances[instanceId] or nil
     if self == nil then
         return nil
     end
@@ -13145,11 +13148,16 @@ function SkynetIADSSiblingCoordination:start()
     end
     self.taskID = mist.scheduleFunction(
         SkynetIADSSiblingCoordination._tick,
-        { self = self },
+        { instanceId = self.instanceId },
         timer.getTime() + self.checkInterval,
         self.checkInterval
     )
-    self:log("started | families=" .. tostring(#self.families) .. " | interval=" .. tostring(self.checkInterval) .. "s")
+    self:log(
+        "started | families=" .. tostring(#self.families)
+        .. " | interval=" .. tostring(self.checkInterval) .. "s"
+        .. " | instanceId=" .. tostring(self.instanceId)
+        .. " | taskID=" .. tostring(self.taskID)
+    )
 end
 
 function SkynetIADSSiblingCoordination:registerFamily(definition)
@@ -13257,6 +13265,9 @@ end
 function SkynetIADSSiblingCoordination.create(iads, config)
     local self = {}
     setmetatable(self, SkynetIADSSiblingCoordination)
+    self.instanceId = SkynetIADSSiblingCoordination._nextInstanceId
+    SkynetIADSSiblingCoordination._nextInstanceId = SkynetIADSSiblingCoordination._nextInstanceId + 1
+    SkynetIADSSiblingCoordination._instances[self.instanceId] = self
     self.iads = iads
     self.checkInterval = (config and config.checkInterval) or SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL
     self.defaultPassiveAction = (config and config.defaultPassiveAction) or SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION

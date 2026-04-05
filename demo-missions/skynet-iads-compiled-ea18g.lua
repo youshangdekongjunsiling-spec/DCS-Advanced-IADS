@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-family-rotation-progress-15s | BUILD TIME: 05.04.2026 0359Z ---")
+env.info("--- SKYNET VERSION: ea18g-family-tick-instancefix | BUILD TIME: 05.04.2026 1313Z ---")
 
 do
 --this file contains the required units per sam type
@@ -11605,6 +11605,8 @@ SkynetIADSSiblingCoordination.__index = SkynetIADSSiblingCoordination
 
 SkynetIADSSiblingCoordination._familyByElement = setmetatable({}, { __mode = "k" })
 SkynetIADSSiblingCoordination._memberByElement = setmetatable({}, { __mode = "k" })
+SkynetIADSSiblingCoordination._instances = {}
+SkynetIADSSiblingCoordination._nextInstanceId = 1
 
 SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL = 1
 SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION = "hold_dark"
@@ -11803,6 +11805,19 @@ end
 function SkynetIADSSiblingCoordination:notifyDebug(message)
     if _G.SkynetRuntimeDebugNotify and message then
         pcall(_G.SkynetRuntimeDebugNotify, message)
+    end
+end
+
+function SkynetIADSSiblingCoordination:broadcastProgress(message)
+    if message == nil then
+        return
+    end
+    if _G.SkynetRuntimeDebugNotify then
+        pcall(_G.SkynetRuntimeDebugNotify, message)
+        return
+    end
+    if trigger and trigger.action and trigger.action.outText then
+        pcall(trigger.action.outText, "[SKYNET DBG] " .. tostring(message), 8)
     end
 end
 
@@ -12195,7 +12210,7 @@ function SkynetIADSSiblingCoordination:formatRotationProgressMember(family, memb
 end
 
 function SkynetIADSSiblingCoordination:reportFamilyRotationProgress(family, now)
-    if family == nil or _G.SkynetRuntimeDebugNotify == nil then
+    if family == nil then
         return
     end
     local interval = family.debugProgressIntervalSeconds or self.defaultDebugProgressIntervalSeconds
@@ -12216,14 +12231,14 @@ function SkynetIADSSiblingCoordination:reportFamilyRotationProgress(family, now)
         self:hasReleasedDeployedMembers(family) and "Y" or "N",
         tostring(roundSeconds((family.rotationCooldownUntil or 0) - now))
     )
-    self:notifyDebug(header)
     self:log("progress | " .. header)
+    self:broadcastProgress(header)
 
     for i = 1, #family.members do
         local line = self:formatRotationProgressMember(family, family.members[i], now)
         if line ~= nil then
-            self:notifyDebug(line)
             self:log("progress | family=" .. family.name .. " | " .. line)
+            self:broadcastProgress(line)
         end
     end
 end
@@ -13100,7 +13115,8 @@ function SkynetIADSSiblingCoordination:tick(time)
 end
 
 function SkynetIADSSiblingCoordination._tick(params, time)
-    local self = params and params.self or nil
+    local instanceId = params and params.instanceId or nil
+    local self = instanceId and SkynetIADSSiblingCoordination._instances[instanceId] or nil
     if self == nil then
         return nil
     end
@@ -13132,11 +13148,16 @@ function SkynetIADSSiblingCoordination:start()
     end
     self.taskID = mist.scheduleFunction(
         SkynetIADSSiblingCoordination._tick,
-        { self = self },
+        { instanceId = self.instanceId },
         timer.getTime() + self.checkInterval,
         self.checkInterval
     )
-    self:log("started | families=" .. tostring(#self.families) .. " | interval=" .. tostring(self.checkInterval) .. "s")
+    self:log(
+        "started | families=" .. tostring(#self.families)
+        .. " | interval=" .. tostring(self.checkInterval) .. "s"
+        .. " | instanceId=" .. tostring(self.instanceId)
+        .. " | taskID=" .. tostring(self.taskID)
+    )
 end
 
 function SkynetIADSSiblingCoordination:registerFamily(definition)
@@ -13244,6 +13265,9 @@ end
 function SkynetIADSSiblingCoordination.create(iads, config)
     local self = {}
     setmetatable(self, SkynetIADSSiblingCoordination)
+    self.instanceId = SkynetIADSSiblingCoordination._nextInstanceId
+    SkynetIADSSiblingCoordination._nextInstanceId = SkynetIADSSiblingCoordination._nextInstanceId + 1
+    SkynetIADSSiblingCoordination._instances[self.instanceId] = self
     self.iads = iads
     self.checkInterval = (config and config.checkInterval) or SkynetIADSSiblingCoordination.DEFAULT_CHECK_INTERVAL
     self.defaultPassiveAction = (config and config.defaultPassiveAction) or SkynetIADSSiblingCoordination.DEFAULT_PASSIVE_ACTION
