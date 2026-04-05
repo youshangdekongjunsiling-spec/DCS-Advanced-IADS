@@ -15,7 +15,7 @@ SkynetIADSSiblingCoordination.DEFAULT_DENIAL_ALERT_DISTANCE_NM = 25
 SkynetIADSSiblingCoordination.DEFAULT_SUPPRESSED_SWITCH_DELAY_SECONDS = 10
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_LATCH_SECONDS = 8
 SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM = 1.5
-SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 180
+SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 120
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS = 1000
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS = 30
 SkynetIADSSiblingCoordination.DEFAULT_DEBUG_PROGRESS_INTERVAL_SECONDS = 15
@@ -188,6 +188,8 @@ function SkynetIADSSiblingCoordination.getFamilyForElement(element)
         sharedReason = family.activeReason,
         passiveAction = family.passiveAction,
         passiveMode = member.passiveMode,
+        rotationIntervalSeconds = family.rotationIntervalSeconds,
+        rotationMinMoveMeters = family.rotationMinMoveMeters,
     }
 end
 
@@ -411,6 +413,14 @@ function SkynetIADSSiblingCoordination:refreshMemberDeploymentObserved(member, n
         return nil, false
     end
     local entry = self:getMobilePatrolEntry(member.element)
+    local entryObservedSince = entry and entry.deployedStateSince or nil
+    if entryObservedSince ~= nil then
+        member.deployedObservedSince = entryObservedSince
+        member.deployedLostObservedSince = nil
+        member.currentlyObservedDeployed = true
+        member.lastObservedEntryState = entry and entry.state or nil
+        return entry, true
+    end
     local deployed = self:isMSAMDeployState(entry) and self:isSuppressed(member) ~= true
     member.currentlyObservedDeployed = deployed
     member.lastObservedEntryState = entry and entry.state or nil
@@ -431,6 +441,17 @@ function SkynetIADSSiblingCoordination:refreshMemberDeploymentObserved(member, n
         end
     end
     return entry, deployed
+end
+
+function SkynetIADSSiblingCoordination:getMemberDeploymentObservedSince(member)
+    if member == nil then
+        return nil
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    if entry and entry.deployedStateSince ~= nil then
+        return entry.deployedStateSince
+    end
+    return member.deployedObservedSince
 end
 
 function SkynetIADSSiblingCoordination:getRotationMoveDistanceMeters(member)
@@ -592,8 +613,9 @@ function SkynetIADSSiblingCoordination:formatRotationProgressMember(family, memb
     local entry = self:getMobilePatrolEntry(member.element)
     local entryState = entry and entry.state or "nil"
     local deployedForSeconds = 0
-    if member.deployedObservedSince ~= nil then
-        deployedForSeconds = roundSeconds(now - member.deployedObservedSince)
+    local deployedObservedSince = self:getMemberDeploymentObservedSince(member)
+    if deployedObservedSince ~= nil then
+        deployedForSeconds = roundSeconds(now - deployedObservedSince)
     end
     local rotationDue = self:isRotationDue(family, member, now) and "Y" or "N"
     local moveMeters = member.rotationMoveActive == true and math.floor(self:getRotationMoveDistanceMeters(member) + 0.5) or 0
@@ -653,14 +675,15 @@ function SkynetIADSSiblingCoordination:isRotationDue(family, member, now)
     local entry = self:getMobilePatrolEntry(member.element)
     local isObservedDeployed = member.currentlyObservedDeployed == true
         or self:isMSAMDeployState(entry) == true
-        or member.deployedObservedSince ~= nil
+        or self:getMemberDeploymentObservedSince(member) ~= nil
     if isObservedDeployed ~= true then
         return false
     end
-    if member.deployedObservedSince == nil then
+    local deployedObservedSince = self:getMemberDeploymentObservedSince(member)
+    if deployedObservedSince == nil then
         return false
     end
-    return (now - member.deployedObservedSince) >= (family.rotationIntervalSeconds or self.defaultRotationIntervalSeconds)
+    return (now - deployedObservedSince) >= (family.rotationIntervalSeconds or self.defaultRotationIntervalSeconds)
 end
 
 function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, primary, now)
@@ -672,7 +695,7 @@ function SkynetIADSSiblingCoordination:pickStandbyRotationCandidate(family, prim
     for i = 1, #family.members do
         local member = family.members[i]
         if member ~= primary and member.passiveMode == "standby" and self:isRotationDue(family, member, now) then
-            local observedSince = member.deployedObservedSince or now
+            local observedSince = self:getMemberDeploymentObservedSince(member) or now
             if observedSince < bestObservedSince then
                 bestMember = member
                 bestObservedSince = observedSince
@@ -691,7 +714,7 @@ function SkynetIADSSiblingCoordination:pickDeployedRotationCandidate(family, exc
     for i = 1, #family.members do
         local member = family.members[i]
         if member.groupName ~= excludedGroupName and self:isRotationDue(family, member, now) then
-            local observedSince = member.deployedObservedSince or now
+            local observedSince = self:getMemberDeploymentObservedSince(member) or now
             if observedSince < bestObservedSince then
                 bestMember = member
                 bestObservedSince = observedSince
@@ -710,7 +733,7 @@ function SkynetIADSSiblingCoordination:hasReleasedDeployedMembers(family)
         local entry = self:getMobilePatrolEntry(member.element)
         local isObservedDeployed = member.currentlyObservedDeployed == true
             or self:isMSAMDeployState(entry) == true
-            or member.deployedObservedSince ~= nil
+            or self:getMemberDeploymentObservedSince(member) ~= nil
         if isObservedDeployed == true and self:isSuppressed(member) ~= true then
             return true
         end
