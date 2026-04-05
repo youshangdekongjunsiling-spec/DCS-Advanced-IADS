@@ -16,6 +16,7 @@ SkynetIADSSiblingCoordination.DEFAULT_PRIMARY_DISTANCE_HYSTERESIS_NM = 1.5
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS = 180
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS = 1000
 SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS = 30
+SkynetIADSSiblingCoordination.DEFAULT_DEBUG_PROGRESS_INTERVAL_SECONDS = 15
 SkynetIADSSiblingCoordination.DEPLOY_OBSERVE_GRACE_SECONDS = 5
 
 local function setGroundROE(controller, weaponHold)
@@ -237,6 +238,16 @@ function SkynetIADSSiblingCoordination:traceElementCommand(element, command, det
         return self.iads:traceElementCommand(element, command, self:withOrderTraceOrigin(details, functionName))
     end
     return false
+end
+
+local function roundSeconds(value)
+    if value == nil then
+        return 0
+    end
+    if value < 0 then
+        return 0
+    end
+    return math.floor(value + 0.5)
 end
 
 function SkynetIADSSiblingCoordination:getMobilePatrolEntry(element)
@@ -556,6 +567,64 @@ function SkynetIADSSiblingCoordination:refreshFamilyRotation(family)
     local movedMeters = self:getRotationMoveDistanceMeters(rotatingMember)
     if movedMeters >= (family.rotationMinMoveMeters or self.defaultRotationMinMoveMeters) then
         self:finishRotation(family, rotatingMember, "complete", "min_move_reached")
+    end
+end
+
+function SkynetIADSSiblingCoordination:formatRotationProgressMember(family, member, now)
+    if family == nil or member == nil then
+        return nil
+    end
+    local entry = self:getMobilePatrolEntry(member.element)
+    local entryState = entry and entry.state or "nil"
+    local deployedForSeconds = 0
+    if member.deployedObservedSince ~= nil then
+        deployedForSeconds = roundSeconds(now - member.deployedObservedSince)
+    end
+    local rotationDue = self:isRotationDue(family, member, now) and "Y" or "N"
+    local moveMeters = member.rotationMoveActive == true and math.floor(self:getRotationMoveDistanceMeters(member) + 0.5) or 0
+    return table.concat({
+        member.groupName,
+        "role=" .. tostring(member.lastRole or "released"),
+        "mode=" .. tostring(member.passiveMode or "-"),
+        "state=" .. tostring(entryState),
+        "deployedFor=" .. tostring(deployedForSeconds) .. "s",
+        "rotationDue=" .. rotationDue,
+        "rotating=" .. (member.rotationMoveActive == true and "Y" or "N"),
+        "moved=" .. tostring(moveMeters) .. "m",
+    }, " | ")
+end
+
+function SkynetIADSSiblingCoordination:reportFamilyRotationProgress(family, now)
+    if family == nil or _G.SkynetRuntimeDebugNotify == nil then
+        return
+    end
+    local interval = family.debugProgressIntervalSeconds or self.defaultDebugProgressIntervalSeconds
+    if interval == nil or interval <= 0 then
+        return
+    end
+    local lastReportedAt = family.lastDebugProgressAt or 0
+    if (now - lastReportedAt) < interval then
+        return
+    end
+    family.lastDebugProgressAt = now
+
+    local header = string.format(
+        "%s progress | active=%s | rotation=%s | releasedDeployed=%s | cooldown=%ss",
+        family.name,
+        tostring(family.activeGroupName or "-"),
+        tostring(family.rotationActiveGroupName or "-"),
+        self:hasReleasedDeployedMembers(family) and "Y" or "N",
+        tostring(roundSeconds((family.rotationCooldownUntil or 0) - now))
+    )
+    self:notifyDebug(header)
+    self:log("progress | " .. header)
+
+    for i = 1, #family.members do
+        local line = self:formatRotationProgressMember(family, family.members[i], now)
+        if line ~= nil then
+            self:notifyDebug(line)
+            self:log("progress | family=" .. family.name .. " | " .. line)
+        end
     end
 end
 
@@ -1419,7 +1488,9 @@ function SkynetIADSSiblingCoordination:tick(time)
     local nextRunTime = timer.getTime() + self.checkInterval
     for i = 1, #self.families do
         local ok, err = pcall(function()
-            self:updateFamily(self.families[i])
+            local family = self.families[i]
+            self:updateFamily(family)
+            self:reportFamilyRotationProgress(family, timer.getTime())
         end)
         if ok ~= true then
             self:log("tick error | familyIndex=" .. tostring(i) .. " | err=" .. tostring(err))
@@ -1498,6 +1569,8 @@ function SkynetIADSSiblingCoordination:registerFamily(definition)
         rotationCoverGroupName = nil,
         rotationStartedAt = nil,
         rotationCooldownUntil = 0,
+        lastDebugProgressAt = 0,
+        debugProgressIntervalSeconds = definition.debugProgressIntervalSeconds or self.defaultDebugProgressIntervalSeconds,
     }
 
     for i = 1, #definition.members do
@@ -1582,6 +1655,7 @@ function SkynetIADSSiblingCoordination.create(iads, config)
     self.defaultRotationIntervalSeconds = (config and config.defaultRotationIntervalSeconds) or SkynetIADSSiblingCoordination.DEFAULT_ROTATION_INTERVAL_SECONDS
     self.defaultRotationMinMoveMeters = (config and config.defaultRotationMinMoveMeters) or SkynetIADSSiblingCoordination.DEFAULT_ROTATION_MIN_MOVE_METERS
     self.defaultRotationCooldownSeconds = (config and config.defaultRotationCooldownSeconds) or SkynetIADSSiblingCoordination.DEFAULT_ROTATION_COOLDOWN_SECONDS
+    self.defaultDebugProgressIntervalSeconds = (config and config.defaultDebugProgressIntervalSeconds) or SkynetIADSSiblingCoordination.DEFAULT_DEBUG_PROGRESS_INTERVAL_SECONDS
     self.families = {}
     self.taskID = nil
     self._immediateEvaluationInProgress = false
