@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-asam-harm-holdroute | BUILD TIME: 06.04.2026 0144Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa11-directional-deploy-v1 | BUILD TIME: 06.04.2026 0253Z ---")
 
 do
 --this file contains the required units per sam type
@@ -2211,8 +2211,10 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"passiveMode",
 		"fixedLiveCount",
 		"fixedUsableCount",
+		"fixedAvailableCount",
 		"mobileAvailableCount",
 		"mobileLiveCount",
+		"selectedFixedEWGroup",
 		"selectedCoverGroup",
 		"coverActive",
 		"liveDutySeconds",
@@ -2224,6 +2226,12 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"dueInSeconds",
 		"rotationDue",
 		"movedMeters",
+		"deployDirectionMode",
+		"deployFormation",
+		"targetBearing",
+		"deployBearing",
+		"deployDistanceMeters",
+		"fallbackRandomDeploy",
 		"waypoint",
 		"routePoints",
 		"speedKmph",
@@ -7444,6 +7452,7 @@ SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT = 2
 SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
+SkynetIADSMobilePatrol.DEFAULT_SA11_DIRECTIONAL_DEPLOY_FORM = "Vee"
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_CHECK_INTERVAL_SECONDS = 1
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_MIN_COMPLETION_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
@@ -7796,6 +7805,23 @@ local function getTargetPositionPoint(target)
 		end
 	end
 	return nil
+end
+
+local function get2DBearingDegrees(fromPoint, toPoint)
+	if fromPoint == nil or toPoint == nil then
+		return nil
+	end
+	local dx = (toPoint.x or 0) - (fromPoint.x or 0)
+	local dz = (toPoint.z or 0) - (fromPoint.z or 0)
+	if math.abs(dx) < 0.001 and math.abs(dz) < 0.001 then
+		return nil
+	end
+	local headingRad = math.atan2(dz, dx)
+	local headingDeg = math.deg(headingRad)
+	if headingDeg < 0 then
+		headingDeg = headingDeg + 360
+	end
+	return mist.utils.round(headingDeg, 1)
 end
 
 local function getLauncherPositionPoint(launcher)
@@ -8387,6 +8413,72 @@ local function scheduleMoveFireMovementKick(entry, reason, functionName)
 					setGroupAIOnResult = aiEnabled and "Y" or "N",
 					delaySeconds = delaySeconds,
 				}, scheduledFunction or "scheduleMoveFireMovementKick")
+			end
+		end, { element, reason, functionName }, timer.getTime() + delaySeconds)
+	end
+end
+
+local function isFixedGroundEWRadar(element)
+	if element == nil or SkynetIADSEWRadar == nil then
+		return false
+	end
+	if getmetatable(element) ~= SkynetIADSEWRadar then
+		return false
+	end
+	return SkynetIADSMobilePatrol.getEntryForElement(element) == nil
+end
+
+local function issueFixedEWHarmEscapeKick(element)
+	if element == nil or element.getHARMRelocationGroup == nil then
+		return false, false, false, false
+	end
+	local group = element:getHARMRelocationGroup()
+	if group == nil or group.isExist == nil or group:isExist() == false then
+		return false, false, false, false
+	end
+	local routeIssued = false
+	if element.harmRelocationDestination ~= nil and element.issueHARMRelocationRoute ~= nil then
+		local okRoute, issued = pcall(function()
+			return element:issueHARMRelocationRoute(group, element.harmRelocationDestination, element:getHARMRelocationSpeedKmph())
+		end)
+		if okRoute == true and issued == true then
+			routeIssued = true
+		end
+	end
+	local continueIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(group)
+	return routeIssued, continueIssued, stopRouteCleared, aiEnabled
+end
+
+local function scheduleFixedEWHarmMovementKick(element, reason, functionName)
+	if element == nil or mist == nil or mist.scheduleFunction == nil then
+		return
+	end
+	local delays = { 0.4, 1.2, 2.5 }
+	for i = 1, #delays do
+		local delaySeconds = delays[i]
+		mist.scheduleFunction(function(args)
+			local scheduledElement = args[1]
+			local scheduledReason = args[2]
+			local scheduledFunction = args[3]
+			if scheduledElement == nil or scheduledElement.isDestroyed == nil or scheduledElement:isDestroyed() == true then
+				return
+			end
+			if scheduledElement.harmSilenceID == nil and scheduledElement.harmRelocationInProgress ~= true then
+				return
+			end
+			local routeIssued, continued, stopRouteCleared, aiEnabled = issueFixedEWHarmEscapeKick(scheduledElement)
+			if scheduledElement.iads and scheduledElement.iads.traceElementCommand then
+				scheduledElement.iads:traceElementCommand(scheduledElement, "ew_harm_escape_kick", {
+					event = "decision",
+					outcome = (routeIssued or continued or stopRouteCleared or aiEnabled) and "issued" or "failed",
+					reason = scheduledReason,
+					source = "fixed_ew_harm_escape",
+					issueEscapeRouteResult = routeIssued and "Y" or "N",
+					continueMovingResult = continued and "Y" or "N",
+					stopRouteClearResult = stopRouteCleared and "Y" or "N",
+					setGroupAIOnResult = aiEnabled and "Y" or "N",
+					delaySeconds = delaySeconds,
+				}, scheduledFunction or "scheduleFixedEWHarmMovementKick")
 			end
 		end, { element, reason, functionName }, timer.getTime() + delaySeconds)
 	end
@@ -9218,6 +9310,48 @@ function SkynetIADSMobilePatrol:calculateDeployScatterPoint(entry)
 		return nil, 0, nil
 	end
 	local distanceMeters = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS
+	if entry ~= nil and entry.kind == "MSAM" and entry.element ~= nil and entry.element.getNatoName and entry.element:getNatoName() == "SA-11" then
+		local deployTrigger = entry.lastDeployTrigger
+		local targetPoint = deployTrigger and deployTrigger.targetPoint or nil
+		if targetPoint and targetPoint.x ~= nil and targetPoint.z ~= nil then
+			local awayX = (startPoint.x or 0) - (targetPoint.x or 0)
+			local awayZ = (startPoint.z or 0) - (targetPoint.z or 0)
+			local magnitude = math.sqrt((awayX * awayX) + (awayZ * awayZ))
+			if magnitude > 1 then
+				local unitX = awayX / magnitude
+				local unitZ = awayZ / magnitude
+				local perpX = -unitZ
+				local perpZ = unitX
+				local midpointDistance = math.max(40, math.floor(distanceMeters * 0.55))
+				local lateralOffsets = { 0, 20, -20, 35, -35 }
+				for i = 1, #lateralOffsets do
+					local lateralOffset = lateralOffsets[i]
+					local candidate = {
+						x = startPoint.x + (unitX * distanceMeters) + (perpX * lateralOffset),
+						y = startPoint.y,
+						z = startPoint.z + (unitZ * distanceMeters) + (perpZ * lateralOffset),
+					}
+					local midPoint = {
+						x = startPoint.x + (unitX * midpointDistance) + (perpX * (lateralOffset * 0.5)),
+						y = startPoint.y,
+						z = startPoint.z + (unitZ * midpointDistance) + (perpZ * (lateralOffset * 0.5)),
+					}
+					if self:isDeployScatterPointOnLand(midPoint) and self:isDeployScatterPointOnLand(candidate) then
+						return candidate, distanceMeters, startPoint, {
+							deployDirectionMode = "rear_sector",
+							deployFormation = SkynetIADSMobilePatrol.DEFAULT_SA11_DIRECTIONAL_DEPLOY_FORM,
+							targetBearing = get2DBearingDegrees(startPoint, targetPoint),
+							deployBearing = get2DBearingDegrees(startPoint, candidate),
+							deployDistanceMeters = distanceMeters,
+							targetPoint = targetPoint,
+							midPoint = midPoint,
+							fallbackRandomDeploy = "N",
+						}
+					end
+				end
+			end
+		end
+	end
 	local fallbackPoint = nil
 	for i = 1, 50 do
 		local headingRad = math.random() * 2 * math.pi
@@ -9230,10 +9364,20 @@ function SkynetIADSMobilePatrol:calculateDeployScatterPoint(entry)
 			fallbackPoint = candidate
 		end
 		if self:isDeployScatterPointOnLand(candidate) then
-			return candidate, distanceMeters, startPoint
+			return candidate, distanceMeters, startPoint, {
+				deployDirectionMode = "random_scatter",
+				deployFormation = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM,
+				deployDistanceMeters = distanceMeters,
+				fallbackRandomDeploy = "Y",
+			}
 		end
 	end
-	return fallbackPoint, distanceMeters, startPoint
+	return fallbackPoint, distanceMeters, startPoint, {
+		deployDirectionMode = "random_scatter",
+		deployFormation = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM,
+		deployDistanceMeters = distanceMeters,
+		fallbackRandomDeploy = "Y",
+	}
 end
 
 function SkynetIADSMobilePatrol:calculateSA15HarmEscapeRoute(entry)
@@ -9325,7 +9469,7 @@ function SkynetIADSMobilePatrol:issueSA15HarmEscapeRoute(entry, reason)
 	return ok, destination
 end
 
-function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, speedKmph)
+function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, speedKmph, deployOptions)
 	if entry == nil or entry.group == nil or entry.group:isExist() == false or destination == nil then
 		return false
 	end
@@ -9334,13 +9478,15 @@ function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, spee
 		return false
 	end
 	local speedMps = mist.utils.kmphToMps(speedKmph)
+	local formation = deployOptions and deployOptions.deployFormation or SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM
+	local midPoint = deployOptions and deployOptions.midPoint or {
+		x = startPoint.x + 25,
+		z = startPoint.z + 25
+	}
 	local path = {
-		mist.ground.buildWP(startPoint, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM, speedMps),
-		mist.ground.buildWP({
-			x = startPoint.x + 25,
-			z = startPoint.z + 25
-		}, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM, speedMps),
-		mist.ground.buildWP(destination, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM, speedMps),
+		mist.ground.buildWP(startPoint, formation, speedMps),
+		mist.ground.buildWP(midPoint, formation, speedMps),
+		mist.ground.buildWP(destination, formation, speedMps),
 	}
 	local ok = pcall(function()
 		mist.goRoute(entry.group, path)
@@ -9391,7 +9537,7 @@ function SkynetIADSMobilePatrol:getDeployScatterSpeedKmph(entry)
 	return speed
 end
 
-function SkynetIADSMobilePatrol:issueDeployScatter(entry)
+function SkynetIADSMobilePatrol:issueDeployScatter(entry, triggerInfo)
 	if entry.group == nil or entry.group:isExist() == false then
 		self:traceEntryCommand(entry, "deploy_scatter", {
 			outcome = "skipped",
@@ -9399,7 +9545,10 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		}, "issueDeployScatter")
 		return false
 	end
-	local destination, distanceMeters, startPoint = self:calculateDeployScatterPoint(entry)
+	if triggerInfo ~= nil and triggerInfo.targetPoint ~= nil then
+		entry.lastDeployTrigger = triggerInfo
+	end
+	local destination, distanceMeters, startPoint, deployOptions = self:calculateDeployScatterPoint(entry)
 	if destination == nil then
 		self:traceEntryCommand(entry, "deploy_scatter", {
 			outcome = "skipped",
@@ -9408,7 +9557,7 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		return false
 	end
 	local speedKmph = self:getDeployScatterSpeedKmph(entry)
-	local ok = self:issueDeployScatterRoute(entry, destination, speedKmph)
+	local ok = self:issueDeployScatterRoute(entry, destination, speedKmph, deployOptions)
 	if ok then
 		entry.currentDestination = destination
 		entry.lastRouteIssueTime = timer.getTime()
@@ -9426,6 +9575,12 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		outcome = ok and "issued" or "failed",
 		destination = destination,
 		speedKmph = speedKmph,
+		deployDirectionMode = deployOptions and deployOptions.deployDirectionMode or nil,
+		deployFormation = deployOptions and deployOptions.deployFormation or nil,
+		targetBearing = deployOptions and deployOptions.targetBearing or nil,
+		deployBearing = deployOptions and deployOptions.deployBearing or nil,
+		deployDistanceMeters = deployOptions and deployOptions.deployDistanceMeters or nil,
+		fallbackRandomDeploy = deployOptions and deployOptions.fallbackRandomDeploy or nil,
 		note = distanceMeters and ("distance=" .. tostring(distanceMeters) .. "m") or nil,
 	}, "issueDeployScatter")
 	return ok
@@ -10301,6 +10456,7 @@ function SkynetIADSMobilePatrol:buildDeployTriggerInfo(entry, contact, source)
 		time = timer.getTime(),
 		contactName = targetName,
 		contactType = targetType,
+		targetPoint = targetPoint,
 		distanceNm = mist.utils.round(distanceNm, 1),
 		threatRangeNm = mist.utils.round(threatRangeNm, 1),
 	}
@@ -10338,6 +10494,7 @@ function SkynetIADSMobilePatrol:buildAircraftUnitTriggerInfo(entry, unit, source
 		time = timer.getTime(),
 		contactName = targetName,
 		contactType = targetType,
+		targetPoint = targetPoint,
 		distanceNm = mist.utils.round(distanceNm, 1),
 		directDistanceNm = mist.utils.round(distanceNm, 1),
 		effectiveDistanceNm = mist.utils.round(distanceNm, 1),
@@ -10983,6 +11140,236 @@ function SkynetIADSMobilePatrol:isMEWEntryLive(entry)
 	return self:isMEWEntryAvailable(entry) and entry.element:isActive() == true
 end
 
+function SkynetIADSMobilePatrol:getManagedFixedEWRadars()
+	local managed = {}
+	local ewRadars = self.iads and self.iads.earlyWarningRadars or {}
+	for i = 1, #ewRadars do
+		local ewRadar = ewRadars[i]
+		if isFixedGroundEWRadar(ewRadar) then
+			managed[#managed + 1] = ewRadar
+		end
+	end
+	return managed
+end
+
+function SkynetIADSMobilePatrol:isFixedEWAvailable(ewRadar)
+	if ewRadar == nil or isFixedGroundEWRadar(ewRadar) ~= true then
+		return false
+	end
+	return ewRadar:isDestroyed() == false
+		and ewRadar:hasWorkingPowerSource()
+		and ewRadar:hasWorkingRadar()
+		and ewRadar.harmSilenceID == nil
+		and ewRadar.harmRelocationInProgress ~= true
+end
+
+function SkynetIADSMobilePatrol:isFixedEWLive(ewRadar)
+	return self:isFixedEWAvailable(ewRadar) and ewRadar:isActive() == true
+end
+
+function SkynetIADSMobilePatrol:getFixedEWGroupName(ewRadar)
+	if ewRadar == nil then
+		return nil
+	end
+	local okName, name = pcall(function()
+		return getGroupNameFromElement(ewRadar)
+	end)
+	if okName == true then
+		return name
+	end
+	return nil
+end
+
+function SkynetIADSMobilePatrol:getFixedEWNetworkState(now)
+	local state = {
+		fixedUsableCount = 0,
+		fixedAvailableCount = 0,
+		fixedLiveCount = 0,
+		selectedFixedEW = nil,
+		reason = "no_usable_fixed_ew",
+	}
+
+	local candidates = {}
+	local fixedEWRadars = self:getManagedFixedEWRadars()
+	local currentCoverName = self.fixedEWCurrentCoverGroupName
+	local currentCover = nil
+
+	for i = 1, #fixedEWRadars do
+		local ewRadar = fixedEWRadars[i]
+		local groupName = self:getFixedEWGroupName(ewRadar) or ewRadar:getDCSName()
+		local usable = ewRadar:isDestroyed() == false
+			and ewRadar:hasWorkingPowerSource()
+			and ewRadar:hasWorkingRadar()
+		if usable then
+			state.fixedUsableCount = state.fixedUsableCount + 1
+			if ewRadar:isActive() == true and ewRadar.harmSilenceID == nil and ewRadar.harmRelocationInProgress ~= true then
+				state.fixedLiveCount = state.fixedLiveCount + 1
+			end
+		end
+		local available = self:isFixedEWAvailable(ewRadar)
+		if available then
+			state.fixedAvailableCount = state.fixedAvailableCount + 1
+			local candidate = {
+				element = ewRadar,
+				groupName = groupName,
+				lastCoverEndedAt = self.fixedEWLastCoverEndedAt[groupName] or 0,
+			}
+			candidates[#candidates + 1] = candidate
+			if currentCoverName ~= nil and currentCoverName == groupName then
+				currentCover = candidate
+			end
+		end
+	end
+
+	if #candidates == 0 then
+		state.reason = "no_available_fixed_ew"
+		return state
+	end
+
+	local function chooseBestCandidate(excludedGroupName)
+		local best = nil
+		for i = 1, #candidates do
+			local candidate = candidates[i]
+			if excludedGroupName == nil or candidate.groupName ~= excludedGroupName then
+				local isBetter = false
+				if best == nil then
+					isBetter = true
+				elseif candidate.lastCoverEndedAt ~= best.lastCoverEndedAt then
+					isBetter = candidate.lastCoverEndedAt < best.lastCoverEndedAt
+				else
+					isBetter = tostring(candidate.groupName) < tostring(best.groupName)
+				end
+				if isBetter then
+					best = candidate
+				end
+			end
+		end
+		return best
+	end
+
+	if currentCover ~= nil then
+		local coverAgeSeconds = self.fixedEWCurrentCoverStartedAt and (now - self.fixedEWCurrentCoverStartedAt) or 0
+		local alternate = chooseBestCandidate(currentCover.groupName)
+		if coverAgeSeconds < self.defaultMEWLiveDutySeconds or alternate == nil then
+			state.selectedFixedEW = currentCover.element
+			state.reason = "retain_fixed_cover"
+			return state
+		end
+		state.selectedFixedEW = alternate.element
+		state.reason = "rotate_fixed_cover"
+		return state
+	end
+
+	local initial = chooseBestCandidate(nil)
+	if initial ~= nil then
+		state.selectedFixedEW = initial.element
+		state.reason = "select_fixed_cover"
+	end
+	return state
+end
+
+function SkynetIADSMobilePatrol:traceFixedEWNetworkState(networkState)
+	if networkState == nil or self.iads == nil or self.iads.traceCommand == nil then
+		return
+	end
+	local selectedGroupName = self:getFixedEWGroupName(networkState.selectedFixedEW) or "none"
+	local signature = table.concat({
+		tostring(networkState.reason or "none"),
+		tostring(selectedGroupName),
+		tostring(networkState.fixedUsableCount or 0),
+		tostring(networkState.fixedAvailableCount or 0),
+		tostring(networkState.fixedLiveCount or 0),
+	}, "|")
+	if self.fixedEWLastNetworkSignature == signature then
+		return
+	end
+	self.fixedEWLastNetworkSignature = signature
+	self.iads:traceCommand({
+		event = "decision",
+		command = "fixed_ew_network_state",
+		outcome = "evaluated",
+		reason = networkState.reason,
+		source = "fixed_ew_network",
+		fixedUsableCount = networkState.fixedUsableCount,
+		fixedAvailableCount = networkState.fixedAvailableCount,
+		fixedLiveCount = networkState.fixedLiveCount,
+		selectedFixedEWGroup = selectedGroupName ~= "none" and selectedGroupName or nil,
+		liveDutySeconds = self.defaultMEWLiveDutySeconds,
+		originModule = "skynet-iads-mobile-patrol.lua",
+		originFunction = "traceFixedEWNetworkState",
+	})
+end
+
+function SkynetIADSMobilePatrol:applyFixedEWNetworkState(networkState, now)
+	if networkState == nil then
+		return
+	end
+	now = now or timer.getTime()
+	local selected = networkState.selectedFixedEW
+	local selectedGroupName = self:getFixedEWGroupName(selected)
+	local previousCoverName = self.fixedEWCurrentCoverGroupName
+	if previousCoverName ~= nil and previousCoverName ~= selectedGroupName then
+		self.fixedEWLastCoverEndedAt[previousCoverName] = now
+	end
+	if selectedGroupName ~= nil then
+		if previousCoverName ~= selectedGroupName then
+			self.fixedEWCurrentCoverStartedAt = now
+		end
+		self.fixedEWCurrentCoverGroupName = selectedGroupName
+	else
+		self.fixedEWCurrentCoverGroupName = nil
+		self.fixedEWCurrentCoverStartedAt = nil
+	end
+
+	local fixedEWRadars = self:getManagedFixedEWRadars()
+	for i = 1, #fixedEWRadars do
+		local ewRadar = fixedEWRadars[i]
+		local groupName = self:getFixedEWGroupName(ewRadar) or ewRadar:getDCSName()
+		local defendingHARM = ewRadar.harmSilenceID ~= nil or ewRadar.harmRelocationInProgress == true
+		if selected ~= nil and ewRadar == selected and defendingHARM ~= true then
+			local needsLive = ewRadar:getActAsEW() ~= true or ewRadar:isActive() ~= true
+			if needsLive then
+				ewRadar:setActAsEW(true)
+				if self.iads and self.iads.traceElementCommand then
+					self.iads:traceElementCommand(ewRadar, "fixed_ew_cover_live", {
+						event = "decision",
+						outcome = "issued",
+						reason = networkState.reason,
+						source = "fixed_ew_network",
+						selectedFixedEWGroup = groupName,
+						liveDutySeconds = self.defaultMEWLiveDutySeconds,
+						originModule = "skynet-iads-mobile-patrol.lua",
+						originFunction = "applyFixedEWNetworkState",
+					})
+				end
+				self:notifyDebug(groupName .. " EW cover live | reason=" .. tostring(networkState.reason))
+			end
+		elseif defendingHARM ~= true then
+			if ewRadar:getActAsEW() == true or ewRadar:isActive() == true then
+				ewRadar:setActAsEW(false)
+				if self.iads and self.iads.traceElementCommand then
+					self.iads:traceElementCommand(ewRadar, "fixed_ew_cover_release", {
+						event = "decision",
+						outcome = "issued",
+						reason = networkState.reason,
+						source = "fixed_ew_network",
+						selectedFixedEWGroup = selectedGroupName,
+						originModule = "skynet-iads-mobile-patrol.lua",
+						originFunction = "applyFixedEWNetworkState",
+					})
+				end
+			end
+		end
+	end
+end
+
+function SkynetIADSMobilePatrol:updateFixedEWNetwork(now)
+	local networkState = self:getFixedEWNetworkState(now)
+	self:traceFixedEWNetworkState(networkState)
+	self:applyFixedEWNetworkState(networkState, now)
+	return networkState
+end
+
 function SkynetIADSMobilePatrol:getEWNetworkState(now)
 	local state = {
 		fixedUsableCount = 0,
@@ -11037,8 +11424,8 @@ function SkynetIADSMobilePatrol:getEWNetworkState(now)
 		end
 	end
 
-	if state.fixedLiveCount >= self.defaultMEWMinimumLiveCount then
-		state.reason = "fixed_live_present"
+	if state.fixedAvailableCount > 0 then
+		state.reason = state.fixedLiveCount >= self.defaultMEWMinimumLiveCount and "fixed_live_present" or "fixed_ew_available"
 		return state
 	end
 
@@ -11213,7 +11600,7 @@ function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 		source = triggerInfo and triggerInfo.source or "deployment_trigger",
 		triggerInfo = triggerInfo,
 	}, "pausePatrolForDeployment")
-	local scatterIssued = self:issueDeployScatter(entry) == true
+	local scatterIssued = self:issueDeployScatter(entry, triggerInfo) == true
 	if scatterIssued ~= true then
 		self:setOrderTraceContext(entry, "deploy_hold_fallback", {
 			source = triggerInfo and triggerInfo.source or "deployment_trigger",
@@ -11982,6 +12369,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 end
 
 function SkynetIADSMobilePatrol:tick(_, time)
+	self:updateFixedEWNetwork(time)
 	for i = 1, #self.entries do
 		self:updateEntry(self.entries[i])
 	end
@@ -11992,6 +12380,7 @@ function SkynetIADSMobilePatrol:start()
 	if self.taskId then
 		return self
 	end
+	self:updateFixedEWNetwork(timer.getTime())
 	self.taskId = timer.scheduleFunction(function(_, time)
 		return self:tick(_, time)
 	end, {}, timer.getTime() + self.checkInterval)
@@ -12156,6 +12545,10 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultSA15HarmPostEscapeLockSeconds = (config and config.defaultSA15HarmPostEscapeLockSeconds) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_POST_ESCAPE_LOCK_SECONDS,
 		defaultMEWMinimumLiveCount = (config and config.defaultMEWMinimumLiveCount) or SkynetIADSMobilePatrol.DEFAULT_MEW_MIN_LIVE_COUNT,
 		defaultMEWLiveDutySeconds = (config and config.defaultMEWLiveDutySeconds) or SkynetIADSMobilePatrol.DEFAULT_MEW_LIVE_DUTY_SECONDS,
+		fixedEWCurrentCoverGroupName = nil,
+		fixedEWCurrentCoverStartedAt = nil,
+		fixedEWLastCoverEndedAt = {},
+		fixedEWLastNetworkSignature = nil,
 		defaultDeployProgressIntervalSeconds = (config and config.defaultDeployProgressIntervalSeconds) or SkynetIADSMobilePatrol.DEFAULT_DEPLOY_PROGRESS_INTERVAL_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
@@ -12546,6 +12939,30 @@ function SkynetIADSMobilePatrol.installHooks()
 		if result ~= false and entry then
 			clearTargetInRangeLatch(entry)
 		end
+		if result ~= false and isFixedGroundEWRadar(self) and self.harmRelocationInProgress == true then
+			local routeIssued, continueMovingIssued, stopRouteCleared, aiEnabled = issueFixedEWHarmEscapeKick(self)
+			scheduleFixedEWHarmMovementKick(self, "harm_detected", "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
+			if self.iads and self.iads.traceElementCommand then
+				self.iads:traceElementCommand(self, "ew_harm_escape", {
+					event = "decision",
+					outcome =
+						(routeIssued == true or continueMovingIssued == true or stopRouteCleared == true or aiEnabled == true)
+						and "issued"
+						or "failed",
+					reason = "harm_detected",
+					source = "fixed_ew_harm_escape",
+					destination = self.harmRelocationDestination,
+					harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+					harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
+					issueEscapeRouteResult = routeIssued == true and "Y" or "N",
+					continueMovingResult = continueMovingIssued == true and "Y" or "N",
+					stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+					setGroupAIOnResult = aiEnabled == true and "Y" or "N",
+					originModule = "skynet-iads-mobile-patrol.lua",
+					originFunction = "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM",
+				})
+			end
+		end
 		if result ~= false and entry and (self.harmRelocationInProgress == true or moveFireCapable) then
 			if moveFireCapable then
 				entry.state = "patrolling"
@@ -12638,6 +13055,39 @@ function SkynetIADSMobilePatrol.installHooks()
 			end)
 		end
 		return result
+	end
+
+	local originalCheckHARMRelocationArrival = SkynetIADSAbstractRadarElement.checkHARMRelocationArrival
+	function SkynetIADSAbstractRadarElement.checkHARMRelocationArrival(self)
+		if isFixedGroundEWRadar(self) and self.harmRelocationInProgress == true then
+			local movedDistance = 0
+			pcall(function()
+				movedDistance = self:getHARMRelocationDistanceMovedMeters()
+			end)
+			if movedDistance < 20 then
+				local routeIssued, continueMovingIssued, stopRouteCleared, aiEnabled = issueFixedEWHarmEscapeKick(self)
+				if self.iads and self.iads.traceElementCommand then
+					self.iads:traceElementCommand(self, "ew_harm_escape_reissue", {
+						event = "decision",
+						outcome =
+							(routeIssued == true or continueMovingIssued == true or stopRouteCleared == true or aiEnabled == true)
+							and "issued"
+							or "failed",
+						reason = "relocation_waiting",
+						source = "fixed_ew_harm_escape",
+						movedMeters = mist.utils.round(movedDistance, 1),
+						destination = self.harmRelocationDestination,
+						issueEscapeRouteResult = routeIssued == true and "Y" or "N",
+						continueMovingResult = continueMovingIssued == true and "Y" or "N",
+						stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+						setGroupAIOnResult = aiEnabled == true and "Y" or "N",
+						originModule = "skynet-iads-mobile-patrol.lua",
+						originFunction = "SkynetIADSAbstractRadarElement.checkHARMRelocationArrival",
+					})
+				end
+			end
+		end
+		return originalCheckHARMRelocationArrival(self)
 	end
 
 	local originalFinishHarmDefence = SkynetIADSAbstractRadarElement.finishHarmDefence
