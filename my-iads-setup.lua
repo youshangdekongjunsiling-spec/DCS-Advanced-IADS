@@ -20,6 +20,7 @@ do
 local IADS_NAME = "RED"
 local EW_PREFIXES = { "EW", "MEW" }
 local SAM_PREFIXES = { "SAM", "MSAM" }
+local RESERVED_IADS_PREFIXES = { "EW", "MEW", "SAM", "MSAM" }
 local MOBILE_EW_PREFIX = "MEW"
 local MOBILE_SAM_PREFIX = "MSAM"
 local JAMMER_UNIT_NAME = "Growler"
@@ -100,7 +101,29 @@ local function startsWithAnyPrefix(value, prefixes)
     return false
 end
 
-local function pruneUnexpectedSAMSites(iads, prefixes)
+local function buildSupportedAirDefenceTypeSet()
+    local typeSet = {}
+    local database = (SkynetIADS and SkynetIADS.database) or samTypesDB or {}
+    for _, dataType in pairs(database) do
+        if dataType and dataType.type ~= "ewr" then
+            local categories = { "searchRadar", "trackingRadar", "launchers" }
+            for i = 1, #categories do
+                local category = dataType[categories[i]]
+                if category then
+                    for unitTypeName, _ in pairs(category) do
+                        typeSet[unitTypeName] = true
+                    end
+                end
+            end
+        end
+    end
+    return typeSet
+end
+
+local SUPPORTED_AIR_DEFENCE_TYPES = buildSupportedAirDefenceTypeSet()
+local asamCandidateGroups = {}
+
+local function pruneUnexpectedSAMSites(iads, prefixes, extraAllowedGroups)
     if iads == nil or iads.samSites == nil then
         return 0, ""
     end
@@ -111,7 +134,7 @@ local function pruneUnexpectedSAMSites(iads, prefixes)
         local okName, groupName = pcall(function()
             return samSite:getDCSName()
         end)
-        if okName and groupName and startsWithAnyPrefix(groupName, prefixes) then
+        if okName and groupName and (startsWithAnyPrefix(groupName, prefixes) or (extraAllowedGroups and extraAllowedGroups[groupName] == true)) then
             keptSites[#keptSites + 1] = samSite
         else
             removedNames[#removedNames + 1] = groupName or ("sam-site-" .. tostring(i))
@@ -170,7 +193,10 @@ end
 
 local originalMissionAddSAMSite = SkynetIADS.addSAMSite
 SkynetIADS.addSAMSite = function(self, samSiteName)
-    if self == redIADS and startsWithAnyPrefix(tostring(samSiteName or ""), SAM_PREFIXES) == false then
+    local groupName = tostring(samSiteName or "")
+    local allowedByPrefix = startsWithAnyPrefix(groupName, SAM_PREFIXES)
+    local allowedAsASAM = asamCandidateGroups[groupName] == true
+    if self == redIADS and allowedByPrefix == false and allowedAsASAM == false then
         if self.printOutputToLog then
             self:printOutputToLog("mission filter skipped non-prefixed SAM group: " .. tostring(samSiteName), false)
         end
@@ -225,6 +251,47 @@ local function describeGroupUnits(group)
         return "no live units"
     end
     return table.concat(parts, " | ")
+end
+
+local function groupHasSupportedAirDefenceUnit(group, supportedTypeSet)
+    if not group or not group:isExist() then
+        return false
+    end
+    local okUnits, units = pcall(function()
+        return group:getUnits()
+    end)
+    if okUnits and units then
+        for i = 1, #units do
+            local unit = units[i]
+            if unit and unit:isExist() then
+                local okType, typeName = pcall(function()
+                    return unit:getTypeName()
+                end)
+                if okType and typeName and supportedTypeSet[typeName] == true then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function findAccompanyingSAMCandidates(supportedTypeSet, reservedPrefixes)
+    local candidates = {}
+    local candidateNames = {}
+    local candidateDetails = {}
+    for groupName, _ in pairs(mist.DBs.groupsByName) do
+        local group = Group.getByName(groupName)
+        if group
+        and group:isExist()
+        and startsWithAnyPrefix(groupName, reservedPrefixes) == false
+        and groupHasSupportedAirDefenceUnit(group, supportedTypeSet) then
+            candidates[groupName] = true
+            candidateNames[#candidateNames + 1] = groupName
+            candidateDetails[#candidateDetails + 1] = groupName .. " -> " .. describeGroupUnits(group)
+        end
+    end
+    return candidates, table.concat(candidateNames, ", "), candidateDetails
 end
 
 local function countMobileGroupCandidates(prefix)
@@ -309,9 +376,37 @@ local function addSAMSitesByPrefixes(iads, prefixes)
     return matchedCandidates, registeredCount, table.concat(matchedNames, ", "), table.concat(registeredNames, ", "), table.concat(failedNames, ", "), failedDetails
 end
 
+local function addAccompanyingSAMSites(iads, candidateGroups)
+    local matchedCandidates = 0
+    local registeredCount = 0
+    local matchedNames = {}
+    local registeredNames = {}
+    local failedNames = {}
+    local failedDetails = {}
+    for groupName, _ in pairs(candidateGroups) do
+        local group = Group.getByName(groupName)
+        if group and group:isExist() then
+            matchedCandidates = matchedCandidates + 1
+            matchedNames[#matchedNames + 1] = groupName
+            local beforeCount = #iads.samSites
+            iads:addSAMSite(groupName)
+            if #iads.samSites > beforeCount then
+                registeredCount = registeredCount + 1
+                registeredNames[#registeredNames + 1] = groupName
+            else
+                failedNames[#failedNames + 1] = groupName
+                failedDetails[#failedDetails + 1] = groupName .. " -> " .. describeGroupUnits(group)
+            end
+        end
+    end
+    return matchedCandidates, registeredCount, table.concat(matchedNames, ", "), table.concat(registeredNames, ", "), table.concat(failedNames, ", "), failedDetails
+end
+
+asamCandidateGroups, asamCandidateNames, asamCandidateDetails = findAccompanyingSAMCandidates(SUPPORTED_AIR_DEFENCE_TYPES, RESERVED_IADS_PREFIXES)
 addEarlyWarningRadarsByPrefixes(redIADS, EW_PREFIXES)
 local matchedSAMCandidates, registeredSAMSites, matchedSAMNames, registeredSAMNames, failedSAMNames, failedSAMDetails = addSAMSitesByPrefixes(redIADS, SAM_PREFIXES)
-local prunedUnexpectedSAMCount, prunedUnexpectedSAMNames = pruneUnexpectedSAMSites(redIADS, SAM_PREFIXES)
+local matchedASAMCandidates, registeredASAMSites, matchedASAMNames, registeredASAMNames, failedASAMNames, failedASAMDetails = addAccompanyingSAMSites(redIADS, asamCandidateGroups)
+local prunedUnexpectedSAMCount, prunedUnexpectedSAMNames = pruneUnexpectedSAMSites(redIADS, SAM_PREFIXES, asamCandidateGroups)
 local mobileSAMCandidateCount, mobileSAMCandidateNames = countMobileGroupCandidates(MOBILE_SAM_PREFIX)
 local mobileEWCandidateCount, mobileEWCandidateNames = countMobileUnitCandidates(MOBILE_EW_PREFIX)
 
@@ -429,8 +524,12 @@ end
 
 trigger.action.outText("my-iads-setup: IADS active, jammer polling enabled", 10)
 trigger.action.outText("my-iads-setup: SAM candidates=" .. matchedSAMCandidates .. " | registered=" .. registeredSAMSites, 10)
+trigger.action.outText("my-iads-setup: ASAM candidates=" .. matchedASAMCandidates .. " | registered=" .. registeredASAMSites, 10)
 if matchedSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM matched -> " .. matchedSAMNames, 15)
+end
+if matchedASAMNames ~= "" then
+    trigger.action.outText("my-iads-setup: ASAM matched -> " .. matchedASAMNames, 15)
 end
 if prunedUnexpectedSAMCount > 0 then
     trigger.action.outText("my-iads-setup: pruned non-prefixed SAM groups -> " .. prunedUnexpectedSAMNames, 15)
@@ -438,8 +537,14 @@ end
 if registeredSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM registered -> " .. registeredSAMNames, 15)
 end
+if registeredASAMNames ~= "" then
+    trigger.action.outText("my-iads-setup: ASAM registered -> " .. registeredASAMNames, 15)
+end
 if failedSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM unsupported/failed -> " .. failedSAMNames, 15)
+end
+if failedASAMNames ~= "" then
+    trigger.action.outText("my-iads-setup: ASAM unsupported/failed -> " .. failedASAMNames, 15)
 end
 if failedSAMDetails and #failedSAMDetails > 0 then
     for i = 1, #failedSAMDetails do
@@ -447,6 +552,20 @@ if failedSAMDetails and #failedSAMDetails > 0 then
         trigger.action.outText("my-iads-setup: unsupported detail | " .. detail, 20)
         if redIADS and redIADS.printOutputToLog then
             redIADS:printOutputToLog("[Setup] unsupported detail | " .. detail)
+        end
+    end
+end
+if asamCandidateDetails and #asamCandidateDetails > 0 and redIADS and redIADS.printOutputToLog then
+    for i = 1, #asamCandidateDetails do
+        redIADS:printOutputToLog("[Setup] asam candidate | " .. asamCandidateDetails[i])
+    end
+end
+if failedASAMDetails and #failedASAMDetails > 0 then
+    for i = 1, #failedASAMDetails do
+        local detail = failedASAMDetails[i]
+        trigger.action.outText("my-iads-setup: ASAM unsupported detail | " .. detail, 20)
+        if redIADS and redIADS.printOutputToLog then
+            redIADS:printOutputToLog("[Setup] ASAM unsupported detail | " .. detail)
         end
     end
 end
