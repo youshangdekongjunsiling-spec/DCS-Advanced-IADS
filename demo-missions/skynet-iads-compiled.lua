@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-mew-only-after-fixed-ew-down | BUILD TIME: 06.04.2026 0227Z ---")
+env.info("--- SKYNET VERSION: ea18g-sa11-directional-deploy-v1 | BUILD TIME: 06.04.2026 0253Z ---")
 
 do
 --this file contains the required units per sam type
@@ -2226,6 +2226,12 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"dueInSeconds",
 		"rotationDue",
 		"movedMeters",
+		"deployDirectionMode",
+		"deployFormation",
+		"targetBearing",
+		"deployBearing",
+		"deployDistanceMeters",
+		"fallbackRandomDeploy",
 		"waypoint",
 		"routePoints",
 		"speedKmph",
@@ -7446,6 +7452,7 @@ SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_FALLBACK_COUNT = 2
 SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
+SkynetIADSMobilePatrol.DEFAULT_SA11_DIRECTIONAL_DEPLOY_FORM = "Vee"
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_CHECK_INTERVAL_SECONDS = 1
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_MIN_COMPLETION_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
@@ -7798,6 +7805,23 @@ local function getTargetPositionPoint(target)
 		end
 	end
 	return nil
+end
+
+local function get2DBearingDegrees(fromPoint, toPoint)
+	if fromPoint == nil or toPoint == nil then
+		return nil
+	end
+	local dx = (toPoint.x or 0) - (fromPoint.x or 0)
+	local dz = (toPoint.z or 0) - (fromPoint.z or 0)
+	if math.abs(dx) < 0.001 and math.abs(dz) < 0.001 then
+		return nil
+	end
+	local headingRad = math.atan2(dz, dx)
+	local headingDeg = math.deg(headingRad)
+	if headingDeg < 0 then
+		headingDeg = headingDeg + 360
+	end
+	return mist.utils.round(headingDeg, 1)
 end
 
 local function getLauncherPositionPoint(launcher)
@@ -9286,6 +9310,48 @@ function SkynetIADSMobilePatrol:calculateDeployScatterPoint(entry)
 		return nil, 0, nil
 	end
 	local distanceMeters = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS
+	if entry ~= nil and entry.kind == "MSAM" and entry.element ~= nil and entry.element.getNatoName and entry.element:getNatoName() == "SA-11" then
+		local deployTrigger = entry.lastDeployTrigger
+		local targetPoint = deployTrigger and deployTrigger.targetPoint or nil
+		if targetPoint and targetPoint.x ~= nil and targetPoint.z ~= nil then
+			local awayX = (startPoint.x or 0) - (targetPoint.x or 0)
+			local awayZ = (startPoint.z or 0) - (targetPoint.z or 0)
+			local magnitude = math.sqrt((awayX * awayX) + (awayZ * awayZ))
+			if magnitude > 1 then
+				local unitX = awayX / magnitude
+				local unitZ = awayZ / magnitude
+				local perpX = -unitZ
+				local perpZ = unitX
+				local midpointDistance = math.max(40, math.floor(distanceMeters * 0.55))
+				local lateralOffsets = { 0, 20, -20, 35, -35 }
+				for i = 1, #lateralOffsets do
+					local lateralOffset = lateralOffsets[i]
+					local candidate = {
+						x = startPoint.x + (unitX * distanceMeters) + (perpX * lateralOffset),
+						y = startPoint.y,
+						z = startPoint.z + (unitZ * distanceMeters) + (perpZ * lateralOffset),
+					}
+					local midPoint = {
+						x = startPoint.x + (unitX * midpointDistance) + (perpX * (lateralOffset * 0.5)),
+						y = startPoint.y,
+						z = startPoint.z + (unitZ * midpointDistance) + (perpZ * (lateralOffset * 0.5)),
+					}
+					if self:isDeployScatterPointOnLand(midPoint) and self:isDeployScatterPointOnLand(candidate) then
+						return candidate, distanceMeters, startPoint, {
+							deployDirectionMode = "rear_sector",
+							deployFormation = SkynetIADSMobilePatrol.DEFAULT_SA11_DIRECTIONAL_DEPLOY_FORM,
+							targetBearing = get2DBearingDegrees(startPoint, targetPoint),
+							deployBearing = get2DBearingDegrees(startPoint, candidate),
+							deployDistanceMeters = distanceMeters,
+							targetPoint = targetPoint,
+							midPoint = midPoint,
+							fallbackRandomDeploy = "N",
+						}
+					end
+				end
+			end
+		end
+	end
 	local fallbackPoint = nil
 	for i = 1, 50 do
 		local headingRad = math.random() * 2 * math.pi
@@ -9298,10 +9364,20 @@ function SkynetIADSMobilePatrol:calculateDeployScatterPoint(entry)
 			fallbackPoint = candidate
 		end
 		if self:isDeployScatterPointOnLand(candidate) then
-			return candidate, distanceMeters, startPoint
+			return candidate, distanceMeters, startPoint, {
+				deployDirectionMode = "random_scatter",
+				deployFormation = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM,
+				deployDistanceMeters = distanceMeters,
+				fallbackRandomDeploy = "Y",
+			}
 		end
 	end
-	return fallbackPoint, distanceMeters, startPoint
+	return fallbackPoint, distanceMeters, startPoint, {
+		deployDirectionMode = "random_scatter",
+		deployFormation = SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM,
+		deployDistanceMeters = distanceMeters,
+		fallbackRandomDeploy = "Y",
+	}
 end
 
 function SkynetIADSMobilePatrol:calculateSA15HarmEscapeRoute(entry)
@@ -9393,7 +9469,7 @@ function SkynetIADSMobilePatrol:issueSA15HarmEscapeRoute(entry, reason)
 	return ok, destination
 end
 
-function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, speedKmph)
+function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, speedKmph, deployOptions)
 	if entry == nil or entry.group == nil or entry.group:isExist() == false or destination == nil then
 		return false
 	end
@@ -9402,13 +9478,15 @@ function SkynetIADSMobilePatrol:issueDeployScatterRoute(entry, destination, spee
 		return false
 	end
 	local speedMps = mist.utils.kmphToMps(speedKmph)
+	local formation = deployOptions and deployOptions.deployFormation or SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM
+	local midPoint = deployOptions and deployOptions.midPoint or {
+		x = startPoint.x + 25,
+		z = startPoint.z + 25
+	}
 	local path = {
-		mist.ground.buildWP(startPoint, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM, speedMps),
-		mist.ground.buildWP({
-			x = startPoint.x + 25,
-			z = startPoint.z + 25
-		}, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM, speedMps),
-		mist.ground.buildWP(destination, SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM, speedMps),
+		mist.ground.buildWP(startPoint, formation, speedMps),
+		mist.ground.buildWP(midPoint, formation, speedMps),
+		mist.ground.buildWP(destination, formation, speedMps),
 	}
 	local ok = pcall(function()
 		mist.goRoute(entry.group, path)
@@ -9459,7 +9537,7 @@ function SkynetIADSMobilePatrol:getDeployScatterSpeedKmph(entry)
 	return speed
 end
 
-function SkynetIADSMobilePatrol:issueDeployScatter(entry)
+function SkynetIADSMobilePatrol:issueDeployScatter(entry, triggerInfo)
 	if entry.group == nil or entry.group:isExist() == false then
 		self:traceEntryCommand(entry, "deploy_scatter", {
 			outcome = "skipped",
@@ -9467,7 +9545,10 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		}, "issueDeployScatter")
 		return false
 	end
-	local destination, distanceMeters, startPoint = self:calculateDeployScatterPoint(entry)
+	if triggerInfo ~= nil and triggerInfo.targetPoint ~= nil then
+		entry.lastDeployTrigger = triggerInfo
+	end
+	local destination, distanceMeters, startPoint, deployOptions = self:calculateDeployScatterPoint(entry)
 	if destination == nil then
 		self:traceEntryCommand(entry, "deploy_scatter", {
 			outcome = "skipped",
@@ -9476,7 +9557,7 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		return false
 	end
 	local speedKmph = self:getDeployScatterSpeedKmph(entry)
-	local ok = self:issueDeployScatterRoute(entry, destination, speedKmph)
+	local ok = self:issueDeployScatterRoute(entry, destination, speedKmph, deployOptions)
 	if ok then
 		entry.currentDestination = destination
 		entry.lastRouteIssueTime = timer.getTime()
@@ -9494,6 +9575,12 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry)
 		outcome = ok and "issued" or "failed",
 		destination = destination,
 		speedKmph = speedKmph,
+		deployDirectionMode = deployOptions and deployOptions.deployDirectionMode or nil,
+		deployFormation = deployOptions and deployOptions.deployFormation or nil,
+		targetBearing = deployOptions and deployOptions.targetBearing or nil,
+		deployBearing = deployOptions and deployOptions.deployBearing or nil,
+		deployDistanceMeters = deployOptions and deployOptions.deployDistanceMeters or nil,
+		fallbackRandomDeploy = deployOptions and deployOptions.fallbackRandomDeploy or nil,
 		note = distanceMeters and ("distance=" .. tostring(distanceMeters) .. "m") or nil,
 	}, "issueDeployScatter")
 	return ok
@@ -10369,6 +10456,7 @@ function SkynetIADSMobilePatrol:buildDeployTriggerInfo(entry, contact, source)
 		time = timer.getTime(),
 		contactName = targetName,
 		contactType = targetType,
+		targetPoint = targetPoint,
 		distanceNm = mist.utils.round(distanceNm, 1),
 		threatRangeNm = mist.utils.round(threatRangeNm, 1),
 	}
@@ -10406,6 +10494,7 @@ function SkynetIADSMobilePatrol:buildAircraftUnitTriggerInfo(entry, unit, source
 		time = timer.getTime(),
 		contactName = targetName,
 		contactType = targetType,
+		targetPoint = targetPoint,
 		distanceNm = mist.utils.round(distanceNm, 1),
 		directDistanceNm = mist.utils.round(distanceNm, 1),
 		effectiveDistanceNm = mist.utils.round(distanceNm, 1),
@@ -11511,7 +11600,7 @@ function SkynetIADSMobilePatrol:pausePatrolForDeployment(entry, triggerInfo)
 		source = triggerInfo and triggerInfo.source or "deployment_trigger",
 		triggerInfo = triggerInfo,
 	}, "pausePatrolForDeployment")
-	local scatterIssued = self:issueDeployScatter(entry) == true
+	local scatterIssued = self:issueDeployScatter(entry, triggerInfo) == true
 	if scatterIssued ~= true then
 		self:setOrderTraceContext(entry, "deploy_hold_fallback", {
 			source = triggerInfo and triggerInfo.source or "deployment_trigger",
