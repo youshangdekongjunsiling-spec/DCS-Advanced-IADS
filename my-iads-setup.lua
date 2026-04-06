@@ -402,10 +402,35 @@ local function addAccompanyingSAMSites(iads, candidateGroups)
     return matchedCandidates, registeredCount, table.concat(matchedNames, ", "), table.concat(registeredNames, ", "), table.concat(failedNames, ", "), failedDetails
 end
 
+local function configureAccompanyingSAMSites(iads, candidateGroups)
+    local changedNames = {}
+    if iads == nil or iads.samSites == nil then
+        return 0, ""
+    end
+    for i = 1, #iads.samSites do
+        local samSite = iads.samSites[i]
+        local okName, groupName = pcall(function()
+            return samSite:getDCSName()
+        end)
+        if okName and groupName and candidateGroups[groupName] == true then
+            pcall(function()
+                samSite.isASAM = true
+                samSite.asamHoldRouteOnHARM = true
+                samSite:setKeepRouteOnHARM(true)
+                samSite.dataBaseSupportedTypesCanEngageHARM = false
+                samSite:setCanEngageHARM(false)
+            end)
+            changedNames[#changedNames + 1] = groupName
+        end
+    end
+    return #changedNames, table.concat(changedNames, ", ")
+end
+
 asamCandidateGroups, asamCandidateNames, asamCandidateDetails = findAccompanyingSAMCandidates(SUPPORTED_AIR_DEFENCE_TYPES, RESERVED_IADS_PREFIXES)
 addEarlyWarningRadarsByPrefixes(redIADS, EW_PREFIXES)
 local matchedSAMCandidates, registeredSAMSites, matchedSAMNames, registeredSAMNames, failedSAMNames, failedSAMDetails = addSAMSitesByPrefixes(redIADS, SAM_PREFIXES)
 local matchedASAMCandidates, registeredASAMSites, matchedASAMNames, registeredASAMNames, failedASAMNames, failedASAMDetails = addAccompanyingSAMSites(redIADS, asamCandidateGroups)
+local configuredASAMSites, configuredASAMNames = configureAccompanyingSAMSites(redIADS, asamCandidateGroups)
 local prunedUnexpectedSAMCount, prunedUnexpectedSAMNames = pruneUnexpectedSAMSites(redIADS, SAM_PREFIXES, asamCandidateGroups)
 local mobileSAMCandidateCount, mobileSAMCandidateNames = countMobileGroupCandidates(MOBILE_SAM_PREFIX)
 local mobileEWCandidateCount, mobileEWCandidateNames = countMobileUnitCandidates(MOBILE_EW_PREFIX)
@@ -539,6 +564,9 @@ if registeredSAMNames ~= "" then
 end
 if registeredASAMNames ~= "" then
     trigger.action.outText("my-iads-setup: ASAM registered -> " .. registeredASAMNames, 15)
+end
+if configuredASAMSites > 0 then
+    trigger.action.outText("my-iads-setup: ASAM HARM hold-route enabled -> " .. configuredASAMNames, 15)
 end
 if failedSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM unsupported/failed -> " .. failedSAMNames, 15)
