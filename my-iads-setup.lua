@@ -253,6 +253,28 @@ local function describeGroupUnits(group)
     return table.concat(parts, " | ")
 end
 
+local function getLiveUnitTypeName(unit)
+    if unit == nil or unit:isExist() == false then
+        return nil
+    end
+
+    local okType, typeName = pcall(function()
+        return unit:getTypeName()
+    end)
+    if okType and typeName and typeName ~= "" then
+        return typeName
+    end
+
+    local okDesc, desc = pcall(function()
+        return unit:getDesc()
+    end)
+    if okDesc and desc and desc.typeName and desc.typeName ~= "" then
+        return desc.typeName
+    end
+
+    return nil
+end
+
 local function groupHasSupportedAirDefenceUnit(group, supportedTypeSet)
     if not group or not group:isExist() then
         return false
@@ -264,10 +286,8 @@ local function groupHasSupportedAirDefenceUnit(group, supportedTypeSet)
         for i = 1, #units do
             local unit = units[i]
             if unit and unit:isExist() then
-                local okType, typeName = pcall(function()
-                    return unit:getTypeName()
-                end)
-                if okType and typeName and supportedTypeSet[typeName] == true then
+                local typeName = getLiveUnitTypeName(unit)
+                if typeName and supportedTypeSet[typeName] == true then
                     return true
                 end
             end
@@ -550,11 +570,21 @@ end
 trigger.action.outText("my-iads-setup: IADS active, jammer polling enabled", 10)
 trigger.action.outText("my-iads-setup: SAM candidates=" .. matchedSAMCandidates .. " | registered=" .. registeredSAMSites, 10)
 trigger.action.outText("my-iads-setup: ASAM candidates=" .. matchedASAMCandidates .. " | registered=" .. registeredASAMSites, 10)
+if redIADS and redIADS.printOutputToLog then
+    redIADS:printOutputToLog("[Setup] SAM candidates=" .. matchedSAMCandidates .. " | registered=" .. registeredSAMSites)
+    redIADS:printOutputToLog("[Setup] ASAM candidates=" .. matchedASAMCandidates .. " | registered=" .. registeredASAMSites)
+end
 if matchedSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM matched -> " .. matchedSAMNames, 15)
+    if redIADS and redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] SAM matched -> " .. matchedSAMNames)
+    end
 end
 if matchedASAMNames ~= "" then
     trigger.action.outText("my-iads-setup: ASAM matched -> " .. matchedASAMNames, 15)
+    if redIADS and redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] ASAM matched -> " .. matchedASAMNames)
+    end
 end
 if prunedUnexpectedSAMCount > 0 then
     trigger.action.outText("my-iads-setup: pruned non-prefixed SAM groups -> " .. prunedUnexpectedSAMNames, 15)
@@ -564,15 +594,27 @@ if registeredSAMNames ~= "" then
 end
 if registeredASAMNames ~= "" then
     trigger.action.outText("my-iads-setup: ASAM registered -> " .. registeredASAMNames, 15)
+    if redIADS and redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] ASAM registered -> " .. registeredASAMNames)
+    end
 end
 if configuredASAMSites > 0 then
     trigger.action.outText("my-iads-setup: ASAM HARM hold-route enabled -> " .. configuredASAMNames, 15)
+    if redIADS and redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] ASAM HARM hold-route enabled -> " .. configuredASAMNames)
+    end
 end
 if failedSAMNames ~= "" then
     trigger.action.outText("my-iads-setup: SAM unsupported/failed -> " .. failedSAMNames, 15)
+    if redIADS and redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] SAM unsupported/failed -> " .. failedSAMNames)
+    end
 end
 if failedASAMNames ~= "" then
     trigger.action.outText("my-iads-setup: ASAM unsupported/failed -> " .. failedASAMNames, 15)
+    if redIADS and redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] ASAM unsupported/failed -> " .. failedASAMNames)
+    end
 end
 if failedSAMDetails and #failedSAMDetails > 0 then
     for i = 1, #failedSAMDetails do
