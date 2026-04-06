@@ -468,6 +468,15 @@ function SkynetIADSAbstractRadarElement:getCanEngageHARM()
 	return self.canEngageHARM
 end
 
+function SkynetIADSAbstractRadarElement:setKeepRouteOnHARM(keepRoute)
+	self.keepRouteOnHARM = keepRoute == true
+	return self
+end
+
+function SkynetIADSAbstractRadarElement:getKeepRouteOnHARM()
+	return self.keepRouteOnHARM == true
+end
+
 function SkynetIADSAbstractRadarElement:setCanEngageAirWeapons(engageAirWeapons)
 	if self:isDestroyed() == false then
 		local controller = self:getDCSRepresentation():getController()
@@ -991,8 +1000,10 @@ function SkynetIADSAbstractRadarElement:goDark()
 			if self:isDestroyed() == false then
 				--if site goes dark due to HARM we turn off AI, this is due to a bug in DCS multiplayer where the harm will find its way to the radar emitter if just setEmissions is set to false
 				--如果站点因HARM而关闭，我们关闭AI，这是由于DCS多人游戏中的一个错误，如果只设置setEmissions为false，HARM会找到雷达发射器
-				local controller = self:getController()
-				controller:setOnOff(false)
+				if self:getKeepRouteOnHARM() ~= true then
+					local controller = self:getController()
+					controller:setOnOff(false)
+				end
 			end
 		end
 		self.aiState = false
@@ -1459,7 +1470,10 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 		timeToImpact = 0
 	end
 
-	local relocated, travelTime, _, speedKmph, distanceMeters = self:attemptHARMRelocation()
+	local relocated, travelTime, _, speedKmph, distanceMeters = false, nil, nil, nil, nil
+	if self:getKeepRouteOnHARM() ~= true then
+		relocated, travelTime, _, speedKmph, distanceMeters = self:attemptHARMRelocation()
+	end
 	if relocated == true then
 		self.harmShutdownTime = travelTime
 		if self.iads:getDebugSettings().harmDefence then
@@ -1495,9 +1509,9 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 	end
 	self.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {self}, timer.getTime() + self.harmShutdownTime, 1)
 	if self.iads and self.iads.traceElementCommand then
-		self.iads:traceElementCommand(self, "harm_shutdown", {
+		self.iads:traceElementCommand(self, self:getKeepRouteOnHARM() == true and "harm_shutdown_hold_route" or "harm_shutdown", {
 			outcome = "issued",
-			reason = "harm_detected",
+			reason = self:getKeepRouteOnHARM() == true and "harm_detected_hold_route" or "harm_detected",
 			harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
 			harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
 			originModule = "skynet-iads-abstract-radar-element.lua",
