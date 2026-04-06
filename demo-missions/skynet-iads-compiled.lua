@@ -1,4 +1,5 @@
-env.info("--- SKYNET VERSION: ea18g-harm-speed600 | BUILD TIME: 05.04.2026 2217Z ---")
+env.info("--- SKYNET VERSION: ea18g-mew-only-after-fixed-ew-down | BUILD TIME: 06.04.2026 0227Z ---")
+
 do
 --this file contains the required units per sam type
 samTypesDB = {	
@@ -2210,8 +2211,10 @@ function SkynetIADSOrderTrace:traceCommand(details)
 		"passiveMode",
 		"fixedLiveCount",
 		"fixedUsableCount",
+		"fixedAvailableCount",
 		"mobileAvailableCount",
 		"mobileLiveCount",
+		"selectedFixedEWGroup",
 		"selectedCoverGroup",
 		"coverActive",
 		"liveDutySeconds",
@@ -4201,6 +4204,15 @@ function SkynetIADSAbstractRadarElement:getCanEngageHARM()
 	return self.canEngageHARM
 end
 
+function SkynetIADSAbstractRadarElement:setKeepRouteOnHARM(keepRoute)
+	self.keepRouteOnHARM = keepRoute == true
+	return self
+end
+
+function SkynetIADSAbstractRadarElement:getKeepRouteOnHARM()
+	return self.keepRouteOnHARM == true
+end
+
 function SkynetIADSAbstractRadarElement:setCanEngageAirWeapons(engageAirWeapons)
 	if self:isDestroyed() == false then
 		local controller = self:getDCSRepresentation():getController()
@@ -4724,8 +4736,10 @@ function SkynetIADSAbstractRadarElement:goDark()
 			if self:isDestroyed() == false then
 				--if site goes dark due to HARM we turn off AI, this is due to a bug in DCS multiplayer where the harm will find its way to the radar emitter if just setEmissions is set to false
 				--如果站点因HARM而关闭，我们关闭AI，这是由于DCS多人游戏中的一个错误，如果只设置setEmissions为false，HARM会找到雷达发射器
-				local controller = self:getController()
-				controller:setOnOff(false)
+				if self:getKeepRouteOnHARM() ~= true then
+					local controller = self:getController()
+					controller:setOnOff(false)
+				end
 			end
 		end
 		self.aiState = false
@@ -5192,7 +5206,10 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 		timeToImpact = 0
 	end
 
-	local relocated, travelTime, _, speedKmph, distanceMeters = self:attemptHARMRelocation()
+	local relocated, travelTime, _, speedKmph, distanceMeters = false, nil, nil, nil, nil
+	if self:getKeepRouteOnHARM() ~= true then
+		relocated, travelTime, _, speedKmph, distanceMeters = self:attemptHARMRelocation()
+	end
 	if relocated == true then
 		self.harmShutdownTime = travelTime
 		if self.iads:getDebugSettings().harmDefence then
@@ -5228,9 +5245,9 @@ function SkynetIADSAbstractRadarElement:goSilentToEvadeHARM(timeToImpact)
 	end
 	self.harmSilenceID = mist.scheduleFunction(SkynetIADSAbstractRadarElement.finishHarmDefence, {self}, timer.getTime() + self.harmShutdownTime, 1)
 	if self.iads and self.iads.traceElementCommand then
-		self.iads:traceElementCommand(self, "harm_shutdown", {
+		self.iads:traceElementCommand(self, self:getKeepRouteOnHARM() == true and "harm_shutdown_hold_route" or "harm_shutdown", {
 			outcome = "issued",
-			reason = "harm_detected",
+			reason = self:getKeepRouteOnHARM() == true and "harm_detected_hold_route" or "harm_detected",
 			harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
 			harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
 			originModule = "skynet-iads-abstract-radar-element.lua",
@@ -8377,6 +8394,72 @@ local function scheduleMoveFireMovementKick(entry, reason, functionName)
 	end
 end
 
+local function isFixedGroundEWRadar(element)
+	if element == nil or SkynetIADSEWRadar == nil then
+		return false
+	end
+	if getmetatable(element) ~= SkynetIADSEWRadar then
+		return false
+	end
+	return SkynetIADSMobilePatrol.getEntryForElement(element) == nil
+end
+
+local function issueFixedEWHarmEscapeKick(element)
+	if element == nil or element.getHARMRelocationGroup == nil then
+		return false, false, false, false
+	end
+	local group = element:getHARMRelocationGroup()
+	if group == nil or group.isExist == nil or group:isExist() == false then
+		return false, false, false, false
+	end
+	local routeIssued = false
+	if element.harmRelocationDestination ~= nil and element.issueHARMRelocationRoute ~= nil then
+		local okRoute, issued = pcall(function()
+			return element:issueHARMRelocationRoute(group, element.harmRelocationDestination, element:getHARMRelocationSpeedKmph())
+		end)
+		if okRoute == true and issued == true then
+			routeIssued = true
+		end
+	end
+	local continueIssued, stopRouteCleared, aiEnabled = forceGroundGroupContinueMoving(group)
+	return routeIssued, continueIssued, stopRouteCleared, aiEnabled
+end
+
+local function scheduleFixedEWHarmMovementKick(element, reason, functionName)
+	if element == nil or mist == nil or mist.scheduleFunction == nil then
+		return
+	end
+	local delays = { 0.4, 1.2, 2.5 }
+	for i = 1, #delays do
+		local delaySeconds = delays[i]
+		mist.scheduleFunction(function(args)
+			local scheduledElement = args[1]
+			local scheduledReason = args[2]
+			local scheduledFunction = args[3]
+			if scheduledElement == nil or scheduledElement.isDestroyed == nil or scheduledElement:isDestroyed() == true then
+				return
+			end
+			if scheduledElement.harmSilenceID == nil and scheduledElement.harmRelocationInProgress ~= true then
+				return
+			end
+			local routeIssued, continued, stopRouteCleared, aiEnabled = issueFixedEWHarmEscapeKick(scheduledElement)
+			if scheduledElement.iads and scheduledElement.iads.traceElementCommand then
+				scheduledElement.iads:traceElementCommand(scheduledElement, "ew_harm_escape_kick", {
+					event = "decision",
+					outcome = (routeIssued or continued or stopRouteCleared or aiEnabled) and "issued" or "failed",
+					reason = scheduledReason,
+					source = "fixed_ew_harm_escape",
+					issueEscapeRouteResult = routeIssued and "Y" or "N",
+					continueMovingResult = continued and "Y" or "N",
+					stopRouteClearResult = stopRouteCleared and "Y" or "N",
+					setGroupAIOnResult = aiEnabled and "Y" or "N",
+					delaySeconds = delaySeconds,
+				}, scheduledFunction or "scheduleFixedEWHarmMovementKick")
+			end
+		end, { element, reason, functionName }, timer.getTime() + delaySeconds)
+	end
+end
+
 local function issueMoveFireEscapeRoute(manager, entry)
 	if manager == nil or entry == nil or entry.group == nil or entry.group:isExist() == false then
 		return false, false, nil
@@ -10968,6 +11051,236 @@ function SkynetIADSMobilePatrol:isMEWEntryLive(entry)
 	return self:isMEWEntryAvailable(entry) and entry.element:isActive() == true
 end
 
+function SkynetIADSMobilePatrol:getManagedFixedEWRadars()
+	local managed = {}
+	local ewRadars = self.iads and self.iads.earlyWarningRadars or {}
+	for i = 1, #ewRadars do
+		local ewRadar = ewRadars[i]
+		if isFixedGroundEWRadar(ewRadar) then
+			managed[#managed + 1] = ewRadar
+		end
+	end
+	return managed
+end
+
+function SkynetIADSMobilePatrol:isFixedEWAvailable(ewRadar)
+	if ewRadar == nil or isFixedGroundEWRadar(ewRadar) ~= true then
+		return false
+	end
+	return ewRadar:isDestroyed() == false
+		and ewRadar:hasWorkingPowerSource()
+		and ewRadar:hasWorkingRadar()
+		and ewRadar.harmSilenceID == nil
+		and ewRadar.harmRelocationInProgress ~= true
+end
+
+function SkynetIADSMobilePatrol:isFixedEWLive(ewRadar)
+	return self:isFixedEWAvailable(ewRadar) and ewRadar:isActive() == true
+end
+
+function SkynetIADSMobilePatrol:getFixedEWGroupName(ewRadar)
+	if ewRadar == nil then
+		return nil
+	end
+	local okName, name = pcall(function()
+		return getGroupNameFromElement(ewRadar)
+	end)
+	if okName == true then
+		return name
+	end
+	return nil
+end
+
+function SkynetIADSMobilePatrol:getFixedEWNetworkState(now)
+	local state = {
+		fixedUsableCount = 0,
+		fixedAvailableCount = 0,
+		fixedLiveCount = 0,
+		selectedFixedEW = nil,
+		reason = "no_usable_fixed_ew",
+	}
+
+	local candidates = {}
+	local fixedEWRadars = self:getManagedFixedEWRadars()
+	local currentCoverName = self.fixedEWCurrentCoverGroupName
+	local currentCover = nil
+
+	for i = 1, #fixedEWRadars do
+		local ewRadar = fixedEWRadars[i]
+		local groupName = self:getFixedEWGroupName(ewRadar) or ewRadar:getDCSName()
+		local usable = ewRadar:isDestroyed() == false
+			and ewRadar:hasWorkingPowerSource()
+			and ewRadar:hasWorkingRadar()
+		if usable then
+			state.fixedUsableCount = state.fixedUsableCount + 1
+			if ewRadar:isActive() == true and ewRadar.harmSilenceID == nil and ewRadar.harmRelocationInProgress ~= true then
+				state.fixedLiveCount = state.fixedLiveCount + 1
+			end
+		end
+		local available = self:isFixedEWAvailable(ewRadar)
+		if available then
+			state.fixedAvailableCount = state.fixedAvailableCount + 1
+			local candidate = {
+				element = ewRadar,
+				groupName = groupName,
+				lastCoverEndedAt = self.fixedEWLastCoverEndedAt[groupName] or 0,
+			}
+			candidates[#candidates + 1] = candidate
+			if currentCoverName ~= nil and currentCoverName == groupName then
+				currentCover = candidate
+			end
+		end
+	end
+
+	if #candidates == 0 then
+		state.reason = "no_available_fixed_ew"
+		return state
+	end
+
+	local function chooseBestCandidate(excludedGroupName)
+		local best = nil
+		for i = 1, #candidates do
+			local candidate = candidates[i]
+			if excludedGroupName == nil or candidate.groupName ~= excludedGroupName then
+				local isBetter = false
+				if best == nil then
+					isBetter = true
+				elseif candidate.lastCoverEndedAt ~= best.lastCoverEndedAt then
+					isBetter = candidate.lastCoverEndedAt < best.lastCoverEndedAt
+				else
+					isBetter = tostring(candidate.groupName) < tostring(best.groupName)
+				end
+				if isBetter then
+					best = candidate
+				end
+			end
+		end
+		return best
+	end
+
+	if currentCover ~= nil then
+		local coverAgeSeconds = self.fixedEWCurrentCoverStartedAt and (now - self.fixedEWCurrentCoverStartedAt) or 0
+		local alternate = chooseBestCandidate(currentCover.groupName)
+		if coverAgeSeconds < self.defaultMEWLiveDutySeconds or alternate == nil then
+			state.selectedFixedEW = currentCover.element
+			state.reason = "retain_fixed_cover"
+			return state
+		end
+		state.selectedFixedEW = alternate.element
+		state.reason = "rotate_fixed_cover"
+		return state
+	end
+
+	local initial = chooseBestCandidate(nil)
+	if initial ~= nil then
+		state.selectedFixedEW = initial.element
+		state.reason = "select_fixed_cover"
+	end
+	return state
+end
+
+function SkynetIADSMobilePatrol:traceFixedEWNetworkState(networkState)
+	if networkState == nil or self.iads == nil or self.iads.traceCommand == nil then
+		return
+	end
+	local selectedGroupName = self:getFixedEWGroupName(networkState.selectedFixedEW) or "none"
+	local signature = table.concat({
+		tostring(networkState.reason or "none"),
+		tostring(selectedGroupName),
+		tostring(networkState.fixedUsableCount or 0),
+		tostring(networkState.fixedAvailableCount or 0),
+		tostring(networkState.fixedLiveCount or 0),
+	}, "|")
+	if self.fixedEWLastNetworkSignature == signature then
+		return
+	end
+	self.fixedEWLastNetworkSignature = signature
+	self.iads:traceCommand({
+		event = "decision",
+		command = "fixed_ew_network_state",
+		outcome = "evaluated",
+		reason = networkState.reason,
+		source = "fixed_ew_network",
+		fixedUsableCount = networkState.fixedUsableCount,
+		fixedAvailableCount = networkState.fixedAvailableCount,
+		fixedLiveCount = networkState.fixedLiveCount,
+		selectedFixedEWGroup = selectedGroupName ~= "none" and selectedGroupName or nil,
+		liveDutySeconds = self.defaultMEWLiveDutySeconds,
+		originModule = "skynet-iads-mobile-patrol.lua",
+		originFunction = "traceFixedEWNetworkState",
+	})
+end
+
+function SkynetIADSMobilePatrol:applyFixedEWNetworkState(networkState, now)
+	if networkState == nil then
+		return
+	end
+	now = now or timer.getTime()
+	local selected = networkState.selectedFixedEW
+	local selectedGroupName = self:getFixedEWGroupName(selected)
+	local previousCoverName = self.fixedEWCurrentCoverGroupName
+	if previousCoverName ~= nil and previousCoverName ~= selectedGroupName then
+		self.fixedEWLastCoverEndedAt[previousCoverName] = now
+	end
+	if selectedGroupName ~= nil then
+		if previousCoverName ~= selectedGroupName then
+			self.fixedEWCurrentCoverStartedAt = now
+		end
+		self.fixedEWCurrentCoverGroupName = selectedGroupName
+	else
+		self.fixedEWCurrentCoverGroupName = nil
+		self.fixedEWCurrentCoverStartedAt = nil
+	end
+
+	local fixedEWRadars = self:getManagedFixedEWRadars()
+	for i = 1, #fixedEWRadars do
+		local ewRadar = fixedEWRadars[i]
+		local groupName = self:getFixedEWGroupName(ewRadar) or ewRadar:getDCSName()
+		local defendingHARM = ewRadar.harmSilenceID ~= nil or ewRadar.harmRelocationInProgress == true
+		if selected ~= nil and ewRadar == selected and defendingHARM ~= true then
+			local needsLive = ewRadar:getActAsEW() ~= true or ewRadar:isActive() ~= true
+			if needsLive then
+				ewRadar:setActAsEW(true)
+				if self.iads and self.iads.traceElementCommand then
+					self.iads:traceElementCommand(ewRadar, "fixed_ew_cover_live", {
+						event = "decision",
+						outcome = "issued",
+						reason = networkState.reason,
+						source = "fixed_ew_network",
+						selectedFixedEWGroup = groupName,
+						liveDutySeconds = self.defaultMEWLiveDutySeconds,
+						originModule = "skynet-iads-mobile-patrol.lua",
+						originFunction = "applyFixedEWNetworkState",
+					})
+				end
+				self:notifyDebug(groupName .. " EW cover live | reason=" .. tostring(networkState.reason))
+			end
+		elseif defendingHARM ~= true then
+			if ewRadar:getActAsEW() == true or ewRadar:isActive() == true then
+				ewRadar:setActAsEW(false)
+				if self.iads and self.iads.traceElementCommand then
+					self.iads:traceElementCommand(ewRadar, "fixed_ew_cover_release", {
+						event = "decision",
+						outcome = "issued",
+						reason = networkState.reason,
+						source = "fixed_ew_network",
+						selectedFixedEWGroup = selectedGroupName,
+						originModule = "skynet-iads-mobile-patrol.lua",
+						originFunction = "applyFixedEWNetworkState",
+					})
+				end
+			end
+		end
+	end
+end
+
+function SkynetIADSMobilePatrol:updateFixedEWNetwork(now)
+	local networkState = self:getFixedEWNetworkState(now)
+	self:traceFixedEWNetworkState(networkState)
+	self:applyFixedEWNetworkState(networkState, now)
+	return networkState
+end
+
 function SkynetIADSMobilePatrol:getEWNetworkState(now)
 	local state = {
 		fixedUsableCount = 0,
@@ -11022,8 +11335,8 @@ function SkynetIADSMobilePatrol:getEWNetworkState(now)
 		end
 	end
 
-	if state.fixedLiveCount >= self.defaultMEWMinimumLiveCount then
-		state.reason = "fixed_live_present"
+	if state.fixedAvailableCount > 0 then
+		state.reason = state.fixedLiveCount >= self.defaultMEWMinimumLiveCount and "fixed_live_present" or "fixed_ew_available"
 		return state
 	end
 
@@ -11967,6 +12280,7 @@ function SkynetIADSMobilePatrol:updateEntry(entry)
 end
 
 function SkynetIADSMobilePatrol:tick(_, time)
+	self:updateFixedEWNetwork(time)
 	for i = 1, #self.entries do
 		self:updateEntry(self.entries[i])
 	end
@@ -11977,6 +12291,7 @@ function SkynetIADSMobilePatrol:start()
 	if self.taskId then
 		return self
 	end
+	self:updateFixedEWNetwork(timer.getTime())
 	self.taskId = timer.scheduleFunction(function(_, time)
 		return self:tick(_, time)
 	end, {}, timer.getTime() + self.checkInterval)
@@ -12141,6 +12456,10 @@ function SkynetIADSMobilePatrol.create(iads, config)
 		defaultSA15HarmPostEscapeLockSeconds = (config and config.defaultSA15HarmPostEscapeLockSeconds) or SkynetIADSMobilePatrol.DEFAULT_SA15_HARM_POST_ESCAPE_LOCK_SECONDS,
 		defaultMEWMinimumLiveCount = (config and config.defaultMEWMinimumLiveCount) or SkynetIADSMobilePatrol.DEFAULT_MEW_MIN_LIVE_COUNT,
 		defaultMEWLiveDutySeconds = (config and config.defaultMEWLiveDutySeconds) or SkynetIADSMobilePatrol.DEFAULT_MEW_LIVE_DUTY_SECONDS,
+		fixedEWCurrentCoverGroupName = nil,
+		fixedEWCurrentCoverStartedAt = nil,
+		fixedEWLastCoverEndedAt = {},
+		fixedEWLastNetworkSignature = nil,
 		defaultDeployProgressIntervalSeconds = (config and config.defaultDeployProgressIntervalSeconds) or SkynetIADSMobilePatrol.DEFAULT_DEPLOY_PROGRESS_INTERVAL_SECONDS,
 		defaultArrivalToleranceMeters = (config and config.defaultArrivalToleranceMeters) or SkynetIADSMobilePatrol.DEFAULT_ARRIVAL_TOLERANCE_METERS,
 		defaultRouteReissueSeconds = (config and config.defaultRouteReissueSeconds) or SkynetIADSMobilePatrol.DEFAULT_ROUTE_REISSUE_SECONDS,
@@ -12531,6 +12850,30 @@ function SkynetIADSMobilePatrol.installHooks()
 		if result ~= false and entry then
 			clearTargetInRangeLatch(entry)
 		end
+		if result ~= false and isFixedGroundEWRadar(self) and self.harmRelocationInProgress == true then
+			local routeIssued, continueMovingIssued, stopRouteCleared, aiEnabled = issueFixedEWHarmEscapeKick(self)
+			scheduleFixedEWHarmMovementKick(self, "harm_detected", "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM")
+			if self.iads and self.iads.traceElementCommand then
+				self.iads:traceElementCommand(self, "ew_harm_escape", {
+					event = "decision",
+					outcome =
+						(routeIssued == true or continueMovingIssued == true or stopRouteCleared == true or aiEnabled == true)
+						and "issued"
+						or "failed",
+					reason = "harm_detected",
+					source = "fixed_ew_harm_escape",
+					destination = self.harmRelocationDestination,
+					harmTTI = timeToImpact and mist.utils.round(timeToImpact, 1) or nil,
+					harmShutdown = self.harmShutdownTime and mist.utils.round(self.harmShutdownTime, 1) or nil,
+					issueEscapeRouteResult = routeIssued == true and "Y" or "N",
+					continueMovingResult = continueMovingIssued == true and "Y" or "N",
+					stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+					setGroupAIOnResult = aiEnabled == true and "Y" or "N",
+					originModule = "skynet-iads-mobile-patrol.lua",
+					originFunction = "SkynetIADSAbstractRadarElement:goSilentToEvadeHARM",
+				})
+			end
+		end
 		if result ~= false and entry and (self.harmRelocationInProgress == true or moveFireCapable) then
 			if moveFireCapable then
 				entry.state = "patrolling"
@@ -12623,6 +12966,39 @@ function SkynetIADSMobilePatrol.installHooks()
 			end)
 		end
 		return result
+	end
+
+	local originalCheckHARMRelocationArrival = SkynetIADSAbstractRadarElement.checkHARMRelocationArrival
+	function SkynetIADSAbstractRadarElement.checkHARMRelocationArrival(self)
+		if isFixedGroundEWRadar(self) and self.harmRelocationInProgress == true then
+			local movedDistance = 0
+			pcall(function()
+				movedDistance = self:getHARMRelocationDistanceMovedMeters()
+			end)
+			if movedDistance < 20 then
+				local routeIssued, continueMovingIssued, stopRouteCleared, aiEnabled = issueFixedEWHarmEscapeKick(self)
+				if self.iads and self.iads.traceElementCommand then
+					self.iads:traceElementCommand(self, "ew_harm_escape_reissue", {
+						event = "decision",
+						outcome =
+							(routeIssued == true or continueMovingIssued == true or stopRouteCleared == true or aiEnabled == true)
+							and "issued"
+							or "failed",
+						reason = "relocation_waiting",
+						source = "fixed_ew_harm_escape",
+						movedMeters = mist.utils.round(movedDistance, 1),
+						destination = self.harmRelocationDestination,
+						issueEscapeRouteResult = routeIssued == true and "Y" or "N",
+						continueMovingResult = continueMovingIssued == true and "Y" or "N",
+						stopRouteClearResult = stopRouteCleared == true and "Y" or "N",
+						setGroupAIOnResult = aiEnabled == true and "Y" or "N",
+						originModule = "skynet-iads-mobile-patrol.lua",
+						originFunction = "SkynetIADSAbstractRadarElement.checkHARMRelocationArrival",
+					})
+				end
+			end
+		end
+		return originalCheckHARMRelocationArrival(self)
 	end
 
 	local originalFinishHarmDefence = SkynetIADSAbstractRadarElement.finishHarmDefence
