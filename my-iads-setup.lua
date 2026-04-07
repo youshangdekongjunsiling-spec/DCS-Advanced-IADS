@@ -29,8 +29,9 @@ local JAMMER_POLL_INTERVAL = 5
 local ENABLE_MOBILE_PATROL = true
 local ENABLE_EWR_REPORTER = true
 local ENABLE_SIBLING_COORDINATION = true
-local ENABLE_TACTICAL_RUNTIME_DEBUG = true
+local ENABLE_TACTICAL_RUNTIME_DEBUG = false
 local ENABLE_GPS_SPOOFING = true
+local ENABLE_SKYNET_MASTER_SWITCH = true
 local TACTICAL_RUNTIME_DEBUG_DURATION_SECONDS = 8
 local MobilePatrolModule = SkynetIADSMobilePatrol or MobileIADSPatrol
 local EWRReporterModule = SkynetIADSEWRReporter
@@ -40,7 +41,7 @@ local EWR_REPORT_INTERVAL_SECONDS = 15
 local EWR_REPORT_DURATION_SECONDS = 8
 local EWR_REPORT_MAX_CONTACTS = 3
 local EWR_REPORT_CLEAN = false
-local EWR_REPORT_DEBUG_ALL_PLAYERS = true
+local EWR_REPORT_DEBUG_ALL_PLAYERS = false
 local SIBLING_FAMILIES = {
     {
         name = "MSAM ambush pair 1",
@@ -82,6 +83,19 @@ end
 redIADS = SkynetIADS:create(IADS_NAME)
 redIADS:setUpdateInterval(1)
 
+local function applySkynetMasterSwitch(enabled, source)
+    if redIADS == nil or redIADS.setMasterSwitchEnabled == nil then
+        return
+    end
+    redIADS:setMasterSwitchEnabled(enabled)
+    local stateText = enabled ~= false and "ON" or "OFF"
+    local reasonText = source and (" | source=" .. tostring(source)) or ""
+    trigger.action.outText("my-iads-setup: Skynet master switch -> " .. stateText .. reasonText, 10)
+    if redIADS.printOutputToLog then
+        redIADS:printOutputToLog("[Setup] Skynet master switch -> " .. stateText .. reasonText)
+    end
+end
+
 -- Keep debug output minimal for first validation.
 local iadsDebug = redIADS:getDebugSettings()
 iadsDebug.warnings = true
@@ -90,7 +104,7 @@ iadsDebug.contacts = false
 iadsDebug.radarWentLive = false
 iadsDebug.radarWentDark = false
 iadsDebug.jammerProbability = false
-iadsDebug.harmDefence = true
+iadsDebug.harmDefence = false
 
 local function startsWithAnyPrefix(value, prefixes)
     for i = 1, #prefixes do
@@ -457,6 +471,15 @@ local mobileEWCandidateCount, mobileEWCandidateNames = countMobileUnitCandidates
 
 if ENABLE_RADIO_MENU then
     redIADS:addRadioMenu()
+    if redIADS.radioMenu then
+        local masterMenu = missionCommands.addSubMenu("Master Switch", redIADS.radioMenu)
+        missionCommands.addCommand("Skynet ON", masterMenu, function()
+            applySkynetMasterSwitch(true, "radio_menu")
+        end)
+        missionCommands.addCommand("Skynet OFF", masterMenu, function()
+            applySkynetMasterSwitch(false, "radio_menu")
+        end)
+    end
 end
 
 redIADS:activate()
@@ -545,6 +568,8 @@ if ENABLE_EWR_REPORTER and EWRReporterModule then
 elseif ENABLE_EWR_REPORTER then
     trigger.action.outText("my-iads-setup: EWR reporter module missing | reselect latest skynet-iads-compiled-ea18g.lua in Mission Editor", 15)
 end
+
+applySkynetMasterSwitch(ENABLE_SKYNET_MASTER_SWITCH, "setup_default")
 
 local function tryConnectJammer(_, time)
     local activeJammer = _G.redIADSJammer
