@@ -1447,6 +1447,198 @@ function BekaaStoryController:finishMission()
     end, {}, getCurrentTime() + 10)
 end
 
+-- Final clean-text overrides to avoid mojibake in later mission runtime.
+function BekaaStoryController:ensureMenusForGroup(groupId)
+    if groupId == nil or self.menusByGroupId[groupId] then
+        return
+    end
+    local root = missionCommands.addSubMenuForGroup(groupId, "侦察报告")
+    local menuData = {
+        root = root,
+        south = missionCommands.addCommandForGroup(groupId, "提交南口照片", root, function()
+            self:handleReconSubmission(groupId, 1)
+        end),
+        riyak = missionCommands.addCommandForGroup(groupId, "提交里亚格照片", root, function()
+            self:handleReconSubmission(groupId, 2)
+        end),
+        hint = missionCommands.addCommandForGroup(groupId, "请求当前任务提示", root, function()
+            self:sendTaskHintToGroup(groupId)
+        end),
+    }
+    self.menusByGroupId[groupId] = menuData
+    self:log("radio_menu_create | groupId=" .. tostring(groupId))
+end
+
+function BekaaStoryController:beginIntroTimeline(playerState)
+    if playerState == nil or playerState.introStarted == true then
+        return
+    end
+
+    playerState.introStarted = true
+    playerState.activeParticipant = true
+
+    if self.started ~= true then
+        self.started = true
+        self:setSkynetAmbushLock(true, "story_start")
+        self:markPhase("phase_minus_2")
+    end
+
+    if self.phase == "phase4_ambush" or self.phase == "phase5_retreat" or self.phase == "complete" then
+        self:markPlayerStoryPhase(playerState, self.phase)
+        self:notifyPlayer(playerState, "AWACS：战区已进入交战状态，按当前任务提示执行。", self.config.messageDurationSeconds)
+        return
+    end
+
+    self:markPlayerStoryPhase(playerState, "phase_minus_2")
+    self:queuePlayerSequence(playerState, "cold_start", {
+        { speaker = "地面频率", text = "今天早上边境那边又打起来了。", delay = 6, duration = 7 },
+        { speaker = "地面频率", text = "听说黎巴嫩那边已经乱了。", delay = 7, duration = 7 },
+        { speaker = "僚机", text = "我们这是去干嘛，侦察？", delay = 7, duration = 7 },
+        { speaker = "长机", text = "不知道。他们自己也不知道。", delay = 10, duration = 9 },
+    }, 2)
+
+    timer.scheduleFunction(function(args)
+        local latestState = self:getTrackedPlayerState(args.unitName)
+        if latestState then
+            self:beginStartupPhase(latestState)
+        end
+        return nil
+    end, { unitName = playerState.unitName }, getCurrentTime() + self.config.startupDelaySeconds)
+end
+
+function BekaaStoryController:beginStartupPhase(playerState)
+    if playerState == nil or playerState.startupBriefed == true then
+        return
+    end
+    if self.phase == "phase4_ambush" or self.phase == "phase5_retreat" or self.phase == "complete" then
+        return
+    end
+
+    playerState.startupBriefed = true
+    self:markPlayerStoryPhase(playerState, "phase_minus_1")
+    self:queuePlayerSequence(playerState, "startup_taxi", {
+        { speaker = "塔台", text = "Alpha flight，允许启动。", delay = 7, duration = 8 },
+        { speaker = "AWACS", text = "所有单位，当前空域清晰。", delay = 8, duration = 8 },
+        { speaker = "僚机", text = "你听说了吗？谷地那边整个断了。", delay = 8, duration = 8 },
+        { speaker = "长机", text = "嗯。连卫星都看不见。", delay = 8, duration = 8 },
+        { speaker = "AWACS", text = "贝卡谷地当前无电磁活动。重复，无电磁活动。", delay = 10, duration = 10 },
+    }, 0)
+end
+
+function BekaaStoryController:beginTakeoffPhase(playerState)
+    if playerState == nil or playerState.takeoffBriefed == true then
+        return
+    end
+    if self.phase == "phase4_ambush" or self.phase == "phase5_retreat" or self.phase == "complete" then
+        return
+    end
+
+    playerState.takeoffBriefed = true
+    if self.phase == "phase_minus_2" or self.phase == "phase_minus_1" then
+        self:markPhase("phase0_takeoff")
+    end
+    self:markPlayerStoryPhase(playerState, "phase0_takeoff")
+    self:queuePlayerSequence(playerState, "takeoff", {
+        { speaker = "塔台", text = "Alpha flight，允许起飞。", delay = 7, duration = 8 },
+        { speaker = "AWACS", text = "空情清晰，无空中目标。仅检测到三处黎巴嫩固定雷达站。未发现新增节点。", delay = 11, duration = 11 },
+        { speaker = "僚机", text = "听起来挺干净。", delay = 7, duration = 7 },
+        { speaker = "长机", text = "太干净了。", delay = 8, duration = 8 },
+    }, 0)
+end
+
+function BekaaStoryController:beginRecon1Phase(playerState)
+    if playerState == nil or playerState.recon1Prompted == true then
+        return
+    end
+    if self.phase == "phase4_ambush" or self.phase == "phase5_retreat" or self.phase == "complete" then
+        return
+    end
+
+    playerState.recon1Prompted = true
+    if self.search1Completed ~= true and (self.phase == "phase0_takeoff" or self.phase == "phase_minus_1" or self.phase == "phase_minus_2" or self.phase == "idle") then
+        self:markPhase("phase1_recon")
+    end
+    self:markPlayerStoryPhase(playerState, "phase1_recon")
+    self:queuePlayerSequence(playerState, "recon1", {
+        { speaker = "AWACS", text = "你们正在接近谢莫纳。在那里建立观察位置。", delay = 9, duration = 9 },
+        { speaker = "僚机", text = "如果那边真的有部队，这么大规模，不可能没信号。", delay = 9, duration = 9 },
+        { speaker = "AWACS", text = "同意。但我们确实没有看到。", delay = 8, duration = 8 },
+        { speaker = "AWACS", text = "Alpha flight，保持高度。使用吊舱侦察谷地出口。报告你们的接触。", delay = 10, duration = 10 },
+    }, 0)
+end
+
+function BekaaStoryController:beginRecon2Phase(playerState)
+    if playerState == nil or playerState.recon2Prompted == true then
+        return
+    end
+    if self.search1Completed ~= true then
+        return
+    end
+    if self.phase == "phase4_ambush" or self.phase == "phase5_retreat" or self.phase == "complete" then
+        return
+    end
+
+    playerState.recon2Prompted = true
+    if self.search2Completed ~= true and (self.phase == "phase2_transit_wp3" or self.phase == "phase1_recon" or self.phase == "phase0_takeoff") then
+        self:markPhase("phase2_recon")
+    end
+    self:markPlayerStoryPhase(playerState, "phase2_recon")
+    self:queuePlayerSequence(playerState, "recon2", {
+        { speaker = "AWACS", text = "前往航路点3，搜索谷地内部。重点观察里亚格。", delay = 10, duration = 10 },
+        { speaker = "僚机", text = "看起来他们还没准备好。", delay = 7, duration = 7 },
+        { speaker = "长机", text = "或者我们还没看到。", delay = 8, duration = 8 },
+        { speaker = "AWACS", text = "收到后通过无线电提交图像。", delay = 8, duration = 8 },
+    }, 0)
+end
+
+function BekaaStoryController:handleSearch1Success(playerState, target)
+    self:markPhase("phase2_transit_wp3")
+    playerState.search1SuccessSeen = true
+    self:markPlayerStoryPhase(playerState, "phase2_transit_wp3")
+    self:speakerLineToPlayer(playerState, "AWACS", "收到。确认装甲单位，数量很多，正在向谷口推进。", 10)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "AWACS", "推进速度太快了。按这个速度，明天早上就会到谢莫纳。", 10)
+        return nil
+    end, {}, getCurrentTime() + 9)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "僚机", "我看到伴随单位。像防空。", 8)
+        return nil
+    end, {}, getCurrentTime() + 18)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "AWACS", "未检测到防空雷达信号。如果存在，应处于静默状态。", 10)
+        return nil
+    end, {}, getCurrentTime() + 26)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "僚机", "那我们可以从高空打。激光制导。避开这些东西。", 9)
+        return nil
+    end, {}, getCurrentTime() + 36)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "AWACS", "当前未发现高空防空威胁。继续推进，前往航路点3，搜索谷地内部。", 12)
+        return nil
+    end, {}, getCurrentTime() + 46)
+    self:notifyDebugForPlayer(playerState, "search1 complete by " .. tostring(playerState.playerName))
+end
+
+function BekaaStoryController:handleSearch2Success(playerState, target)
+    self:markPhase("phase3_silence")
+    playerState.search2SuccessSeen = true
+    self:markPlayerStoryPhase(playerState, "phase3_silence")
+    self:speakerLineToPlayer(playerState, "AWACS", "收到图像。", 6)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "AWACS", "这不是前沿部队。这是集结区。他们在这里组织进攻。", 10)
+        return nil
+    end, {}, getCurrentTime() + 7)
+    timer.scheduleFunction(function()
+        self:speakerLineToPlayer(playerState, "僚机", "规模比想象的大。", 8)
+        return nil
+    end, {}, getCurrentTime() + 18)
+    timer.scheduleFunction(function()
+        self:beginAmbushSequence()
+        return nil
+    end, {}, getCurrentTime() + self.config.phase4SilenceDelaySeconds + 22)
+    self:notifyDebugForPlayer(playerState, "search2 complete by " .. tostring(playerState.playerName))
+end
+
 function BekaaStoryController:speakerLine(speaker, text, duration)
     local line = tostring(speaker) .. ":\n" .. tostring(text)
     self:notifyActivePlayers(line, duration)
