@@ -96,6 +96,11 @@ local function applySkynetMasterSwitch(enabled, source)
     end
 end
 
+_G.SkynetStorySetAmbushLock = function(locked, reason)
+    local enabled = locked ~= true
+    applySkynetMasterSwitch(enabled, reason or "story")
+end
+
 -- Keep debug output minimal for first validation.
 local iadsDebug = redIADS:getDebugSettings()
 iadsDebug.warnings = true
