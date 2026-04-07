@@ -344,11 +344,19 @@ function BlackValleyStoryController:getSpeakerLabel(playerState, speaker)
     return speaker
 end
 
-function BlackValleyStoryController:renderSpeakerLine(playerState, speaker, text)
-    if speaker == "系统静默" then
-        return text
+function BlackValleyStoryController:renderText(playerState, text)
+    if playerState and playerState.playerName and text then
+        return string.gsub(text, "玩家", playerState.playerName)
     end
-    return self:getSpeakerLabel(playerState, speaker) .. "：" .. text
+    return text
+end
+
+function BlackValleyStoryController:renderSpeakerLine(playerState, speaker, text)
+    local renderedText = self:renderText(playerState, text)
+    if speaker == "系统静默" then
+        return renderedText
+    end
+    return self:getSpeakerLabel(playerState, speaker) .. "：" .. renderedText
 end
 
 function BlackValleyStoryController:speakerLineToPlayer(playerState, speaker, text, duration)
