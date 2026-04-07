@@ -17,6 +17,11 @@ local DEFAULT_CONFIG = {
         "第七装甲师-第二装甲旅-第一营",
     },
     riyakStaticName = "静态-指挥中心-1",
+    riyakStaticNameAliases = {
+        "静态 指挥中心-1",
+        "静态-指挥中心-1",
+        "指挥中心-1",
+    },
     recon1MaxDistanceNm = 15,
     recon2MaxDistanceNm = 115,
     recon2StaticTargetObservationHeightMeters = 20,
@@ -122,6 +127,13 @@ local function containsPattern(source, patterns)
         end
     end
     return false
+end
+
+local function normalizeLookupName(value)
+    local text = tostring(value or "")
+    text = string.gsub(text, "%s+", "")
+    text = string.gsub(text, "[-_－—–]+", "")
+    return text
 end
 
 local function getGroupName(group)
@@ -540,8 +552,69 @@ function BlackValleyStoryController:getNearestFrontlineTarget(unitPoint)
     return best
 end
 
+function BlackValleyStoryController:findStaticObjectByFlexibleName(primaryName, aliases)
+    local exactCandidates = {}
+    if primaryName and primaryName ~= "" then
+        exactCandidates[#exactCandidates + 1] = primaryName
+    end
+    for i = 1, #(aliases or {}) do
+        local alias = aliases[i]
+        if alias and alias ~= "" then
+            exactCandidates[#exactCandidates + 1] = alias
+        end
+    end
+
+    for i = 1, #exactCandidates do
+        local staticObject = StaticObject.getByName(exactCandidates[i])
+        if staticObject and StaticObject.isExist(staticObject) == true then
+            if exactCandidates[i] ~= primaryName then
+                self:log("riyak_static_match | mode=exact_alias | requested=" .. tostring(primaryName) .. " | matched=" .. tostring(exactCandidates[i]))
+            end
+            return staticObject, exactCandidates[i], "exact"
+        end
+    end
+
+    local wanted = normalizeLookupName(primaryName)
+    for i = 1, #(aliases or {}) do
+        local normalizedAlias = normalizeLookupName(aliases[i])
+        if normalizedAlias ~= "" then
+            wanted = normalizedAlias
+            break
+        end
+    end
+
+    local coalitionsToScan = {
+        coalition.side.RED,
+        coalition.side.BLUE,
+        coalition.side.NEUTRAL,
+    }
+
+    for i = 1, #coalitionsToScan do
+        local staticObjects = coalition.getStaticObjects(coalitionsToScan[i]) or {}
+        for j = 1, #staticObjects do
+            local staticObject = staticObjects[j]
+            if staticObject and StaticObject.isExist(staticObject) == true then
+                local name = nil
+                local okName, foundName = pcall(function()
+                    return staticObject:getName()
+                end)
+                if okName then
+                    name = foundName
+                end
+                if name and normalizeLookupName(name) == wanted then
+                    self:log("riyak_static_match | mode=normalized_scan | requested=" .. tostring(primaryName) .. " | matched=" .. tostring(name))
+                    return staticObject, name, "normalized_scan"
+                end
+            end
+        end
+    end
+
+    self:log("riyak_static_match | mode=failed | requested=" .. tostring(primaryName))
+    return nil, nil, "missing"
+end
+
 function BlackValleyStoryController:getRiyakStaticTarget()
-    local staticObject = StaticObject.getByName(self.config.riyakStaticName)
+    local staticObject, matchedName = self:findStaticObjectByFlexibleName(self.config.riyakStaticName, self.config.riyakStaticNameAliases)
     if staticObject == nil or StaticObject.isExist(staticObject) ~= true then
         return nil
     end
@@ -554,7 +627,7 @@ function BlackValleyStoryController:getRiyakStaticTarget()
         }
     end
     return {
-        name = self.config.riyakStaticName,
+        name = matchedName or self.config.riyakStaticName,
         point = point,
     }
 end
