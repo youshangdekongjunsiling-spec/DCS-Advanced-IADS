@@ -14,7 +14,12 @@ local DEFAULT_CONFIG = {
     scanIntervalSeconds = 2,
     readyStabilizeSeconds = 10,
     messageDurationSeconds = 10,
+    readyCompleteFlag = 9200,
     missionCompleteFlag = 9201,
+    highAltConclusionFlag = 9202,
+    lowAltUnlockedFlag = 9203,
+    firstKillFlag = 9204,
+    nodeKillCountFlagBase = 9210,
     radioMenuRootText = "任务02：探针",
     radioMenuReadyText = "准备完毕，可以出发",
     radioMenuHintText = "请求当前任务提示",
@@ -311,6 +316,10 @@ function ProbeStoryController:markPhase(phaseName)
 end
 
 function ProbeStoryController:setFlag(flagValue, value)
+    if flagValue == nil then
+        self:log("flag_skip | missing_flag_name | value=" .. tostring(value))
+        return
+    end
     trigger.action.setUserFlag(flagValue, value)
 end
 
