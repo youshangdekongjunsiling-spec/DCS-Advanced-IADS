@@ -728,11 +728,21 @@ function ProbeStoryController:beginMissionBrief()
         { speaker = "player", text = "能干死那群阿拉伯混账吗？", delay = 6, duration = 8 },
         { speaker = "leader", text = "先试探一下，逼他们露头，再用 HARM 送他们上天。", delay = 8, duration = 10 },
         { speaker = "地面频率", text = "Alpha 中队，可以起飞。编队起飞后爬升到3000，转向000，切换到 AWACS 频率。", delay = 8, duration = 10 },
-        { speaker = "AWACS", text = "灯塔已经激活且上线。正在监视敌方动向。目前没有空中威胁和防空系统信号。", delay = 9, duration = 10 },
+    }, 1)
+end
+
+function ProbeStoryController:beginTakeoffSequence()
+    if self.takeoffSequenceStarted == true then
+        return
+    end
+    self.takeoffSequenceStarted = true
+    self:markPhase("phase_takeoff")
+    self:queueSharedSequence("takeoff_brief", {
+        { speaker = "AWACS", text = "灯塔已经激活且上线。正在监视敌方动向。目前没有空中威胁和防空系统信号。", delay = 0, duration = 10 },
         { speaker = "AWACS", text = "任务目标：SEAD and DEAD。试探性打击敌方防空网，如果可以，摧毁防空网的远程防御。", delay = 9, duration = 11 },
         { speaker = "AWACS", text = "今天先把那些 SA11 逼出来。", delay = 9, duration = 8 },
         { action = function() self:unlockHighAltitudeLine() end, delay = 8 },
-    }, 1)
+    }, 0)
 end
 
 function ProbeStoryController:unlockHighAltitudeLine()
@@ -999,6 +1009,9 @@ function ProbeStoryController:getTaskHint()
     if self.phase == "phase_brief" then
         return "任务简报中，等待高空试探线解锁。"
     end
+    if self.phase == "phase_takeoff" then
+        return "已起飞。等待 AWACS 任务过渡通话结束，并准备进入高空试探线。"
+    end
     if self.phase == "phase_high_alt_open" or self.phase == "phase_high_alt_contact" then
         return "高空试探线：进入高空试探区，引诱外围 SA-11 亮机，测试远距 HARM 效果。"
     end
@@ -1098,6 +1111,9 @@ function ProbeStoryController:checkPhaseTriggers()
     for i = 1, #playerUnits do
         local unit = playerUnits[i]
         local playerState = self:ensurePlayerTracked(unit)
+        if self.missionStarted == true and self.takeoffSequenceStarted ~= true and isUnitInAir(unit) == true then
+            self:beginTakeoffSequence()
+        end
         if self.highAltUnlocked == true and self.highAltHintSent ~= true and self:isPlayerInHighAltitudeEnvelope(unit) == true then
             self.highAltHintSent = true
             self:notifyPlayer(playerState, "你已进入高空试探线，尝试引诱外围高空节点开机。", self.config.messageDurationSeconds)
