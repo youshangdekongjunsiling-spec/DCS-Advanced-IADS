@@ -93,6 +93,15 @@ local function containsPattern(source, patterns)
     return false
 end
 
+local function normalizeMatchText(source)
+    if source == nil then
+        return ""
+    end
+    local text = tostring(source):upper()
+    text = string.gsub(text, "[%s%-%_%.]", "")
+    return text
+end
+
 local function get2dDistance(pointA, pointB)
     local dx = pointA.x - pointB.x
     local dz = pointA.z - pointB.z
@@ -1126,7 +1135,17 @@ end
 
 function ProbeStoryController:isWeaponHarm(weapon)
     local weaponText = getWeaponTypeText(weapon)
-    return containsPattern(weaponText, self.config.harmWeaponPatterns), weaponText
+    if containsPattern(weaponText, self.config.harmWeaponPatterns) then
+        return true, weaponText
+    end
+    local normalizedWeaponText = normalizeMatchText(weaponText)
+    for i = 1, #(self.config.harmWeaponPatterns or {}) do
+        local pattern = normalizeMatchText(self.config.harmWeaponPatterns[i])
+        if pattern ~= "" and string.find(normalizedWeaponText, pattern, 1, true) then
+            return true, weaponText
+        end
+    end
+    return false, weaponText
 end
 
 function ProbeStoryController:handlePlayerShot(event)
@@ -1142,10 +1161,25 @@ function ProbeStoryController:handlePlayerShot(event)
     if playerState == nil then
         return
     end
-    if self.highAltUnlocked ~= true or self:isPlayerInHighAltitudeEnvelope(initiator) ~= true then
-        self:log("harm_shot_ignored | player=" .. tostring(playerState.playerName) .. " | weapon=" .. tostring(weaponText))
+    local initiatorPoint = getUnitPoint(initiator)
+    local initiatorAgl = getAltitudeAglMeters(initiatorPoint)
+    local inHighAltEnvelope = self:isPlayerInHighAltitudeEnvelope(initiator)
+    local allowHighAltShot = self.highAltUnlocked == true and self.lowAltUnlocked ~= true and initiatorAgl >= self.config.highAltMinAltitudeMeters
+    if allowHighAltShot ~= true and inHighAltEnvelope ~= true then
+        self:log(
+            "harm_shot_ignored | player=" .. tostring(playerState.playerName)
+                .. " | weapon=" .. tostring(weaponText)
+                .. " | phase=" .. tostring(self.phase)
+                .. " | agl=" .. tostring(math.floor(initiatorAgl or 0))
+        )
         return
     end
+    self:log(
+        "harm_shot_accept | player=" .. tostring(playerState.playerName)
+            .. " | weapon=" .. tostring(weaponText)
+            .. " | phase=" .. tostring(self.phase)
+            .. " | agl=" .. tostring(math.floor(initiatorAgl or 0))
+    )
     if self.firstHarmShotHandled ~= true then
         self:handleFirstHarmShot(playerState, weaponText)
         return
@@ -1185,6 +1219,11 @@ function ProbeStoryController:onWorldEvent(event)
     end
     if event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT and event.initiator and getPlayerName(event.initiator) then
         self:ensurePlayerTracked(event.initiator)
+        return
+    end
+    if event.id == world.event.S_EVENT_TAKEOFF and event.initiator and getPlayerName(event.initiator) then
+        self:ensurePlayerTracked(event.initiator)
+        self:beginTakeoffSequence()
         return
     end
     if event.id == world.event.S_EVENT_SHOT then
