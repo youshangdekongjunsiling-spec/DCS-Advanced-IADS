@@ -432,8 +432,13 @@ function ProbeStoryController:getLeaderState()
 end
 
 function ProbeStoryController:getPlayerLabel(playerState)
-    if playerState and playerState.readyIndex then
-        return tostring(playerState.readyIndex) .. "号机"
+    if playerState then
+        if playerState.playerName and playerState.playerName ~= "" then
+            return tostring(playerState.playerName)
+        end
+        if playerState.unitName and playerState.unitName ~= "" then
+            return tostring(playerState.unitName)
+        end
     end
     return "玩家"
 end
