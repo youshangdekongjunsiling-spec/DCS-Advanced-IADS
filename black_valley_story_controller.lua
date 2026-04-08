@@ -13,6 +13,7 @@ local DEFAULT_CONFIG = {
     targetCoalition = coalition.side.RED,
     shemonaZoneName = "ZONE_SHEMONA_CAL",
     wp3EntryZoneName = "ZONE_WP3_ENTRY",
+    riyakTargetZoneName = "ZONE_RIYAK_COMMAND",
     frontlineGroupNamePatterns = {
         "第七装甲师-第二装甲旅-第一营",
     },
@@ -616,6 +617,19 @@ end
 function BlackValleyStoryController:getRiyakStaticTarget()
     local staticObject, matchedName = self:findStaticObjectByFlexibleName(self.config.riyakStaticName, self.config.riyakStaticNameAliases)
     if staticObject == nil or StaticObject.isExist(staticObject) ~= true then
+        local zone = self:getZone(self.config.riyakTargetZoneName)
+        if zone and zone.point then
+            local point = {
+                x = zone.point.x,
+                y = zone.point.y + (self.config.recon2StaticTargetObservationHeightMeters or 0),
+                z = zone.point.z,
+            }
+            self:log("riyak_target_fallback | mode=zone | zone=" .. tostring(self.config.riyakTargetZoneName))
+            return {
+                name = self.config.riyakTargetZoneName,
+                point = point,
+            }
+        end
         return nil
     end
     local point = getStaticPoint(staticObject)
