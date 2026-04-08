@@ -532,8 +532,12 @@ function ProbeStoryController:broadcastLine(label, text, duration)
 end
 
 function ProbeStoryController:broadcastRoleLine(role, text, duration, explicitPlayerState)
-    if role == "AWACS" or role == "塔台" or role == "地面频率" then
-        self:broadcastLine(role, text, duration)
+    if role == "AWACS" or role == "塔台" or role == "地面频率" or role == "leader" then
+        local label = role
+        if role == "leader" then
+            label = "中队长"
+        end
+        self:broadcastLine(label, text, duration)
         return
     end
 
