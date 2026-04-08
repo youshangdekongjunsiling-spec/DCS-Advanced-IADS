@@ -747,10 +747,6 @@ function BlackValleyStoryController:validateReconSubmission(unit, reconIndex)
         if distanceMeters > nmToMeters(self.config.recon2MaxDistanceNm) then
             return false, "distance_too_far_riyak", target
         end
-        local lineOfSight, losReason = self:hasLineOfSight(unitPoint, target.point)
-        if lineOfSight ~= true then
-            return false, "line_of_sight_blocked:" .. tostring(losReason), target
-        end
         return true, "valid_riyak_photo", target
     end
 
