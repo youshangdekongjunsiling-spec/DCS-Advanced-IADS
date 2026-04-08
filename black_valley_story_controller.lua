@@ -25,7 +25,7 @@ local DEFAULT_CONFIG = {
     },
     recon1MaxDistanceNm = 15,
     recon2MaxDistanceNm = 115,
-    recon2StaticTargetObservationHeightMeters = 20,
+    recon2StaticTargetObservationHeightMeters = 120,
     requireTargetingPod = true,
     allowPodCapableFallback = true,
     podCapableAircraftTypes = {
