@@ -924,6 +924,45 @@ setControllerAlarmState = function(controller, redState)
 	end)
 end
 
+function SkynetIADSAbstractRadarElement:applyMasterSwitchStandby()
+	if self:isDestroyed() == false then
+		self:getDCSRepresentation():enableEmission(false)
+		local emitters = self:getEmitterRepresentations()
+		for i = 1, #emitters do
+			local emitter = emitters[i]
+			pcall(function()
+				local emitterController = emitter:getController()
+				if emitterController then
+					emitterController:setOnOff(true)
+					setControllerAlarmState(emitterController, false)
+					setControllerROE(emitterController, true)
+				end
+				emitter:enableEmission(false)
+			end)
+		end
+	end
+	local controller = self:getController()
+	if controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setControllerAlarmState(controller, false)
+		setControllerROE(controller, true)
+	end
+	self.aiState = false
+	self.targetsInRange = false
+	self.cachedTargets = {}
+	self:stopScanningForHARMs()
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "master_switch_dark", {
+			outcome = "issued",
+			reason = "master_switch_disabled",
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "applyMasterSwitchStandby",
+		})
+	end
+end
+
 function SkynetIADSAbstractRadarElement:goLive()
 	if ( self.aiState == false and self:hasWorkingPowerSource() and self.harmSilenceID == nil) 
 	and (self:hasRemainingAmmo() == true  )
@@ -960,6 +999,15 @@ function SkynetIADSAbstractRadarElement:goLive()
 				reason = "radar_activation",
 				originModule = "skynet-iads-abstract-radar-element.lua",
 				originFunction = "goLive",
+			})
+		end
+		if type(_G.ProbeStoryOnSkynetGoLive) == "function" then
+			pcall(_G.ProbeStoryOnSkynetGoLive, {
+				dcsName = self.getDCSName and self:getDCSName() or nil,
+				groupName = self.getDCSName and self:getDCSName() or nil,
+				natoName = self.getNatoName and self:getNatoName() or nil,
+				typeName = self.getTypeName and self:getTypeName() or nil,
+				goLiveTime = self.goLiveTime,
 			})
 		end
 		self:scanForHarms()
