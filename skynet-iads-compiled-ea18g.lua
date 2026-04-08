@@ -1,4 +1,4 @@
-env.info("--- SKYNET VERSION: ea18g-sa11-directional-deploy-v1 | BUILD TIME: 06.04.2026 0253Z ---")
+env.info("--- SKYNET VERSION: ea18g-weapon-radar-switch-v2 | BUILD TIME: 07.04.2026 2047Z ---")
 
 do
 --this file contains the required units per sam type
@@ -2440,6 +2440,7 @@ function SkynetIADS:create(name)
 		iads.orderTrace = SkynetIADSOrderTrace:create(iads)
 	end
 	iads.gpsSpoofer = nil
+	iads.masterSwitchEnabled = true
 	iads.contactUpdateInterval = 5         -- 目标更新间隔（秒）
 	
 	-- 确保名称不为空
@@ -2479,6 +2480,41 @@ end
 -- ============================================================================
 function SkynetIADS:setUpdateInterval(interval)
 	self.contactUpdateInterval = interval
+end
+
+function SkynetIADS:isMasterSwitchEnabled()
+	return self.masterSwitchEnabled ~= false
+end
+
+function SkynetIADS:applyMasterSwitchStandbyToManagedElements()
+	for i = 1, #self.samSites do
+		local samSite = self.samSites[i]
+		if samSite and samSite.applyMasterSwitchStandby then
+			pcall(function()
+				samSite:applyMasterSwitchStandby()
+			end)
+		end
+	end
+end
+
+function SkynetIADS:setMasterSwitchEnabled(enabled)
+	local newValue = enabled ~= false
+	if self.masterSwitchEnabled == newValue then
+		return self
+	end
+	self.masterSwitchEnabled = newValue
+	if self.traceCommand then
+		self:traceCommand({
+			command = "master_switch",
+			outcome = newValue and "enabled" or "disabled",
+			originModule = "skynet-iads.lua",
+			originFunction = "setMasterSwitchEnabled",
+		})
+	end
+	if newValue ~= true then
+		self:applyMasterSwitchStandbyToManagedElements()
+	end
+	return self
 end
 
 -- ============================================================================
@@ -4666,6 +4702,45 @@ setControllerAlarmState = function(controller, redState)
 	end)
 end
 
+function SkynetIADSAbstractRadarElement:applyMasterSwitchStandby()
+	if self:isDestroyed() == false then
+		self:getDCSRepresentation():enableEmission(false)
+		local emitters = self:getEmitterRepresentations()
+		for i = 1, #emitters do
+			local emitter = emitters[i]
+			pcall(function()
+				local emitterController = emitter:getController()
+				if emitterController then
+					emitterController:setOnOff(true)
+					setControllerAlarmState(emitterController, false)
+					setControllerROE(emitterController, true)
+				end
+				emitter:enableEmission(false)
+			end)
+		end
+	end
+	local controller = self:getController()
+	if controller then
+		pcall(function()
+			controller:setOnOff(true)
+		end)
+		setControllerAlarmState(controller, false)
+		setControllerROE(controller, true)
+	end
+	self.aiState = false
+	self.targetsInRange = false
+	self.cachedTargets = {}
+	self:stopScanningForHARMs()
+	if self.iads and self.iads.traceElementCommand then
+		self.iads:traceElementCommand(self, "master_switch_dark", {
+			outcome = "issued",
+			reason = "master_switch_disabled",
+			originModule = "skynet-iads-abstract-radar-element.lua",
+			originFunction = "applyMasterSwitchStandby",
+		})
+	end
+end
+
 function SkynetIADSAbstractRadarElement:goLive()
 	if ( self.aiState == false and self:hasWorkingPowerSource() and self.harmSilenceID == nil) 
 	and (self:hasRemainingAmmo() == true  )
@@ -4702,6 +4777,15 @@ function SkynetIADSAbstractRadarElement:goLive()
 				reason = "radar_activation",
 				originModule = "skynet-iads-abstract-radar-element.lua",
 				originFunction = "goLive",
+			})
+		end
+		if type(_G.ProbeStoryOnSkynetGoLive) == "function" then
+			pcall(_G.ProbeStoryOnSkynetGoLive, {
+				dcsName = self.getDCSName and self:getDCSName() or nil,
+				groupName = self.getDCSName and self:getDCSName() or nil,
+				natoName = self.getNatoName and self:getNatoName() or nil,
+				typeName = self.getTypeName and self:getTypeName() or nil,
+				goLiveTime = self.goLiveTime,
 			})
 		end
 		self:scanForHarms()
@@ -6886,12 +6970,21 @@ function SkynetIADSSamSite:targetCycleUpdateStart()
 end
 
 function SkynetIADSSamSite:targetCycleUpdateEnd()
+	if self.iads and self.iads.isMasterSwitchEnabled and self.iads:isMasterSwitchEnabled() ~= true then
+		self:applyMasterSwitchStandby()
+		return
+	end
 	if self.targetsInRange == false and self.actAsEW == false and self:getAutonomousState() == false and self:getAutonomousBehaviour() == SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DCS_AI then
 		self:goDark()
 	end
 end
 
 function SkynetIADSSamSite:informOfContact(contact)
+	if self.iads and self.iads.isMasterSwitchEnabled and self.iads:isMasterSwitchEnabled() ~= true then
+		self.targetsInRange = false
+		self:applyMasterSwitchStandby()
+		return
+	end
 	-- we make sure isTargetInRange (expensive call) is only triggered if no previous calls to this method resulted in targets in range
 	-- 我们确保isTargetInRange（昂贵调用）只有在之前对此方法的调用没有导致范围内目标时才触发
 	if ( self.targetsInRange == false and self:areGoLiveConstraintsSatisfied(contact) == true and self:isTargetInRange(contact) and ( contact:isIdentifiedAsHARM() == false or ( contact:isIdentifiedAsHARM() == true and self:getCanEngageHARM() == true ) ) ) then
@@ -8224,6 +8317,22 @@ local function setPatrolROE(controller)
 	setGroundROE(controller, true)
 end
 
+local function isIADSMasterSwitchEnabled(element, allowWhenEW)
+	if allowWhenEW == true then
+		return true
+	end
+	if element == nil or element.iads == nil or element.iads.isMasterSwitchEnabled == nil then
+		return true
+	end
+	return element.iads:isMasterSwitchEnabled() == true
+end
+
+local function applyMasterSwitchStandbyForElement(element)
+	if element and element.applyMasterSwitchStandby then
+		element:applyMasterSwitchStandby()
+	end
+end
+
 local function setCombatROEForRepresentation(representation, weaponHold)
 	if representation == nil or representation.isExist == nil or representation:isExist() == false then
 		return
@@ -8243,8 +8352,12 @@ local function setCombatROEForRepresentation(representation, weaponHold)
 	end
 end
 
-local function setElementCombatROE(element, weaponHold)
+local function setElementCombatROE(element, weaponHold, allowWhenEW)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	if isIADSMasterSwitchEnabled(element, allowWhenEW) ~= true then
+		applyMasterSwitchStandbyForElement(element)
 		return
 	end
 	local representations = collectElementEmitterRepresentations(element)
@@ -8283,8 +8396,12 @@ local function setMovingCombatROEForRepresentation(representation, weaponHold)
 	end
 end
 
-local function setElementMovingCombatState(element, weaponHold)
+local function setElementMovingCombatState(element, weaponHold, allowWhenEW)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	if isIADSMasterSwitchEnabled(element, allowWhenEW) ~= true then
+		applyMasterSwitchStandbyForElement(element)
 		return
 	end
 	local wasActive = element.aiState == true
@@ -10836,8 +10953,12 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 				triggerInfo = triggerInfo,
 				threatDecision = threatDecision,
 			}, "applyMSAMThreatDecision")
-			entry.element:goLive()
-			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
+			if isIADSMasterSwitchEnabled(entry.element, entry.kind == "MEW") then
+				entry.element:goLive()
+			else
+				applyMasterSwitchStandbyForElement(entry.element)
+			end
+			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true, entry.kind == "MEW")
 			informedContactsSummary = self:informEntryOfThreatContacts(entry, threatDecision.contact)
 			if threatDecision.shouldGoLive == true then
 				entry.combatCommitted = true
@@ -10862,7 +10983,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 					shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
 					weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
 				}, "applyMSAMThreatDecision")
-				setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
+				setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true, entry.kind == "MEW")
 				markMoveFireCombatStateIssued(entry, threatDecision, timer.getTime())
 			end
 			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
@@ -10876,8 +10997,12 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 				triggerInfo = triggerInfo,
 				threatDecision = threatDecision,
 			}, "applyMSAMThreatDecision")
-			entry.element:goLive()
-			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
+			if isIADSMasterSwitchEnabled(entry.element, entry.kind == "MEW") then
+				entry.element:goLive()
+			else
+				applyMasterSwitchStandbyForElement(entry.element)
+			end
+			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true, entry.kind == "MEW")
 			informedContactsSummary = self:informEntryOfThreatContacts(entry, threatDecision.contact)
 		end
 	else
@@ -11533,7 +11658,11 @@ function SkynetIADSMobilePatrol:applyMEWCoverState(entry, networkState, now)
 		}, "applyMEWCoverState")
 		self:notifyDebug(entry.groupName .. " MEW cover live | reason=" .. tostring(networkState.reason))
 	end
-	entry.element:goLive()
+	if isIADSMasterSwitchEnabled(entry.element, entry.kind == "MEW") then
+		entry.element:goLive()
+	else
+		applyMasterSwitchStandbyForElement(entry.element)
+	end
 	self:handlePatrolStationaryRecovery(entry, "mew_cover_stationary")
 	self:traceStateSnapshot(entry, "mew_cover_live", {
 		source = "mew_network",

@@ -32,6 +32,8 @@ local DEFAULT_CONFIG = {
     coordinateSourceGroupNames = { "EW-1" },
     highAltMinAltitudeMeters = 6500,
     lowAltMaxAltitudeMeters = 1200,
+    highAltEmitterNatoNames = { "SA-11" },
+    highAltEmitterNamePatterns = { "MSAM-", "BUK", "SA11" },
     requiredNodeKills = 2,
     nodeKillGroupNames = {
         "MSAM-7-第七装甲防空团-第一近程防空营-1",
@@ -294,6 +296,8 @@ function ProbeStoryController:create(config)
     instance.missionStarted = false
     instance.highAltUnlocked = false
     instance.highAltHintSent = false
+    instance.highAltEmitterSeen = false
+    instance.secondHighAltEmitterSeen = false
     instance.firstHarmShotHandled = false
     instance.secondHarmShotHandled = false
     instance.highAltConclusionStarted = false
@@ -771,6 +775,61 @@ function ProbeStoryController:unlockHighAltitudeLine()
     }, 0)
 end
 
+function ProbeStoryController:isHighAltStoryEmitterInfo(info)
+    if info == nil then
+        return false
+    end
+    if containsPattern(info.natoName, self.config.highAltEmitterNatoNames) then
+        return true
+    end
+    if containsPattern(info.groupName, self.config.highAltEmitterNamePatterns) then
+        return true
+    end
+    if containsPattern(info.dcsName, self.config.highAltEmitterNamePatterns) then
+        return true
+    end
+    return false
+end
+
+function ProbeStoryController:beginHighAltEmitterDetected(info)
+    if self.highAltEmitterSeen == true then
+        return
+    end
+    self.highAltEmitterSeen = true
+    self:log("high_alt_emitter_seen | group=" .. tostring(info and info.groupName or "unknown"))
+    self:queueSharedSequence("high_alt_emitter_seen", {
+        { speaker = "AWACS", text = "监测到 SA-11 开机。", delay = 0, duration = 7 },
+    }, 0)
+end
+
+function ProbeStoryController:beginSecondHighAltEmitterDetected(info)
+    if self.secondHighAltEmitterSeen == true then
+        return
+    end
+    self.secondHighAltEmitterSeen = true
+    self:log("high_alt_emitter_second_seen | group=" .. tostring(info and info.groupName or "unknown"))
+    self:queueSharedSequence("high_alt_emitter_second_seen", {
+        { speaker = "designated_harm", text = "收到，备用反辐射小队正在接敌。让我们来试探一下。", delay = 0, duration = 9 },
+        { speaker = "designated_harm", text = "该死，监测到火控雷达信号源！", delay = 7, duration = 8 },
+    }, 0)
+end
+
+function ProbeStoryController:onSkynetGoLive(info)
+    if self.highAltUnlocked ~= true or self.lowAltUnlocked == true then
+        return
+    end
+    if self:isHighAltStoryEmitterInfo(info) ~= true then
+        return
+    end
+    if self.firstHarmShotHandled ~= true then
+        self:beginHighAltEmitterDetected(info)
+        return
+    end
+    if self.highAltConclusionStarted ~= true and self.secondHarmShotHandled ~= true then
+        self:beginSecondHighAltEmitterDetected(info)
+    end
+end
+
 function ProbeStoryController:isPlayerInHighAltitudeEnvelope(unit)
     local point = getUnitPoint(unit)
     if point == nil then
@@ -802,10 +861,15 @@ function ProbeStoryController:handleFirstHarmShot(playerState, weaponType)
     self.firstHarmShotHandled = true
     self:markPhase("phase_high_alt_contact")
     self:log("harm_first | player=" .. tostring(playerState.playerName) .. " | weapon=" .. tostring(weaponType))
+    if self.highAltEmitterSeen ~= true then
+        self:beginHighAltEmitterDetected(nil)
+    end
     self:queueSharedSequence("first_harm_reaction", {
-        { speaker = "explicit", playerState = playerState, text = "HARM 出手。", delay = 0, duration = 6 },
-        { speaker = "explicit", playerState = playerState, text = "确认雷达信号消失！让这群阿拉伯虫豸喝一壶！正在脱离！", delay = 4, duration = 10 },
-        { speaker = "player", text = "干得漂亮！已经准备好推进！", delay = 7, duration = 8 },
+        { speaker = "explicit", playerState = playerState, text = "收到，截获信号，HARM 出手。", delay = 0, duration = 7 },
+        { speaker = "explicit", playerState = playerState, text = "确认雷达信号消失！", delay = 4, duration = 7 },
+        { speaker = "explicit", playerState = playerState, text = "让这群阿拉伯虫豸喝一壶！", delay = 4, duration = 8 },
+        { speaker = "explicit", playerState = playerState, text = "正在脱离！", delay = 3, duration = 6 },
+        { speaker = "player", text = "干得漂亮！已经准备好推进！", delay = 4, duration = 8 },
         { speaker = "AWACS", text = "等等。", delay = 6, duration = 6 },
         { speaker = "AWACS", text = "情况不对。", delay = 4, duration = 6 },
         { speaker = "leader", text = "哪里不对？", delay = 5, duration = 6 },
@@ -827,10 +891,11 @@ function ProbeStoryController:handleSecondHarmShot(playerState, weaponType)
     end
     self.secondHarmShotHandled = true
     self:log("harm_second | player=" .. tostring(playerState.playerName) .. " | weapon=" .. tostring(weaponType))
+    if self.secondHighAltEmitterSeen ~= true then
+        self:beginSecondHighAltEmitterDetected(nil)
+    end
     self:queueSharedSequence("second_harm_reaction", {
-        { speaker = "explicit", playerState = playerState, text = "收到，备用反辐射小队正在接敌。让我们来试探一下。", delay = 0, duration = 9 },
-        { speaker = "explicit", playerState = playerState, text = "该死，监测到火控雷达信号源！", delay = 7, duration = 8 },
-        { speaker = "explicit", playerState = playerState, text = "HARM 一发离架，正在脱离。", delay = 6, duration = 8 },
+        { speaker = "explicit", playerState = playerState, text = "HARM 一发离架，正在脱离。", delay = 0, duration = 8 },
         { speaker = "AWACS", text = "又关机了，大概率什么都不会打到。", delay = 7, duration = 8 },
         { speaker = "leader", text = "这怎么打！", delay = 6, duration = 7 },
     }, 0)
@@ -1245,6 +1310,11 @@ function ProbeStoryController:start()
     _G.BEKAA_STORY_SKYNET_AMBUSH_LOCK = false
     if type(_G.SkynetStorySetAmbushLock) == "function" then
         pcall(_G.SkynetStorySetAmbushLock, false, "probe_start_reset")
+    end
+    _G.ProbeStoryOnSkynetGoLive = function(info)
+        if ProbeStoryControllerInstance and ProbeStoryControllerInstance.onSkynetGoLive then
+            ProbeStoryControllerInstance:onSkynetGoLive(info)
+        end
     end
     if self.eventHandler == nil then
         self.eventHandler = {}
