@@ -951,6 +951,9 @@ function SkynetIADSAbstractRadarElement:applyMasterSwitchStandby()
 	end
 	self.aiState = false
 	self.targetsInRange = false
+	self.targetsInRangeLatchedUntil = 0
+	self.targetsInRangeLatchedContactName = nil
+	self.targetsInRangeLatchedContactType = nil
 	self.cachedTargets = {}
 	self:stopScanningForHARMs()
 	if self.iads and self.iads.traceElementCommand then
@@ -1055,6 +1058,9 @@ function SkynetIADSAbstractRadarElement:goDark()
 			end
 		end
 		self.aiState = false
+		self.targetsInRangeLatchedUntil = 0
+		self.targetsInRangeLatchedContactName = nil
+		self.targetsInRangeLatchedContactType = nil
 		self:stopScanningForHARMs()
 		self.cachedTargets = {}
 		if self.iads:getDebugSettings().radarWentDark then
