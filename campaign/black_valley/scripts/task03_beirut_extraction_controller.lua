@@ -351,6 +351,8 @@ function Task03BeirutExtractionController:create(config)
     instance.atlasLandedTriggered = false
     instance.hotLoadStarted = false
     instance.hotLoadStartTime = nil
+    instance.hotLoadCompleteTriggered = false
+    instance.hotLoadCompleteTime = nil
     instance.atlasDepartTriggered = false
     instance.atlasRollingTriggered = false
     instance.atlasAirborneTriggered = false
@@ -1162,8 +1164,32 @@ function Task03BeirutExtractionController:startHotLoad()
     end
     self.hotLoadStarted = true
     self.hotLoadStartTime = getCurrentTime()
+    self.hotLoadCompleteTriggered = false
+    self.hotLoadCompleteTime = nil
     self:setFlag(self.config.hotLoadFlag, 1)
     self:markPhase("hot_load")
+end
+
+function Task03BeirutExtractionController:markHotLoadComplete()
+    if self.hotLoadCompleteTriggered == true then
+        return
+    end
+    self.hotLoadCompleteTriggered = true
+    self.hotLoadCompleteTime = getCurrentTime()
+    self:log("hot_load_complete")
+end
+
+function Task03BeirutExtractionController:isAtlasDepartureCleared()
+    if self.hotLoadCompleteTriggered ~= true then
+        return false
+    end
+    if self:isAirportRushCleared() ~= true then
+        return false
+    end
+    if self:isRunwaySuppressedByArmor() == true then
+        return false
+    end
+    return true
 end
 
 function Task03BeirutExtractionController:startAtlasDeparture()
@@ -1302,7 +1328,7 @@ function Task03BeirutExtractionController:playAnxietyIfNeeded()
     local shouldPlay = false
     if self.atlasCallUnlocked == true and self.atlasInboundTriggered ~= true and self:isRunwaySuppressedByArmor() then
         shouldPlay = true
-    elseif self.atlasLandedTriggered == true and self.atlasAirborneTriggered ~= true then
+    elseif self.hotLoadCompleteTriggered == true and self.atlasAirborneTriggered ~= true and self.atlasDepartTriggered ~= true then
         shouldPlay = true
     end
 
@@ -1668,7 +1694,10 @@ function Task03BeirutExtractionController:checkHotLoadGate()
     if self.hotLoadStarted ~= true or self.atlasDepartTriggered == true then
         return
     end
-    if getCurrentTime() - (self.hotLoadStartTime or 0) >= self.config.hotLoadSeconds then
+    if self.hotLoadCompleteTriggered ~= true and getCurrentTime() - (self.hotLoadStartTime or 0) >= self.config.hotLoadSeconds then
+        self:markHotLoadComplete()
+    end
+    if self:isAtlasDepartureCleared() == true then
         self:startAtlasDeparture()
     end
 end
@@ -1701,10 +1730,10 @@ function Task03BeirutExtractionController:checkSuccessGate()
 end
 
 function Task03BeirutExtractionController:checkAtlasGroundStuck()
-    if self.atlasLandedTriggered ~= true or self.atlasAirborneTriggered == true or self.hotLoadStarted ~= true then
+    if self.atlasLandedTriggered ~= true or self.atlasAirborneTriggered == true or self.hotLoadCompleteTriggered ~= true then
         return
     end
-    if getCurrentTime() - (self.hotLoadStartTime or 0) >= self.config.atlasGroundStuckSeconds then
+    if getCurrentTime() - (self.hotLoadCompleteTime or 0) >= self.config.atlasGroundStuckSeconds then
         self:playAnxietyIfNeeded()
     end
 end
