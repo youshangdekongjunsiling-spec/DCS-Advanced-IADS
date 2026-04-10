@@ -195,7 +195,7 @@
 - `intro`：黑场录音与情报开场
 - `startup`：停机坪 / 启动前
 - `takeoff`：起飞与沿海接敌
-- `airport_contact`：进入贝鲁特，和 `Raven` / `Cedar` 建立联系
+- `airport_contact`：进入贝鲁特，和 `Raven` 建立联系
 - `airport_rush`：机场轻装冲击正在进行
 - `runway_recovered`：跑道暂时干净，但只是暂时
 - `armor_search`：玩家需要按 AWACS 提示搜索山区推进轴
@@ -325,7 +325,7 @@
 
 #### Trigger C —— 玩家进入贝鲁特接敌区
 - 玩家进入 `Z_AIRPORT_RING`
-- `Raven` / `Cedar Actual` 入频
+- `Raven` 入频
 - 状态切到 `airport_contact`
 
 此时放出：
@@ -833,7 +833,7 @@
 - 形成对机场空域和进近/离场航线的高威胁覆盖
 
 #### Stage D：高威胁暴露
-- AWACS / Cedar / Atlas 共同确认该目标已对窗口构成实质威胁
+- AWACS / Raven / Atlas 共同确认该目标已对窗口构成实质威胁
 - 这时它正式成为一条独立任务线
 
 #### Stage E：窗口压制
