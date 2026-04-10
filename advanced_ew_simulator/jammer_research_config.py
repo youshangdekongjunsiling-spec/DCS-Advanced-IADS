@@ -6,13 +6,15 @@ External configuration helpers for the jammer research layer.
 from __future__ import annotations
 
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict
 
+from app_paths import APP_ROOT, RESOURCE_ROOT
 
-ROOT_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = ROOT_DIR / "jammer_research_params.json"
+CONFIG_TEMPLATE_PATH = RESOURCE_ROOT / "jammer_research_params.json"
+CONFIG_PATH = APP_ROOT / "jammer_research_params.json"
 
 
 DEFAULT_RESEARCH_CONFIG: Dict[str, Any] = {
@@ -80,6 +82,10 @@ def get_config_path() -> Path:
 
 def _ensure_config_file() -> None:
     if CONFIG_PATH.exists():
+        return
+    if CONFIG_TEMPLATE_PATH.exists():
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(CONFIG_TEMPLATE_PATH, CONFIG_PATH)
         return
     save_config(DEFAULT_RESEARCH_CONFIG)
 

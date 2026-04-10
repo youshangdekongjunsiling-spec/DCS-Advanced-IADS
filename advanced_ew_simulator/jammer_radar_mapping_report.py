@@ -8,9 +8,9 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import asdict
-from pathlib import Path
 from typing import List
 
+from app_paths import APP_ROOT
 from jammer_research_catalog import (
     TemplateProfile,
     RadarMappingCandidate,
@@ -18,9 +18,7 @@ from jammer_research_catalog import (
     build_template_profiles,
 )
 
-
-ROOT_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = ROOT_DIR / "jammer_research_outputs" / "mapping_review"
+OUTPUT_DIR = APP_ROOT / "jammer_research_outputs" / "mapping_review"
 
 
 def write_json(templates, mappings, path: Path) -> None:

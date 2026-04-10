@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from app_paths import RESOURCE_ROOT
 from jammer_research_catalog import (
     RadarMappingCandidate,
     TemplateProfile,
@@ -19,9 +20,7 @@ from jammer_research_catalog import (
 )
 from jammer_research_config import load_config
 
-
-ROOT_DIR = Path(__file__).resolve().parent
-BACKEND_PATH = ROOT_DIR / "Jammer parameters" / "Rader_polar_plot_lua_sync.py"
+BACKEND_PATH = RESOURCE_ROOT / "Jammer parameters" / "Rader_polar_plot_lua_sync.py"
 
 
 def load_backend():

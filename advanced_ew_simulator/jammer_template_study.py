@@ -21,14 +21,13 @@ import csv
 import importlib.util
 import json
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from typing import Dict, List
 
+from app_paths import APP_ROOT, RESOURCE_ROOT
 from jammer_research_catalog import TemplateProfile, build_template_profiles
 
-ROOT_DIR = Path(__file__).resolve().parent
-BACKEND_PATH = ROOT_DIR / "Jammer parameters" / "Rader_polar_plot_lua_sync.py"
-OUTPUT_DIR = ROOT_DIR / "jammer_research_outputs" / "template_study"
+BACKEND_PATH = RESOURCE_ROOT / "Jammer parameters" / "Rader_polar_plot_lua_sync.py"
+OUTPUT_DIR = APP_ROOT / "jammer_research_outputs" / "template_study"
 
 DISTANCES_NM = [10, 20, 30, 40, 50, 60, 70]
 ANGLES_DEG = list(range(0, 91, 10))
