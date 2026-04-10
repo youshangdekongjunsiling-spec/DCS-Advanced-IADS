@@ -26,6 +26,7 @@ local DEFAULT_CONFIG = {
     riyakStaticName = "静态-指挥中心-1",
     recon1MaxDistanceNm = 15,
     recon2MaxDistanceNm = 115,
+    recon2StaticTargetObservationHeightMeters = 20,
     requireTargetingPod = true,
     allowPodCapableFallback = true,
     podCapableAircraftTypes = {
@@ -691,10 +692,47 @@ function BekaaStoryController:getRiyakStaticTarget()
     if staticObject == nil or StaticObject.isExist(staticObject) ~= true then
         return nil
     end
+    local point = getStaticPoint(staticObject)
+    if point and self.config.recon2StaticTargetObservationHeightMeters and self.config.recon2StaticTargetObservationHeightMeters > 0 then
+        point = {
+            x = point.x,
+            y = point.y + self.config.recon2StaticTargetObservationHeightMeters,
+            z = point.z,
+        }
+    end
     return {
         name = self.config.riyakStaticName,
-        point = getStaticPoint(staticObject),
+        point = point,
     }
+end
+
+function BekaaStoryController:getReconFailureMessage(reconIndex, reason)
+    local reasonText = tostring(reason or "")
+    if string.find(reasonText, "not_in_air", 1, true) then
+        return "AWACS：你必须保持空中状态后才能提交侦察照片。"
+    end
+    if string.find(reasonText, "no_recon_pod_detected", 1, true) then
+        return "AWACS：未检测到可用吊舱，无法确认图像。"
+    end
+    if string.find(reasonText, "line_of_sight_blocked", 1, true) then
+        if reconIndex == 1 then
+            return "AWACS：目标被地形遮挡，调整观察角度后重拍。"
+        end
+        return "AWACS：指挥中心被地形遮挡，调整航向或高度后重拍。"
+    end
+    if string.find(reasonText, "riyak_target_missing", 1, true) then
+        return "AWACS：未能确认里亚格指挥中心目标。"
+    end
+    if string.find(reasonText, "distance_too_far", 1, true) then
+        if reconIndex == 1 then
+            return "AWACS：你们的照片不够清晰，请靠近点重拍。"
+        end
+        return "AWACS：画面不够，再靠近。"
+    end
+    if reconIndex == 1 then
+        return "AWACS：你们的照片不够清晰，请调整位置后重拍。"
+    end
+    return "AWACS：图像条件不足，请调整位置或观察角度后重拍。"
 end
 
 function BekaaStoryController:hasReconPod(unit)
@@ -1333,11 +1371,7 @@ function BekaaStoryController:handleReconSubmission(groupId, reconIndex)
     )
 
     if okSubmission ~= true then
-        if reconIndex == 1 then
-            self:notifyPlayer(playerState, "AWACS：你们的照片不够清晰，请靠近点重拍。", self.config.messageDurationSeconds)
-        else
-            self:notifyPlayer(playerState, "AWACS：画面不够，再靠近。", self.config.messageDurationSeconds)
-        end
+        self:notifyPlayer(playerState, self:getReconFailureMessage(reconIndex, reason), self.config.messageDurationSeconds)
         return
     end
 

@@ -1,14 +1,14 @@
-# 任务03《最后的窗口 / Beirut Extraction》总览
+# 任务03《贝鲁特：孤城营救 / Beirut Extraction》总览
 
 此文件不再承担正文写作功能，只作为任务03文档入口使用。
 
 任务03现已拆分为两份文档：
 
 1. 玩家简报版：  
-   [black_valley_task03_beirut_window_player_brief.md](c:/Users/yuanh/Desktop/DCS现代化空地对抗/black_valley_task03_beirut_window_player_brief.md)
+   [black_valley_task03_beirut_window_player_brief.md](c:/Users/yuanh/Desktop/DCS现代化空地对抗/campaign/black_valley/docs/black_valley_task03_beirut_window_player_brief.md)
 
 2. 内部脚本设计版：  
-   [black_valley_task03_beirut_window_internal_design.md](c:/Users/yuanh/Desktop/DCS现代化空地对抗/black_valley_task03_beirut_window_internal_design.md)
+   [black_valley_task03_beirut_window_internal_design.md](c:/Users/yuanh/Desktop/DCS现代化空地对抗/campaign/black_valley/docs/black_valley_task03_beirut_window_internal_design.md)
 
 说明：
 - 玩家简报版只保留形势、蓝方任务、敌情判断与任务气质。
@@ -78,7 +78,7 @@ T+8。
 
 ## 3. 蓝方任务
 
-Alpha 编队执行“最后的窗口”行动。
+Alpha 编队执行“孤城营救”行动。
 
 你们的任务，是在极短时间内为贝鲁特方向建立一个足够稳定、足够安全、足够长的撤离窗口，让我方高价值政治与情报资产成功撤出。
 
@@ -93,13 +93,13 @@ Alpha 编队执行“最后的窗口”行动。
 3. 搜索、识别并摧毁敌机动防空掩护节点。  
    这类目标不会老老实实摆在前面等着挨炸，但它们活着，`Raven` 车队和 `Atlas` 的风险都会急剧上升。
 
-4. 与正在进入战区的 `Atlas 1-1`（C-17）建立会合，并为其提供进场掩护。  
+4. 与正在进入战区的 `Atlas`（C-17）建立会合，并为其提供进场掩护。  
    一旦跑道与装载窗口具备条件，确保运输机能够安全落地。
 
-5. 掩护 `Raven 3` 车队与机场内友军完成会合，并保障高价值资产完成热装载。  
+5. 掩护 `Raven` 车队与机场内友军完成会合，并保障高价值资产完成热装载。  
    我们只需要机场活够那几分钟，不需要把整座机场守到天亮。
 
-6. 在装载完成后，掩护 `Atlas 1-1` 起飞并安全脱离。  
+6. 在装载完成后，掩护 `Atlas` 起飞并安全脱离。  
    如有必要，Alpha 编队应继续承担撤离航线的掩护与压制任务，直至运输机离开危险空域。
 
 ### 指挥官意图
@@ -307,7 +307,7 @@ Alpha 编队执行“最后的窗口”行动。
 - 把任务从“打地面目标”收束成“先把运输窗口打开”
 
 #### 任务内容
-- `Raven 3` 首次入频
+- `Raven` 首次入频
 - 明确说明：`SA-15` 不死，车队不上路
 
 #### 这一段的作用
@@ -323,11 +323,11 @@ Alpha 编队执行“最后的窗口”行动。
 
 #### 任务内容
 - `SA-15` 被摧毁
-- `Raven 3` 车队出发
+- `Raven` 车队出发
 - 窗口第一次真正被打开
 
 #### 实现要求
-- `Raven 3` 在 `SA-15` 存活时不得移动
+- `Raven` 在 `SA-15` 存活时不得移动
 - 这是整关最重要的硬门之一
 
 ---
@@ -338,7 +338,7 @@ Alpha 编队执行“最后的窗口”行动。
 - 给这关增加“重量感”和“护航感”
 
 #### 任务内容
-- `Atlas 1-1` 到达贝鲁特西北三十海里待机点
+- `Atlas` 到达贝鲁特西北三十海里待机点
 - 玩家前出与其会合，引导进场
 
 #### 单人兼容建议
@@ -385,7 +385,7 @@ Alpha 编队执行“最后的窗口”行动。
 - 让“窗口被打开”从概念变成现场事实
 
 #### 任务内容
-- `Raven 3` 通过南门
+- `Raven` 通过南门
 - 与 `Cedar` 会合
 - 进入装载区
 
@@ -526,10 +526,10 @@ Alpha 编队执行“最后的窗口”行动。
 2. 三路装甲前锋是否开始推进  
 3. `SA-15` 是否暴露  
 4. `SA-15` 是否被摧毁  
-5. `Raven 3` 是否获准出发  
-6. `Atlas 1-1` 是否获准进入  
-7. `Raven 3` 是否进入机场  
-8. `Atlas 1-1` 是否完成装载并起飞  
+5. `Raven` 是否获准出发  
+6. `Atlas` 是否获准进入  
+7. `Raven` 是否进入机场  
+8. `Atlas` 是否完成装载并起飞  
 
 换句话说，这关真正的逻辑顺序应该是：
 
@@ -552,8 +552,8 @@ Alpha 编队执行“最后的窗口”行动。
 
 ## 11. 在转脚本前还需要你确认的点
 
-1. `Raven 3` 的具体车辆构成  
-2. `Atlas 1-1` 的具体进场航线、滑跑方向与撤离方向  
+1. `Raven` 的具体车辆构成  
+2. `Atlas` 的具体进场航线、滑跑方向与撤离方向  
 3. 三路装甲前锋的实际群组命名  
 4. `SA-15` 是否单独编组  
 5. 机场轻装冲击组的数量与命名  

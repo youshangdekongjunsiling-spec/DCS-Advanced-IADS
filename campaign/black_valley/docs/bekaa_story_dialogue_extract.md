@@ -1,7 +1,7 @@
 # Bekaa Story Dialogue Extract
 
 用途：
-- 这是从当前实际生效的 [bekaa_story_controller.lua](c:/Users/yuanh/Desktop/DCS现代化空地对抗/bekaa_story_controller.lua) 提取出来的对白与任务提示稿。
+- 这是从当前实际生效的 [bekaa_story_controller.lua](c:/Users/yuanh/Desktop/DCS现代化空地对抗/campaign/black_valley/scripts/bekaa_story_controller.lua) 提取出来的对白与任务提示稿。
 - 这里优先保留“后定义、当前运行有效”的文本。
 - 等你打磨完成后，再反向写回脚本，并彻底清理旧乱码和重复定义。
 
@@ -109,7 +109,7 @@
 
 ## 16. 清理说明
 
-当前 [bekaa_story_controller.lua](c:/Users/yuanh/Desktop/DCS现代化空地对抗/bekaa_story_controller.lua) 里仍然残留旧乱码和重复定义。
+当前 [bekaa_story_controller.lua](c:/Users/yuanh/Desktop/DCS现代化空地对抗/campaign/black_valley/scripts/bekaa_story_controller.lua) 里仍然残留旧乱码和重复定义。
 
 这是因为之前为了尽快恢复可运行版本，采用了“在文件后段重新定义覆盖”的方式。  
 你确认完这份对白后，下一步应做：

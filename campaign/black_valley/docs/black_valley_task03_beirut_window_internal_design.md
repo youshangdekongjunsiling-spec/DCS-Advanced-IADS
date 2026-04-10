@@ -1,4 +1,4 @@
-# 任务03《最后的窗口 / Beirut Extraction》内部脚本设计草案
+# 任务03《贝鲁特：孤城营救 / Beirut Extraction》内部脚本设计草案
 
 用途：
 - 这是任务03的内部设计文档。
@@ -6,7 +6,7 @@
 - 不承担玩家简报功能。
 
 对应的玩家简报文档：
-- [black_valley_task03_beirut_window_player_brief.md](c:/Users/yuanh/Desktop/DCS现代化空地对抗/black_valley_task03_beirut_window_player_brief.md)
+- [black_valley_task03_beirut_window_player_brief.md](c:/Users/yuanh/Desktop/DCS现代化空地对抗/campaign/black_valley/docs/black_valley_task03_beirut_window_player_brief.md)
 
 ---
 
@@ -45,10 +45,10 @@
 2. 装甲前锋是否开始推进  
 3. 后置机动防空硬门是否暴露  
 4. 该硬门是否被摧毁  
-5. `Raven 3` 是否获准出发  
-6. `Atlas 1-1` 是否获准进入  
-7. `Raven 3` 是否进入机场  
-8. `Atlas 1-1` 是否完成装载并起飞  
+5. `Raven` 是否获准出发  
+6. `Atlas` 是否获准进入  
+7. `Raven` 是否进入机场  
+8. `Atlas` 是否完成装载并起飞  
 
 换句话说，这关的实际逻辑顺序应该是：
 
@@ -70,8 +70,8 @@
 - `第七装甲防空团-第一近程防空营-2`
 
 ### 蓝方/NPC主要组
-- `RAVEN_3`：情报车队
-- `ATLAS_1_1`：C-17
+- `Raven`：情报车队
+- `Atlas`：C-17
 - `CEDAR_DEF`：机场内地面守军（可选，偏氛围）
 
 ### 关键区域
@@ -132,7 +132,7 @@
 - 暴露后置机动防空硬门（当前设计默认 `第七装甲防空团-第一近程防空营-2`）
 
 ### Phase 6 —— Raven 待命 / 硬门成为闸门
-- `Raven 3` 首次入频
+- `Raven` 首次入频
 - 明确说明：硬门不死，车队不动
 
 ### Phase 7 —— 硬门被摧毁 / Raven 上路
@@ -140,7 +140,7 @@
 - 进入运输窗口建立阶段
 
 ### Phase 8 —— 与 Atlas 会合
-- `Atlas 1-1` 到达待机点
+- `Atlas` 到达待机点
 - 玩家接机或触发超时备用逻辑
 
 ### Phase 9 —— Atlas 进场
@@ -153,7 +153,7 @@
 - 倒计时开始
 
 ### Phase 11 —— Raven 冲场
-- `Raven 3` 进入机场并与 `Atlas` 会合
+- `Raven` 进入机场并与 `Atlas` 会合
 
 ### Phase 12 —— 最后几分钟
 - 三路装甲继续推进
@@ -413,18 +413,18 @@
   - 敌装甲尚未进入 `Z_INNER_RING`
 
 效果：
-- `RAVEN_3` 放行
+- `Raven` 放行
 - 状态切到 `raven_release`
 
 #### Trigger N —— Raven 抵达南门
-- `GROUP IN ZONE RAVEN_3, Z_RAVEN_GATE`
+- `GROUP IN ZONE Raven, Z_RAVEN_GATE`
 
 作用：
 - 触发南门压力对白
 - 把玩家注意力重新拉回机场入口
 
 #### Trigger O —— Raven 进入机场
-- `GROUP IN ZONE RAVEN_3, Z_RAVEN_LOAD`
+- `GROUP IN ZONE Raven, Z_RAVEN_LOAD`
 
 作用：
 - 说明“人和东西已经到场”
@@ -438,7 +438,7 @@
 - `Raven` 至少已获准出发
 
 效果：
-- `ATLAS_1_1` 进入待机态
+- `Atlas` 进入待机态
 - 状态切到 `atlas_join`
 
 #### Trigger Q —— 玩家与 Atlas 会合
@@ -460,7 +460,7 @@
 - 任务进入不可回头段
 
 #### Trigger S —— Atlas 落地
-- `ATLAS_1_1` 进入跑道区
+- `Atlas` 进入跑道区
 - 并减速到阈值以下
 
 #### Trigger T —— 热装载开始
@@ -475,7 +475,7 @@
 - `Atlas` 切起飞流程
 
 #### Trigger V —— Atlas 离地并脱海
-- `ATLAS_1_1` 成功起飞
+- `Atlas` 成功起飞
 - 进入 `Z_SAFE_SEA`
 - 高度与存活条件满足
 - 任务成功
@@ -487,11 +487,11 @@
 - 且玩家未在容错时间内把其压出
 
 #### Fail B —— Raven 被摧毁
-- `GROUP DEAD RAVEN_3`
+- `GROUP DEAD Raven`
 - 且尚未完成装载交接
 
 #### Fail C —— Atlas 被摧毁
-- `GROUP DEAD ATLAS_1_1`
+- `GROUP DEAD Atlas`
 
 #### Fail D —— 热装载超时后进入崩盘态
 - 不建议简单倒计时到零直接失败
@@ -506,8 +506,8 @@
 
 ## 9. 在转脚本前还需要确认的点
 
-1. `Raven 3` 的具体车辆构成  
-2. `Atlas 1-1` 的具体进场航线、滑跑方向与撤离方向  
+1. `Raven` 的具体车辆构成  
+2. `Atlas` 的具体进场航线、滑跑方向与撤离方向  
 3. 三路装甲前锋与第二波跟进力量是否完全按当前 6 个连执行  
 4. `第七装甲防空团-第一近程防空营-2` 是否单独编组  
 5. 机场轻装冲击组的数量与命名  
@@ -574,7 +574,7 @@
 
 - 在 `Atlas` 即将进入前到位
 或
-- 在 `Raven 3` 即将上路前到位
+- 在 `Raven` 即将上路前到位
 
 其中更推荐：
 
