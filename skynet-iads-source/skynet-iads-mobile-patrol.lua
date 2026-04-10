@@ -794,6 +794,22 @@ local function setPatrolROE(controller)
 	setGroundROE(controller, true)
 end
 
+local function isIADSMasterSwitchEnabled(element, allowWhenEW)
+	if allowWhenEW == true then
+		return true
+	end
+	if element == nil or element.iads == nil or element.iads.isMasterSwitchEnabled == nil then
+		return true
+	end
+	return element.iads:isMasterSwitchEnabled() == true
+end
+
+local function applyMasterSwitchStandbyForElement(element)
+	if element and element.applyMasterSwitchStandby then
+		element:applyMasterSwitchStandby()
+	end
+end
+
 local function setCombatROEForRepresentation(representation, weaponHold)
 	if representation == nil or representation.isExist == nil or representation:isExist() == false then
 		return
@@ -813,8 +829,12 @@ local function setCombatROEForRepresentation(representation, weaponHold)
 	end
 end
 
-local function setElementCombatROE(element, weaponHold)
+local function setElementCombatROE(element, weaponHold, allowWhenEW)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	if isIADSMasterSwitchEnabled(element, allowWhenEW) ~= true then
+		applyMasterSwitchStandbyForElement(element)
 		return
 	end
 	local representations = collectElementEmitterRepresentations(element)
@@ -853,8 +873,12 @@ local function setMovingCombatROEForRepresentation(representation, weaponHold)
 	end
 end
 
-local function setElementMovingCombatState(element, weaponHold)
+local function setElementMovingCombatState(element, weaponHold, allowWhenEW)
 	if element == nil or element.isDestroyed == nil or element:isDestroyed() then
+		return
+	end
+	if isIADSMasterSwitchEnabled(element, allowWhenEW) ~= true then
+		applyMasterSwitchStandbyForElement(element)
 		return
 	end
 	local wasActive = element.aiState == true
@@ -3406,8 +3430,12 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 				triggerInfo = triggerInfo,
 				threatDecision = threatDecision,
 			}, "applyMSAMThreatDecision")
-			entry.element:goLive()
-			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
+			if isIADSMasterSwitchEnabled(entry.element, entry.kind == "MEW") then
+				entry.element:goLive()
+			else
+				applyMasterSwitchStandbyForElement(entry.element)
+			end
+			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true, entry.kind == "MEW")
 			informedContactsSummary = self:informEntryOfThreatContacts(entry, threatDecision.contact)
 			if threatDecision.shouldGoLive == true then
 				entry.combatCommitted = true
@@ -3432,7 +3460,7 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 					shouldGoLive = threatDecision.shouldGoLive == true and "Y" or "N",
 					weaponHold = threatDecision.shouldWeaponHold == true and "Y" or "N",
 				}, "applyMSAMThreatDecision")
-				setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true)
+				setElementMovingCombatState(entry.element, threatDecision.shouldWeaponHold == true, entry.kind == "MEW")
 				markMoveFireCombatStateIssued(entry, threatDecision, timer.getTime())
 			end
 			if threatDecision.contact and threatDecision.contact:isIdentifiedAsHARM() == false and entry.element.informOfContact then
@@ -3446,8 +3474,12 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 				triggerInfo = triggerInfo,
 				threatDecision = threatDecision,
 			}, "applyMSAMThreatDecision")
-			entry.element:goLive()
-			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true)
+			if isIADSMasterSwitchEnabled(entry.element, entry.kind == "MEW") then
+				entry.element:goLive()
+			else
+				applyMasterSwitchStandbyForElement(entry.element)
+			end
+			setElementCombatROE(entry.element, threatDecision.shouldWeaponHold == true, entry.kind == "MEW")
 			informedContactsSummary = self:informEntryOfThreatContacts(entry, threatDecision.contact)
 		end
 	else
@@ -4103,7 +4135,11 @@ function SkynetIADSMobilePatrol:applyMEWCoverState(entry, networkState, now)
 		}, "applyMEWCoverState")
 		self:notifyDebug(entry.groupName .. " MEW cover live | reason=" .. tostring(networkState.reason))
 	end
-	entry.element:goLive()
+	if isIADSMasterSwitchEnabled(entry.element, entry.kind == "MEW") then
+		entry.element:goLive()
+	else
+		applyMasterSwitchStandbyForElement(entry.element)
+	end
 	self:handlePatrolStationaryRecovery(entry, "mew_cover_stationary")
 	self:traceStateSnapshot(entry, "mew_cover_live", {
 		source = "mew_network",

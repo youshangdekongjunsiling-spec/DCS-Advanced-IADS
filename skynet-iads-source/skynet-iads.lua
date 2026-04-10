@@ -42,6 +42,7 @@ function SkynetIADS:create(name)
 		iads.orderTrace = SkynetIADSOrderTrace:create(iads)
 	end
 	iads.gpsSpoofer = nil
+	iads.masterSwitchEnabled = true
 	iads.contactUpdateInterval = 5         -- 目标更新间隔（秒）
 	
 	-- 确保名称不为空
@@ -81,6 +82,41 @@ end
 -- ============================================================================
 function SkynetIADS:setUpdateInterval(interval)
 	self.contactUpdateInterval = interval
+end
+
+function SkynetIADS:isMasterSwitchEnabled()
+	return self.masterSwitchEnabled ~= false
+end
+
+function SkynetIADS:applyMasterSwitchStandbyToManagedElements()
+	for i = 1, #self.samSites do
+		local samSite = self.samSites[i]
+		if samSite and samSite.applyMasterSwitchStandby then
+			pcall(function()
+				samSite:applyMasterSwitchStandby()
+			end)
+		end
+	end
+end
+
+function SkynetIADS:setMasterSwitchEnabled(enabled)
+	local newValue = enabled ~= false
+	if self.masterSwitchEnabled == newValue then
+		return self
+	end
+	self.masterSwitchEnabled = newValue
+	if self.traceCommand then
+		self:traceCommand({
+			command = "master_switch",
+			outcome = newValue and "enabled" or "disabled",
+			originModule = "skynet-iads.lua",
+			originFunction = "setMasterSwitchEnabled",
+		})
+	end
+	if newValue ~= true then
+		self:applyMasterSwitchStandbyToManagedElements()
+	end
+	return self
 end
 
 -- ============================================================================

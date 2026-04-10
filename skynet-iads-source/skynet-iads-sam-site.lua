@@ -62,12 +62,21 @@ function SkynetIADSSamSite:targetCycleUpdateStart()
 end
 
 function SkynetIADSSamSite:targetCycleUpdateEnd()
+	if self.iads and self.iads.isMasterSwitchEnabled and self.iads:isMasterSwitchEnabled() ~= true then
+		self:applyMasterSwitchStandby()
+		return
+	end
 	if self.targetsInRange == false and self.actAsEW == false and self:getAutonomousState() == false and self:getAutonomousBehaviour() == SkynetIADSAbstractRadarElement.AUTONOMOUS_STATE_DCS_AI then
 		self:goDark()
 	end
 end
 
 function SkynetIADSSamSite:informOfContact(contact)
+	if self.iads and self.iads.isMasterSwitchEnabled and self.iads:isMasterSwitchEnabled() ~= true then
+		self.targetsInRange = false
+		self:applyMasterSwitchStandby()
+		return
+	end
 	-- we make sure isTargetInRange (expensive call) is only triggered if no previous calls to this method resulted in targets in range
 	-- 我们确保isTargetInRange（昂贵调用）只有在之前对此方法的调用没有导致范围内目标时才触发
 	if ( self.targetsInRange == false and self:areGoLiveConstraintsSatisfied(contact) == true and self:isTargetInRange(contact) and ( contact:isIdentifiedAsHARM() == false or ( contact:isIdentifiedAsHARM() == true and self:getCanEngageHARM() == true ) ) ) then
