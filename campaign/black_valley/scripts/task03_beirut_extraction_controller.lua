@@ -318,6 +318,17 @@ local function setGroupAIEnabled(groupName, enabled)
     return okOnOff == true
 end
 
+local function destroyGroupByName(groupName)
+    local group = Group.getByName(groupName)
+    if group == nil then
+        return false
+    end
+    local okDestroy = pcall(function()
+        group:destroy()
+    end)
+    return okDestroy == true
+end
+
 function Task03BeirutExtractionController:create(config)
     local instance = setmetatable({}, self)
     instance.config = mergeConfig(DEFAULT_CONFIG, config or {})
@@ -768,6 +779,71 @@ function Task03BeirutExtractionController:isAirportRushCleared()
         end
     end
     return true
+end
+
+function Task03BeirutExtractionController:debugDestroyGroup(groupName, reason)
+    if groupName == nil or groupName == "" then
+        return false
+    end
+    local destroyed = destroyGroupByName(groupName)
+    if destroyed == true then
+        self:log("debug_clear | reason=" .. tostring(reason) .. " | group=" .. tostring(groupName))
+    else
+        self:log("debug_clear_skip | reason=" .. tostring(reason) .. " | group=" .. tostring(groupName))
+    end
+    return destroyed
+end
+
+function Task03BeirutExtractionController:debugClearAirportRush(reason)
+    for i = 1, #self.config.airportRushGroupNames do
+        self:debugDestroyGroup(self.config.airportRushGroupNames[i], reason or "airport_rush")
+    end
+end
+
+function Task03BeirutExtractionController:debugClearRunwaySuppression(reason)
+    self:debugDestroyGroup(self.config.mechAGroupName, reason or "runway_suppression")
+    for i = 1, #self.config.armorGroupNames do
+        self:debugDestroyGroup(self.config.armorGroupNames[i], reason or "runway_suppression")
+    end
+end
+
+function Task03BeirutExtractionController:debugClearShorad(reason)
+    if self:debugDestroyGroup(self.config.shoradGroupName, reason or "shorad") then
+        self:handleShoradDead()
+    end
+end
+
+function Task03BeirutExtractionController:debugForceRunwayRecovered()
+    self:debugClearAirportRush("gate_d_runway_recovered")
+    self:debugClearRunwaySuppression("gate_d_runway_recovered")
+    self.runwayRecoveredTriggered = true
+    self:unlockAtlasCallWindow()
+end
+
+function Task03BeirutExtractionController:debugForceAtlasInbound(playerState)
+    self:debugClearAirportRush("atlas_inbound")
+    self:debugClearRunwaySuppression("atlas_inbound")
+    self.atlasCallUnlocked = true
+    self.runwayRecoveredTriggered = true
+    self:unlockAtlasCallWindow()
+    self.atlasInboundTriggered = true
+    self.ravenReleased = true
+    self:setFlag(self.config.atlasInboundFlag, 1)
+    self:setFlag(self.config.ravenReleasedFlag, 1)
+    self:markPhase("atlas_inbound")
+    self:queueDialogueBlock("atlas_call_success_debug", "atlas_call_success", {
+        playerState = playerState,
+        onComplete = function()
+            self:queueDialogueBlock("raven_release_debug", "raven_release")
+        end
+    })
+end
+
+function Task03BeirutExtractionController:debugForceAtlasDeparture()
+    self:debugClearAirportRush("atlas_depart")
+    self:debugClearRunwaySuppression("atlas_depart")
+    self:debugClearShorad("atlas_depart")
+    self:startAtlasDeparture()
 end
 
 function Task03BeirutExtractionController:groupAnyUnitInZone(groupName, zoneName)
@@ -1459,8 +1535,7 @@ function Task03BeirutExtractionController:ensureMenusForGroup(groupId)
         end)
         missionCommands.addCommandForGroup(groupId, "强制 Gate D（跑道恢复）", debugMenu, function()
             if Task03BeirutExtractionControllerInstance then
-                Task03BeirutExtractionControllerInstance.runwayRecoveredTriggered = true
-                Task03BeirutExtractionControllerInstance:unlockAtlasCallWindow()
+                Task03BeirutExtractionControllerInstance:debugForceRunwayRecovered()
             end
         end)
         missionCommands.addCommandForGroup(groupId, "强制 Gate E（装甲首次受击）", debugMenu, function()
@@ -1477,8 +1552,7 @@ function Task03BeirutExtractionController:ensureMenusForGroup(groupId)
         missionCommands.addCommandForGroup(groupId, "强制 Atlas 成功放行", debugMenu, function()
             if Task03BeirutExtractionControllerInstance then
                 local playerState = Task03BeirutExtractionControllerInstance:getPlayerStateByGroupId(groupId)
-                Task03BeirutExtractionControllerInstance.atlasCallUnlocked = true
-                Task03BeirutExtractionControllerInstance:attemptAtlasCall(playerState)
+                Task03BeirutExtractionControllerInstance:debugForceAtlasInbound(playerState)
             end
         end)
         missionCommands.addCommandForGroup(groupId, "强制 Atlas 进近", debugMenu, function()
@@ -1488,18 +1562,22 @@ function Task03BeirutExtractionController:ensureMenusForGroup(groupId)
         end)
         missionCommands.addCommandForGroup(groupId, "强制 Atlas 落地", debugMenu, function()
             if Task03BeirutExtractionControllerInstance then
+                Task03BeirutExtractionControllerInstance:debugClearAirportRush("atlas_landed")
+                Task03BeirutExtractionControllerInstance:debugClearRunwaySuppression("atlas_landed")
                 Task03BeirutExtractionControllerInstance:triggerAtlasLanded()
             end
         end)
         missionCommands.addCommandForGroup(groupId, "强制 热装载开始", debugMenu, function()
             if Task03BeirutExtractionControllerInstance then
+                Task03BeirutExtractionControllerInstance:debugClearAirportRush("hot_load")
+                Task03BeirutExtractionControllerInstance:debugClearRunwaySuppression("hot_load")
                 Task03BeirutExtractionControllerInstance:triggerRavenLoad()
                 Task03BeirutExtractionControllerInstance:startHotLoad()
             end
         end)
         missionCommands.addCommandForGroup(groupId, "强制 Atlas 起飞流程", debugMenu, function()
             if Task03BeirutExtractionControllerInstance then
-                Task03BeirutExtractionControllerInstance:startAtlasDeparture()
+                Task03BeirutExtractionControllerInstance:debugForceAtlasDeparture()
             end
         end)
         missionCommands.addCommandForGroup(groupId, "强制 成功", debugMenu, function()
