@@ -348,6 +348,8 @@ function Task03BeirutExtractionController:create(config)
     instance.atlasCallUnlocked = false
     instance.atlasInboundTriggered = false
     instance.atlasApproachTriggered = false
+    instance.atlasHoldAnnounced = false
+    instance.atlasWasInHoldZone = false
     instance.atlasLandedTriggered = false
     instance.hotLoadStarted = false
     instance.hotLoadStartTime = nil
@@ -1638,6 +1640,18 @@ function Task03BeirutExtractionController:checkAtlasApproach()
     end
 end
 
+function Task03BeirutExtractionController:checkAtlasHoldArrival()
+    if self.atlasHoldAnnounced == true then
+        return
+    end
+    local inHoldZone = self:isAtlasInZone(self.config.atlasHoldZoneName) == true
+    if inHoldZone == true and self.atlasWasInHoldZone ~= true then
+        self.atlasHoldAnnounced = true
+        self:notifyAllPlayers("AWACS / 灯塔：Atlas 已抵达汇合区，进入盘旋，等待机场肃清。", 10)
+    end
+    self.atlasWasInHoldZone = inHoldZone
+end
+
 function Task03BeirutExtractionController:checkAtlasEscort()
     if self.atlasApproachTriggered ~= true or self.atlasEscortTriggered == true then
         return
@@ -1750,6 +1764,7 @@ function Task03BeirutExtractionController:tick()
     self:ensureMenus()
     self:checkDebugValidation()
 
+    self:checkAtlasHoldArrival()
     self:checkTakeoffGate()
     self:checkAirportContactGate()
     self:checkRunwayRecoveryGate()
