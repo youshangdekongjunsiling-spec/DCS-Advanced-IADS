@@ -919,7 +919,7 @@ function Task03BeirutExtractionController:updateSa15Mark()
         end)
     end
     pcall(function()
-        trigger.action.markToCoalition(self.sa15MarkId, "SA-15 大致位置", point, self.config.playerCoalition, false, "task03_sa15")
+        trigger.action.markToCoalition(self.sa15MarkId, "SA-15 大致位置", point, self.config.playerCoalition, false)
     end)
 end
 
@@ -955,17 +955,15 @@ function Task03BeirutExtractionController:onSkynetGoLive(info)
         return
     end
     local normalizedGroup = normalizeMatchText(info.groupName)
+    local normalizedDcsName = normalizeMatchText(info.dcsName)
     local normalizedShorad = normalizeMatchText(self.config.shoradGroupName)
-    local normalizedNato = normalizeMatchText(info.natoName)
-    local normalizedType = normalizeMatchText(info.typeName)
-    if normalizedGroup == normalizedShorad
-        or normalizedNato == "SA15"
-        or normalizedType == "SA15"
-        or normalizedType == "TOR"
-    then
-        self:handleShoradCycle()
-        self:playShoradHighPressureIfNeeded()
+    if normalizedGroup ~= normalizedShorad and normalizedDcsName ~= normalizedShorad then
+        self:log("skynet_live_ignored | group=" .. tostring(info.groupName) .. " | dcsName=" .. tostring(info.dcsName) .. " | nato=" .. tostring(info.natoName) .. " | type=" .. tostring(info.typeName))
+        return
     end
+    self:log("skynet_live_accept | group=" .. tostring(info.groupName) .. " | dcsName=" .. tostring(info.dcsName) .. " | nato=" .. tostring(info.natoName) .. " | type=" .. tostring(info.typeName))
+    self:handleShoradCycle()
+    self:playShoradHighPressureIfNeeded()
 end
 
 function Task03BeirutExtractionController:handleArmorFirstHit(triggeringPlayerState)
