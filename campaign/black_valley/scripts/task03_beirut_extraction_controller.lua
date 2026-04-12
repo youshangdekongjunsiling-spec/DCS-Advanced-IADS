@@ -28,6 +28,7 @@ local DEFAULT_CONFIG = {
     debugMode = false,
 
     radioMenuRootText = "任务03：贝鲁特：孤城营救",
+    radioMenuStartText = "准备完毕，启动任务。",
     radioMenuAtlasText = "Atlas，机场安全，立即近进！",
     radioMenuAbortText = "无法清空机场，营救已经不可能，放弃任务。",
     radioMenuDebugText = "Debug",
@@ -342,6 +343,7 @@ function Task03BeirutExtractionController:create(config)
     instance.dialogueCounts = {}
     instance.menusByGroupId = {}
     instance.abortVotes = {}
+    instance.startVotes = {}
     instance.nextMarkId = 20300
     instance.sa15MarkId = nil
     instance.activeArmorGroupNames = {}
@@ -669,7 +671,7 @@ function Task03BeirutExtractionController:updatePlayerRoster()
 end
 
 function Task03BeirutExtractionController:freezeEffectiveRosterIfReady()
-    if self.rosterFrozen == true or self.phase ~= "startup" then
+    if self.rosterFrozen == true then
         return
     end
     if #self.playerOrder == 0 then
@@ -692,6 +694,53 @@ function Task03BeirutExtractionController:freezeEffectiveRosterIfReady()
     self.rosterFrozen = true
     self:log("effective_roster_frozen | count=" .. tostring(#self.effectivePlayerNames))
     self:configureEnemyParticipation()
+end
+
+function Task03BeirutExtractionController:allEffectivePlayersReady()
+    if self.rosterFrozen ~= true or #self.effectivePlayerNames == 0 then
+        return false
+    end
+    for i = 1, #self.effectivePlayerNames do
+        local name = self.effectivePlayerNames[i]
+        if self.startVotes[name] ~= true then
+            return false
+        end
+    end
+    return true
+end
+
+function Task03BeirutExtractionController:registerStartVote(playerState)
+    if self.introStarted == true then
+        if playerState then
+            self:notifyPlayer(playerState, "系统：任务已经启动。", 6)
+        end
+        return
+    end
+    if playerState == nil or playerState.playerName == nil then
+        return
+    end
+
+    self:freezeEffectiveRosterIfReady()
+    self.startVotes[playerState.playerName] = true
+    self:notifyPlayer(playerState, "系统：已登记任务启动准备。", 6)
+
+    if self:allEffectivePlayersReady() == true then
+        self:startIntro()
+        return
+    end
+
+    local required = #self.effectivePlayerNames
+    local voted = 0
+    for i = 1, #self.effectivePlayerNames do
+        if self.startVotes[self.effectivePlayerNames[i]] == true then
+            voted = voted + 1
+        end
+    end
+    if required > 0 then
+        self:notifyAllPlayers(string.format("系统：任务启动准备 %d/%d。", voted, required), 6)
+    else
+        self:notifyPlayer(playerState, "系统：等待其他玩家进入座舱。", 6)
+    end
 end
 
 function Task03BeirutExtractionController:configureEnemyParticipation()
@@ -1510,6 +1559,13 @@ function Task03BeirutExtractionController:ensureMenusForGroup(groupId)
         root = root,
     }
 
+    missionCommands.addCommandForGroup(groupId, self.config.radioMenuStartText, root, function()
+        if Task03BeirutExtractionControllerInstance then
+            local playerState = Task03BeirutExtractionControllerInstance:getPlayerStateByGroupId(groupId)
+            Task03BeirutExtractionControllerInstance:registerStartVote(playerState)
+        end
+    end)
+
     missionCommands.addCommandForGroup(groupId, self.config.radioMenuAtlasText, root, function()
         if Task03BeirutExtractionControllerInstance then
             local playerState = Task03BeirutExtractionControllerInstance:getPlayerStateByGroupId(groupId)
@@ -1856,6 +1912,14 @@ function Task03BeirutExtractionController:tick()
     self:updatePlayerRoster()
     self:ensureMenus()
     self:checkDebugValidation()
+    self:freezeEffectiveRosterIfReady()
+
+    if self.introStarted ~= true then
+        if self:allEffectivePlayersReady() == true then
+            self:startIntro()
+        end
+        return getCurrentTime() + self.config.scanIntervalSeconds
+    end
 
     self:checkTakeoffGate()
     self:checkAirportContactGate()
@@ -1906,7 +1970,6 @@ function Task03BeirutExtractionController:start()
     end
 
     self:validateMissionObjects(false)
-    self:startIntro()
 
     timer.scheduleFunction(function()
         if Task03BeirutExtractionControllerInstance then
