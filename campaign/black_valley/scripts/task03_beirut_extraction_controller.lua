@@ -1054,13 +1054,41 @@ function Task03BeirutExtractionController:updateSa15Mark()
     end)
 end
 
+function Task03BeirutExtractionController:updateSa15MarkFallback()
+    local group = Group.getByName(self.config.shoradGroupName)
+    if group == nil then
+        return
+    end
+    local units = getAliveUnits(group)
+    if #units == 0 then
+        return
+    end
+    local point = getUnitPoint(units[1])
+    if point == nil then
+        return
+    end
+    if self.sa15MarkId == nil then
+        return
+    end
+    if trigger.action.markToAll ~= nil then
+        pcall(function()
+            trigger.action.markToAll(self.sa15MarkId, "SA-15 大致位置", point, false)
+        end)
+    end
+end
+
 function Task03BeirutExtractionController:handleShoradCycle()
+    if self.armorPressureTriggered ~= true then
+        self:log("shorad_cycle_skip | reason=armor_pressure_not_started")
+        return
+    end
     local now = getCurrentTime()
     if now - self.lastShoradLiveTime < self.config.shoradCycleCooldownSeconds then
         return
     end
     self.lastShoradLiveTime = now
     self:updateSa15Mark()
+    self:updateSa15MarkFallback()
     if self.shoradFirstTriggered ~= true then
         self.shoradFirstTriggered = true
         self:queueDialogueBlock("shorad_first", "shorad_first")
@@ -1154,15 +1182,17 @@ function Task03BeirutExtractionController:triggerAirportContact()
     end
     self.airportContactTriggered = true
     self:setFlag(self.config.airportContactFlag, 1)
+    if self.airportRushTriggered ~= true then
+        self.airportRushTriggered = true
+        self:setFlag(self.config.airportRush1ActivateFlag, 1)
+        if #self.enabledRushGroupNames >= 2 then
+            self:setFlag(self.config.airportRush2ActivateFlag, 1)
+        end
+    end
     self:markPhase("airport_contact")
     self:queueDialogueBlock("airport_contact", "airport_contact", {
         onComplete = function()
-            if self.airportRushTriggered ~= true then
-                self.airportRushTriggered = true
-                self:setFlag(self.config.airportRush1ActivateFlag, 1)
-                if #self.enabledRushGroupNames >= 2 then
-                    self:setFlag(self.config.airportRush2ActivateFlag, 1)
-                end
+            if self.phase == "airport_contact" then
                 self:markPhase("airport_rush")
                 self:queueDialogueBlock("airport_rush", "airport_rush")
             end
