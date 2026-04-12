@@ -542,6 +542,7 @@ function Task03BeirutExtractionController:emitDialogueEntry(entry, options)
     local label = entry.label or "系统"
     local text = entry.text or ""
     local duration = entry.duration or self.config.messageDurationSeconds
+    local sequenceState = options and options.sequenceState or nil
 
     if label == "玩家" then
         local playerState = options and options.playerState or nil
@@ -551,11 +552,18 @@ function Task03BeirutExtractionController:emitDialogueEntry(entry, options)
         local playerLabel = self:getPlayerLabel(playerState)
         if playerState then
             self:markPlayerSpeakerUsed(playerState)
+            if sequenceState ~= nil then
+                sequenceState.lastPlayerState = playerState
+            end
         end
         self:notifyAllPlayers(playerLabel .. "：" .. text, duration)
         return
     end
 
+    if sequenceState ~= nil and sequenceState.lastPlayerState ~= nil then
+        local lastPlayerLabel = self:getPlayerLabel(sequenceState.lastPlayerState)
+        text = string.gsub(text, "玩家", lastPlayerLabel)
+    end
     self:broadcastLine(label, text, duration)
 end
 
@@ -575,7 +583,12 @@ function Task03BeirutExtractionController:queueDialogueBlock(sequenceKey, blockN
         return
     end
 
-    local baseTime = getCurrentTime() + ((options and options.initialDelay) or 0)
+    local runtimeOptions = cloneTable(options or {})
+    runtimeOptions.sequenceState = {
+        lastPlayerState = runtimeOptions.playerState,
+    }
+
+    local baseTime = getCurrentTime() + (runtimeOptions.initialDelay or 0)
     local lastFinishTime = baseTime
     for i = 1, #entries do
         local entry = cloneTable(entries[i])
@@ -584,16 +597,16 @@ function Task03BeirutExtractionController:queueDialogueBlock(sequenceKey, blockN
         lastFinishTime = scheduledTime + (entry.duration or self.config.messageDurationSeconds)
         timer.scheduleFunction(function()
             if Task03BeirutExtractionControllerInstance ~= nil then
-                Task03BeirutExtractionControllerInstance:emitDialogueEntry(entry, options)
+                Task03BeirutExtractionControllerInstance:emitDialogueEntry(entry, runtimeOptions)
             end
             return nil
         end, {}, scheduledTime)
     end
 
-    if options and options.onComplete then
+    if runtimeOptions.onComplete then
         timer.scheduleFunction(function()
             if Task03BeirutExtractionControllerInstance ~= nil then
-                options.onComplete()
+                runtimeOptions.onComplete()
             end
             return nil
         end, {}, lastFinishTime)
