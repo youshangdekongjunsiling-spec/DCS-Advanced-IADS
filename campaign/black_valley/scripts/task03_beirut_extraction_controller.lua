@@ -1078,8 +1078,8 @@ function Task03BeirutExtractionController:updateSa15MarkFallback()
 end
 
 function Task03BeirutExtractionController:handleShoradCycle()
-    if self.armorPressureTriggered ~= true then
-        self:log("shorad_cycle_skip | reason=armor_pressure_not_started")
+    if self.airportContactTriggered ~= true then
+        self:log("shorad_cycle_skip | reason=airport_contact_not_started")
         return
     end
     local now = getCurrentTime()
