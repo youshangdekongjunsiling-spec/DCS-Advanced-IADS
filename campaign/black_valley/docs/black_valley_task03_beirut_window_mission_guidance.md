@@ -72,10 +72,12 @@
 - `Z_ARM2_A_AXIS`
 - `Z_ARM2_B_AXIS`
 - `Z_ARM2_C_AXIS`
+- `Z_RUNWAY_FIRE_LOCK`
 - `Z_ATLAS_HOLD`
 - `Z_RAVEN_GATE`
 - `Z_RAVEN_LOAD`
 - `Z_SAFE_SEA`
+- `Z_RUNWAY_FIRE_LOCK`
 
 ### 建议额外准备
 - 跑道封锁判定区
@@ -148,21 +150,22 @@ F10 菜单至少包含：
 
 ## 7. 详细事件门
 
-## Gate A：黑场录音
+## Gate A：黑场开场文字播报
 触发：
 - `MISSION START`
 
 动作：
-- 播放 Phase `-2` 全部必播录音
+- 以文字播报方式顺序播放 Phase `-2` 全部必播内容
 - 状态切到 `startup`
 
 备注：
+- 不使用音频资源
 - 不要在黑场后立即播第二段
 - 给 `1-2s` 静默缓冲
 
-## Gate B：首名有效玩家离地
+## Gate B：所有有效玩家离地
 触发：
-- 首名有效玩家离地
+- 当前所有有效玩家都已离地
 
 动作：
 - 状态切到 `takeoff`
@@ -294,6 +297,38 @@ F10 菜单至少包含：
 动作：
 - 状态切到 `success`
 - 播放 `Phase 12` 成功收束对白
+
+---
+
+## 7A. Debug 模式
+
+### 目标
+- 用于任务开发、自测、联调
+- 不影响正式版本默认玩法
+
+### 基本规则
+- 脚本提供独立 `debugMode` 开关
+- `debugMode == true` 时，F10 根菜单下增加 `Debug` 子菜单
+- `debugMode == false` 时，`Debug` 子菜单完全不出现
+
+### Debug 菜单能力
+- `强制 Gate A`
+- `强制 Gate B`
+- `强制 Gate C`
+- `强制 Gate D`
+- `强制 Gate E`
+- `强制 Gate F`
+- `强制 Atlas 可呼叫`
+- `强制 Atlas 进近`
+- `强制 Atlas 落地`
+- `强制进入热装载`
+- `强制 Atlas 脱海成功`
+- `强制进入拒止分支`
+
+### 限制
+- 每个强制触发都必须走统一的状态切换和对白绑定函数
+- 不能为了 debug 直接跳过内部状态写入
+- debug 动作需要写日志，便于复盘测试路径
 
 ---
 

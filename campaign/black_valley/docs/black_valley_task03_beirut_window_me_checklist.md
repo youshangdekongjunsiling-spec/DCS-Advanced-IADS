@@ -47,6 +47,7 @@
 - `Z_ARM2_A_AXIS`
 - `Z_ARM2_B_AXIS`
 - `Z_ARM2_C_AXIS`
+- `Z_RUNWAY_FIRE_LOCK`
 - `Z_ATLAS_HOLD`
 - `Z_RAVEN_GATE`
 - `Z_RAVEN_LOAD`
@@ -56,11 +57,13 @@
 
 ## 4. 推荐额外触发区
 
-当前控制器默认把下面两种判定复用到了现有区：
-- 跑道封锁判定：复用 `Z_RUNWAY`
+当前控制器默认把下面一种判定复用到了现有区：
 - 机械化营突入判定：复用 `Z_INNER_RING`
 
-如果你后面想分得更细，可以再扩展独立区。
+其中跑道封锁判定现在必须使用独立区：
+- `Z_RUNWAY_FIRE_LOCK`
+  - 画在坦克/装甲车进入后可以直接封锁跑道或进近线的位置
+  - 不要再复用 `Z_RUNWAY`
 
 ---
 
@@ -140,4 +143,3 @@ _G.Task03BeirutExtractionConfig = {
 - `Atlas` 落地前被击落：转入摧毁 `Raven`
 - `Atlas` 起飞后被击落：直接失败，不再转 `Raven`
 - 玩家若在 `Atlas` 已落地后放弃任务：转入摧毁地面上的 `Atlas`
-
