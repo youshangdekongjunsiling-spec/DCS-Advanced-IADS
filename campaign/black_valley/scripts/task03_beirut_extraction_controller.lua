@@ -55,7 +55,6 @@ local DEFAULT_CONFIG = {
     armBZoneName = "Z_ARM2_B_AXIS",
     armCZoneName = "Z_ARM2_C_AXIS",
     runwayFireLockZoneName = "Z_RUNWAY_FIRE_LOCK",
-    atlasHoldZoneName = "Z_ATLAS_HOLD",
     ravenGateZoneName = "Z_RAVEN_GATE",
     ravenLoadZoneName = "Z_RAVEN_LOAD",
     safeSeaZoneName = "Z_SAFE_SEA",
@@ -360,8 +359,6 @@ function Task03BeirutExtractionController:create(config)
     instance.atlasCallUnlocked = false
     instance.atlasInboundTriggered = false
     instance.atlasApproachTriggered = false
-    instance.atlasHoldAnnounced = false
-    instance.atlasWasInHoldZone = false
     instance.atlasLandedTriggered = false
     instance.hotLoadStarted = false
     instance.hotLoadStartTime = nil
@@ -1440,7 +1437,6 @@ function Task03BeirutExtractionController:validateMissionObjects(outputToGame)
         self.config.armBZoneName,
         self.config.armCZoneName,
         self.config.runwayFireLockZoneName,
-        self.config.atlasHoldZoneName,
         self.config.ravenGateZoneName,
         self.config.ravenLoadZoneName,
         self.config.safeSeaZoneName,
@@ -1721,6 +1717,7 @@ function Task03BeirutExtractionController:checkAtlasApproach()
 end
 
 function Task03BeirutExtractionController:checkAtlasHoldArrival()
+    return --[[
     if self.atlasHoldAnnounced == true then
         return
     end
@@ -1730,6 +1727,7 @@ function Task03BeirutExtractionController:checkAtlasHoldArrival()
         self:notifyAllPlayers("AWACS / 灯塔：Atlas 已抵达汇合区，进入盘旋，等待机场肃清。", 10)
     end
     self.atlasWasInHoldZone = inHoldZone
+    ]]
 end
 
 function Task03BeirutExtractionController:checkAtlasEscort()
@@ -1844,7 +1842,6 @@ function Task03BeirutExtractionController:tick()
     self:ensureMenus()
     self:checkDebugValidation()
 
-    self:checkAtlasHoldArrival()
     self:checkTakeoffGate()
     self:checkAirportContactGate()
     self:checkRunwayRecoveryGate()

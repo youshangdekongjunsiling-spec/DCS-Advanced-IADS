@@ -48,7 +48,6 @@
 - `Z_ARM2_B_AXIS`
 - `Z_ARM2_C_AXIS`
 - `Z_RUNWAY_FIRE_LOCK`
-- `Z_ATLAS_HOLD`
 - `Z_RAVEN_GATE`
 - `Z_RAVEN_LOAD`
 - `Z_SAFE_SEA`
@@ -94,7 +93,7 @@
 如果你要用 ME 的 `Triggered Actions / Push AI Task` 控制 `Atlas`：
 
 - `9505 == 1`
-  - 放行 `Atlas` 离开 `Z_ATLAS_HOLD`
+  - 放行 `Atlas` 离开其 1 号待机航路点
   - 转入进近航线
 
 - `9508 == 1`
