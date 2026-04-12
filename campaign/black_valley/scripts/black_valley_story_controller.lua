@@ -472,6 +472,7 @@ function BlackValleyStoryController:ensurePlayerTracked(unit)
     playerState.group = group
     playerState.groupId = group and group:getID() or nil
     playerState.lastSeen = getCurrentTime()
+    playerState.lastPoint = getUnitPoint(unit)
 
     if playerState.groupId then
         self:ensureMenusForGroup(playerState.groupId)
@@ -488,6 +489,47 @@ function BlackValleyStoryController:ensurePlayerTracked(unit)
     end
 
     return playerState
+end
+
+function BlackValleyStoryController:getPlayerStateByUnitName(unitName)
+    if unitName == nil or unitName == "" then
+        return nil
+    end
+    for _, playerState in pairs(self.playersByName) do
+        if playerState.unitName == unitName then
+            return playerState
+        end
+    end
+    return nil
+end
+
+function BlackValleyStoryController:resolveCasualtyPlayerState(event)
+    if event == nil then
+        return nil, nil
+    end
+
+    local candidates = {
+        event.initiator,
+        event.target,
+    }
+
+    for i = 1, #candidates do
+        local object = candidates[i]
+        if object then
+            local playerName = getPlayerName(object)
+            if playerName and self.playersByName[playerName] then
+                return self.playersByName[playerName], object
+            end
+
+            local unitName = getUnitName(object)
+            local playerState = self:getPlayerStateByUnitName(unitName)
+            if playerState then
+                return playerState, object
+            end
+        end
+    end
+
+    return nil, nil
 end
 
 function BlackValleyStoryController:findPlayerUnits()
@@ -970,13 +1012,16 @@ function BlackValleyStoryController:recordCasualty(event)
     if self.firstCasualty ~= nil then
         return
     end
-    local initiator = event and event.initiator or nil
-    if not initiator or getPlayerName(initiator) == nil then
+
+    local playerState, sourceObject = self:resolveCasualtyPlayerState(event)
+    if playerState == nil then
+        self:log("casualty_skip | reason=unresolved_event_player")
         return
     end
-    local point = getUnitPoint(initiator)
+
+    local point = getUnitPoint(sourceObject) or playerState.lastPoint
     self.firstCasualty = {
-        playerName = getPlayerName(initiator),
+        playerName = playerState.playerName,
         point = point,
         coordText = formatLatLon(point),
     }
