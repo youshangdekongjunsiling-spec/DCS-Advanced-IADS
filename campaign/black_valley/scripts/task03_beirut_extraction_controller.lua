@@ -46,11 +46,12 @@ local DEFAULT_CONFIG = {
     missionFailFlag = 9511,
     ravenReleasedFlag = 9512,
     atlasCallWindowFlag = 9513,
+    airportRush1ActivateFlag = 9514,
+    airportRush2ActivateFlag = 9515,
 
     airportRingZoneName = "Z_AIRPORT_RING",
     runwayZoneName = "Z_RUNWAY",
     innerRingZoneName = "Z_INNER_RING",
-    mechAxisZoneName = "Z_MECH_A_AXIS",
     runwayFireLockZoneName = "Z_RUNWAY_FIRE_LOCK",
     ravenGateZoneName = "Z_RAVEN_GATE",
     ravenLoadZoneName = "Z_RAVEN_LOAD",
@@ -345,6 +346,7 @@ function Task03BeirutExtractionController:create(config)
     instance.sa15MarkId = nil
     instance.activeArmorGroupNames = {}
     instance.enabledRushGroupNames = {}
+    instance.rushObservedAlive = {}
     instance.selectedArmorCount = 0
 
     instance.introStarted = false
@@ -728,11 +730,11 @@ function Task03BeirutExtractionController:configureEnemyParticipation()
     end
 
     self.enabledRushGroupNames = { self.config.airportRushGroupNames[1] }
+    self.rushObservedAlive = {}
+    self.rushObservedAlive[self.config.airportRushGroupNames[1]] = false
     if effectiveCount >= 2 then
         self.enabledRushGroupNames[#self.enabledRushGroupNames + 1] = self.config.airportRushGroupNames[2]
-        setGroupAIEnabled(self.config.airportRushGroupNames[2], true)
-    else
-        setGroupAIEnabled(self.config.airportRushGroupNames[2], false)
+        self.rushObservedAlive[self.config.airportRushGroupNames[2]] = false
     end
 end
 
@@ -769,7 +771,14 @@ end
 function Task03BeirutExtractionController:isAirportRushCleared()
     for i = 1, #self.enabledRushGroupNames do
         local groupName = self.enabledRushGroupNames[i]
-        if groupAliveFraction(groupName) > self.config.airportRushAliveThreshold then
+        local aliveFraction = groupAliveFraction(groupName)
+        if aliveFraction > 0 then
+            self.rushObservedAlive[groupName] = true
+        end
+        if self.rushObservedAlive[groupName] ~= true then
+            return false
+        end
+        if aliveFraction > self.config.airportRushAliveThreshold then
             return false
         end
     end
@@ -1101,6 +1110,10 @@ function Task03BeirutExtractionController:triggerAirportContact()
         onComplete = function()
             if self.airportRushTriggered ~= true then
                 self.airportRushTriggered = true
+                self:setFlag(self.config.airportRush1ActivateFlag, 1)
+                if #self.enabledRushGroupNames >= 2 then
+                    self:setFlag(self.config.airportRush2ActivateFlag, 1)
+                end
                 self:markPhase("airport_rush")
                 self:queueDialogueBlock("airport_rush", "airport_rush")
             end
@@ -1429,7 +1442,6 @@ function Task03BeirutExtractionController:validateMissionObjects(outputToGame)
         self.config.runwayZoneName,
         self.config.airportRingZoneName,
         self.config.innerRingZoneName,
-        self.config.mechAxisZoneName,
         self.config.runwayFireLockZoneName,
         self.config.ravenGateZoneName,
         self.config.ravenLoadZoneName,
@@ -1443,14 +1455,10 @@ function Task03BeirutExtractionController:validateMissionObjects(outputToGame)
     end
 
     local requiredGroups = {
-        self.config.ravenGroupName,
         self.config.atlasGroupName,
         self.config.mechAGroupName,
         self.config.shoradGroupName,
     }
-    for i = 1, #self.config.airportRushGroupNames do
-        requiredGroups[#requiredGroups + 1] = self.config.airportRushGroupNames[i]
-    end
     for i = 1, #self.config.armorGroupNames do
         requiredGroups[#requiredGroups + 1] = self.config.armorGroupNames[i]
     end
@@ -1458,6 +1466,19 @@ function Task03BeirutExtractionController:validateMissionObjects(outputToGame)
         local groupName = requiredGroups[i]
         if Group.getByName(groupName) == nil then
             missing[#missing + 1] = "缺少群组: " .. tostring(groupName)
+        end
+    end
+
+    local lateActivationGroups = {
+        self.config.ravenGroupName,
+    }
+    for i = 1, #self.config.airportRushGroupNames do
+        lateActivationGroups[#lateActivationGroups + 1] = self.config.airportRushGroupNames[i]
+    end
+    for i = 1, #lateActivationGroups do
+        local groupName = lateActivationGroups[i]
+        if Group.getByName(groupName) == nil then
+            self:log("validate_skip_late_activation | group=" .. tostring(groupName))
         end
     end
 

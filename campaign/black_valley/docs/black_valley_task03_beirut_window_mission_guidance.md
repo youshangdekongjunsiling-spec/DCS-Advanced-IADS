@@ -68,7 +68,6 @@
 - `Z_RUNWAY`
 - `Z_AIRPORT_RING`
 - `Z_INNER_RING`
-- `Z_MECH_A_AXIS`
 - `Z_RUNWAY_FIRE_LOCK`
 - `Z_RAVEN_GATE`
 - `Z_RAVEN_LOAD`
@@ -488,3 +487,12 @@ F10 菜单至少包含：
 7. `Atlas` 路线已预先设置好，只需脚本控制待机与放行
 8. 热装载显性倒计时固定为 `120s`
 9. 不引入贝卡谷地边缘节点远程支援风险
+## 接入更新
+
+- `Z_MECH_A_AXIS` 已移除，不再需要建立
+- `Raven / AIRPORT_RUSH_1 / AIRPORT_RUSH_2` 现在推荐改成 `Late Activation + GROUP ACTIVATE`
+- 新增激活旗标：
+  - `9514` -> `AIRPORT_RUSH_1`
+  - `9515` -> `AIRPORT_RUSH_2`
+- `Raven` 继续复用：
+  - `9512` -> `Raven`

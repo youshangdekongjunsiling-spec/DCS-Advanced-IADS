@@ -43,7 +43,6 @@
 - `Z_RUNWAY`
 - `Z_AIRPORT_RING`
 - `Z_INNER_RING`
-- `Z_MECH_A_AXIS`
 - `Z_RUNWAY_FIRE_LOCK`
 - `Z_RAVEN_GATE`
 - `Z_RAVEN_LOAD`
@@ -139,3 +138,36 @@ _G.Task03BeirutExtractionConfig = {
 - `Atlas` 落地前被击落：转入摧毁 `Raven`
 - `Atlas` 起飞后被击落：直接失败，不再转 `Raven`
 - 玩家若在 `Atlas` 已落地后放弃任务：转入摧毁地面上的 `Atlas`
+## 推荐接法更新
+
+- `Raven`：推荐使用 `Late Activation`
+- `AIRPORT_RUSH_1`：推荐使用 `Late Activation`
+- `AIRPORT_RUSH_2`：推荐使用 `Late Activation`
+
+这样可以不用再给这三组配置 `AI TASK PUSH`。
+
+### 推荐触发器
+
+- `9512 == 是`
+  - `GROUP ACTIVATE -> Raven`
+
+- `9514 == 是`
+  - `GROUP ACTIVATE -> AIRPORT_RUSH_1`
+
+- `9515 == 是`
+  - `GROUP ACTIVATE -> AIRPORT_RUSH_2`
+
+### 说明
+
+- `Raven` 仍然按原路线从待命点开到南门，再进装载区
+- `AIRPORT_RUSH_1/2` 被激活后，按各自原路线直接执行机场冲击
+- `Atlas` 仍然保持原方案：
+  - `9505` 放行进近
+  - `9508` 放行离场
+
+### 注意
+
+- 如果 `AIRPORT_RUSH_1/2` 改成 `Late Activation`，脚本已经做了兼容：
+  - 不会在它们尚未激活时，把机场误判成“rush 已清空”
+- 单人时脚本只会放出 `9514`
+- 双人及以上时脚本会继续放出 `9514` 和 `9515`
