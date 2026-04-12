@@ -317,6 +317,17 @@ local function setGroupAIEnabled(groupName, enabled)
     return okOnOff == true
 end
 
+local function activateGroupByName(groupName)
+    local group = Group.getByName(groupName)
+    if group == nil then
+        return false
+    end
+    local okActivate = pcall(function()
+        trigger.action.activateGroup(group)
+    end)
+    return okActivate == true
+end
+
 local function destroyGroupByName(groupName)
     local group = Group.getByName(groupName)
     if group == nil then
@@ -1198,8 +1209,10 @@ function Task03BeirutExtractionController:triggerAirportContact()
     if self.airportRushTriggered ~= true then
         self.airportRushTriggered = true
         self:setFlag(self.config.airportRush1ActivateFlag, 1)
+        activateGroupByName(self.config.airportRushGroupNames[1])
         if #self.enabledRushGroupNames >= 2 then
             self:setFlag(self.config.airportRush2ActivateFlag, 1)
+            activateGroupByName(self.config.airportRushGroupNames[2])
         end
     end
     self:markPhase("airport_contact")
@@ -1239,6 +1252,7 @@ function Task03BeirutExtractionController:attemptAtlasCall(playerState)
     self.ravenReleased = true
     self:setFlag(self.config.atlasInboundFlag, 1)
     self:setFlag(self.config.ravenReleasedFlag, 1)
+    activateGroupByName(self.config.ravenGroupName)
     self:markPhase("atlas_inbound")
     self:queueDialogueBlock("atlas_call_success", "atlas_call_success", {
         playerState = playerState,
