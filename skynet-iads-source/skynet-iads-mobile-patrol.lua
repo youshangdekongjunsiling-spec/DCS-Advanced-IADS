@@ -23,6 +23,9 @@ SkynetIADSMobilePatrol.DEFAULT_PATROL_REFRESH_DELAYS = { 3, 10 }
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_DISTANCE_METERS = 100
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_FORM = "Diamond"
 SkynetIADSMobilePatrol.DEFAULT_SA11_DIRECTIONAL_DEPLOY_FORM = "Vee"
+SkynetIADSMobilePatrol.DEFAULT_SA11_REAR_SECTOR_HALF_ANGLE_DEGREES = 45
+SkynetIADSMobilePatrol.DEFAULT_SA11_REAR_SECTOR_REALIGN_AFTER_SECONDS = 15
+SkynetIADSMobilePatrol.DEFAULT_SA11_REAR_SECTOR_REALIGN_COOLDOWN_SECONDS = 60
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_CHECK_INTERVAL_SECONDS = 1
 SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_MIN_COMPLETION_METERS = 60
 SkynetIADSMobilePatrol.DEFAULT_PATROL_FORMATION_INTERVAL_METERS = 20
@@ -392,6 +395,28 @@ local function get2DBearingDegrees(fromPoint, toPoint)
 		headingDeg = headingDeg + 360
 	end
 	return mist.utils.round(headingDeg, 1)
+end
+
+local function normalizeBearingDegrees(value)
+	if value == nil then
+		return nil
+	end
+	local normalized = value % 360
+	if normalized < 0 then
+		normalized = normalized + 360
+	end
+	return normalized
+end
+
+local function getBearingOffsetDegrees(firstBearing, secondBearing)
+	if firstBearing == nil or secondBearing == nil then
+		return nil
+	end
+	local delta = math.abs(normalizeBearingDegrees(firstBearing) - normalizeBearingDegrees(secondBearing))
+	if delta > 180 then
+		delta = 360 - delta
+	end
+	return mist.utils.round(delta, 1)
 end
 
 local function getLauncherPositionPoint(launcher)
@@ -2163,6 +2188,9 @@ function SkynetIADSMobilePatrol:issueDeployScatter(entry, triggerInfo)
 			SkynetIADSMobilePatrol.DEFAULT_DEPLOY_SCATTER_MIN_COMPLETION_METERS,
 			math.floor(distanceMeters * 0.6)
 		)
+		entry.lastDeployBearing = deployOptions and deployOptions.deployBearing or nil
+		entry.lastDeployDirectionMode = deployOptions and deployOptions.deployDirectionMode or nil
+		entry.lastDeployFormation = deployOptions and deployOptions.deployFormation or nil
 		self:log("Deploy scatter issued for "..entry.groupName.." | speed="..speedKmph.."km/h | distance="..distanceMeters.."m")
 	end
 	self:traceEntryCommand(entry, "deploy_scatter", {
@@ -2217,6 +2245,144 @@ function SkynetIADSMobilePatrol:getMSAMCombatProfile(entry)
 		alertRangeMeters = mist.utils.NMToMeters(self.sa11MSAMAlertDistanceNm),
 		engageRangeMeters = mist.utils.NMToMeters(self.sa11MSAMEngageDistanceNm),
 	}
+end
+
+function SkynetIADSMobilePatrol:isSA11MSAM(entry)
+	if entry == nil or entry.kind ~= "MSAM" or entry.element == nil or entry.element.getNatoName == nil then
+		return false
+	end
+	return entry.element:getNatoName() == "SA-11"
+end
+
+function SkynetIADSMobilePatrol:buildSA11RearSectorStatus(entry, triggerInfo, now)
+	if self:isSA11MSAM(entry) ~= true or entry == nil or triggerInfo == nil or triggerInfo.targetPoint == nil then
+		return nil
+	end
+	local currentPoint = self:getPatrolReferencePoint(entry)
+	if currentPoint == nil then
+		return nil
+	end
+	local deployBearing = entry.lastDeployBearing
+	local targetBearing = get2DBearingDegrees(currentPoint, triggerInfo.targetPoint)
+	if deployBearing == nil or targetBearing == nil then
+		return nil
+	end
+	local rearSectorCenter = normalizeBearingDegrees(deployBearing + 180)
+	local rearSectorOffset = getBearingOffsetDegrees(targetBearing, rearSectorCenter)
+	if rearSectorOffset == nil then
+		return nil
+	end
+	local rearSectorHalfAngle = SkynetIADSMobilePatrol.DEFAULT_SA11_REAR_SECTOR_HALF_ANGLE_DEGREES
+	local realignAfterSeconds = SkynetIADSMobilePatrol.DEFAULT_SA11_REAR_SECTOR_REALIGN_AFTER_SECONDS
+	local cooldownRemaining = math.max(0, (entry.sa11RearSectorRealignCooldownUntil or 0) - now)
+	local withinRearSector = rearSectorOffset <= rearSectorHalfAngle
+	local elapsedOutside = 0
+	if withinRearSector ~= true and entry.sa11RearSectorOffSince ~= nil then
+		elapsedOutside = now - entry.sa11RearSectorOffSince
+	end
+	local realignDue = withinRearSector ~= true and elapsedOutside >= realignAfterSeconds and cooldownRemaining <= 0
+	return {
+		targetBearing = targetBearing,
+		rearSectorCenter = rearSectorCenter,
+		rearSectorOffset = rearSectorOffset,
+		rearSectorHalfAngle = rearSectorHalfAngle,
+		realignAfterSeconds = realignAfterSeconds,
+		cooldownRemaining = mist.utils.round(cooldownRemaining, 1),
+		withinRearSector = withinRearSector,
+		elapsedOutside = mist.utils.round(elapsedOutside, 1),
+		realignDue = realignDue,
+	}
+end
+
+function SkynetIADSMobilePatrol:maybeRealignSA11RearSector(entry, threatDecision, triggerInfo, now)
+	if self:isSA11MSAM(entry) ~= true or entry == nil then
+		return false
+	end
+	if entry.state ~= "deployed" then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	if entry.combatCommitted == true then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	if threatDecision == nil or threatDecision.shouldDeploy ~= true or threatDecision.shouldGoLive == true then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	if (threatDecision.combatMode or "unknown") ~= "alert_hold" then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	if self:isHarmEvading(entry) == true then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	local siblingInfo = self:getSiblingInfo(entry)
+	if siblingInfo ~= nil and siblingInfo.role ~= "primary" and siblingInfo.role ~= "released" then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	local missilesInFlight = 0
+	local okMissilesInFlight, trackedMissilesInFlight = pcall(function()
+		return entry.element:getNumberOfMissilesInFlight()
+	end)
+	if okMissilesInFlight == true and type(trackedMissilesInFlight) == "number" then
+		missilesInFlight = trackedMissilesInFlight
+	end
+	if missilesInFlight > 0 then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	local rearSectorStatus = self:buildSA11RearSectorStatus(entry, triggerInfo, now)
+	if rearSectorStatus == nil then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	if rearSectorStatus.withinRearSector == true then
+		entry.sa11RearSectorOffSince = nil
+		return false
+	end
+	if entry.sa11RearSectorOffSince == nil then
+		entry.sa11RearSectorOffSince = now
+		rearSectorStatus.elapsedOutside = 0
+		rearSectorStatus.realignDue = false
+	elseif rearSectorStatus.realignDue ~= true then
+		self:traceEntryCommand(entry, "sa11_realign_due", {
+			outcome = "waiting",
+			reason = "outside_rear_sector",
+			source = triggerInfo and triggerInfo.source or "sa11_realign",
+			triggerInfo = triggerInfo,
+			targetBearing = rearSectorStatus.targetBearing,
+			rearSectorCenter = rearSectorStatus.rearSectorCenter,
+			rearSectorOffset = rearSectorStatus.rearSectorOffset,
+			realignAfterSeconds = rearSectorStatus.realignAfterSeconds,
+			cooldownRemaining = rearSectorStatus.cooldownRemaining,
+			realignDue = "N",
+		}, "maybeRealignSA11RearSector")
+		return false
+	end
+	self:traceEntryCommand(entry, "sa11_realign_start", {
+		outcome = "issued",
+		reason = "outside_rear_sector",
+		source = triggerInfo and triggerInfo.source or "sa11_realign",
+		triggerInfo = triggerInfo,
+		targetBearing = rearSectorStatus.targetBearing,
+		rearSectorCenter = rearSectorStatus.rearSectorCenter,
+		rearSectorOffset = rearSectorStatus.rearSectorOffset,
+		realignAfterSeconds = rearSectorStatus.realignAfterSeconds,
+		cooldownRemaining = rearSectorStatus.cooldownRemaining,
+		realignDue = "Y",
+	}, "maybeRealignSA11RearSector")
+	entry.sa11RearSectorOffSince = nil
+	entry.sa11RearSectorRealignCooldownUntil = now + SkynetIADSMobilePatrol.DEFAULT_SA11_REAR_SECTOR_REALIGN_COOLDOWN_SECONDS
+	self:notifyDebug(
+		entry.groupName
+		.. " rear-sector realign | target="
+		.. tostring(triggerInfo.contactName or "unknown")
+	)
+	self:pausePatrolForDeployment(entry, triggerInfo)
+	return true
 end
 
 function SkynetIADSMobilePatrol:getMSAMMinimumFiringAltitudeOverrideMeters(entry)
@@ -3421,6 +3587,10 @@ function SkynetIADSMobilePatrol:applyMSAMThreatDecision(entry, threatDecision, s
 		self:pausePatrolForDeployment(entry, triggerInfo)
 	end
 
+	if moveFireCapable ~= true and effectiveSkipPause ~= true and self:maybeRealignSA11RearSector(entry, threatDecision, triggerInfo, now) == true then
+		return true
+	end
+
 	if entry.state == "deploy_scattering" then
 		entry.lastThreatTime = timer.getTime()
 		entry.noThreatSince = nil
@@ -4273,6 +4443,7 @@ function SkynetIADSMobilePatrol:beginPatrol(entry)
 	entry.launchAwaitSince = nil
 	entry.launchAwaitContactName = nil
 	entry.launchAwaitContactType = nil
+	entry.sa11RearSectorOffSince = nil
 	clearTargetInRangeLatch(entry)
 	entry.lastLaunchMonitorSignature = nil
 	entry.lastLaunchMonitorTime = nil
@@ -5084,6 +5255,11 @@ function SkynetIADSMobilePatrol:registerElement(kind, element, options)
 		launchAwaitContactType = nil,
 		lastLaunchMonitorSignature = nil,
 		lastLaunchMonitorTime = nil,
+		sa11RearSectorOffSince = nil,
+		sa11RearSectorRealignCooldownUntil = 0,
+		lastDeployBearing = nil,
+		lastDeployDirectionMode = nil,
+		lastDeployFormation = nil,
 		lastThreatProbeSignature = nil,
 		lastThreatProbeTime = nil,
 		manager = self,
