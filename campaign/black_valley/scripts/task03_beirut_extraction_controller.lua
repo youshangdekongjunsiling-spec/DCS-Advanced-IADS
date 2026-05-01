@@ -4,7 +4,7 @@ Task03BeirutExtractionController = Task03BeirutExtractionController or {}
 Task03BeirutExtractionController.__index = Task03BeirutExtractionController
 
 Task03BeirutExtractionController.MISSION_NAME = "Beirut Extraction"
-Task03BeirutExtractionController.VERSION = "task03-beirut-extraction-v2"
+Task03BeirutExtractionController.VERSION = "task03-beirut-extraction-v3-raven-fix"
 Task03BeirutExtractionController.LOG_PREFIX = "[TASK03] "
 
 local DEFAULT_CONFIG = {
@@ -21,6 +21,10 @@ local DEFAULT_CONFIG = {
     pressureReminderSeconds = 45,
     armorPressureUpdateCooldownSeconds = 18,
     shoradCycleCooldownSeconds = 20,
+    ravenMoveKickIntervalSeconds = 10,
+    atlasMoveKickIntervalSeconds = 8,
+    ravenStuckSpeedMps = 0.5,
+    atlasStuckSpeedMps = 0.5,
     airportRushAliveThreshold = 0.25,
     atlasLandedSpeedMps = 10,
     atlasRollingSpeedMps = 25,
@@ -317,15 +321,133 @@ local function setGroupAIEnabled(groupName, enabled)
     return okOnOff == true
 end
 
-local function activateGroupByName(groupName)
-    local group = Group.getByName(groupName)
+local function resolveMissionGroupName(controller, groupName)
+    if groupName == nil then
+        return nil
+    end
+    if controller ~= nil then
+        controller.resolvedGroupNames = controller.resolvedGroupNames or {}
+        local cached = controller.resolvedGroupNames[groupName]
+        if type(cached) == "string" and cached ~= "" then
+            return cached
+        end
+    end
+    if Group.getByName(groupName) ~= nil then
+        if controller ~= nil then
+            controller.resolvedGroupNames[groupName] = groupName
+        end
+        return groupName
+    end
+
+    local normalizedTarget = normalizeMatchText(groupName)
+    if normalizedTarget == "" then
+        return groupName
+    end
+
+    local bestName = nil
+    local bestScore = nil
+    local function considerCandidate(candidateName)
+        if type(candidateName) ~= "string" then
+            return
+        end
+        if normalizeMatchText(candidateName) ~= normalizedTarget then
+            return
+        end
+        local score = math.abs(string.len(candidateName) - string.len(groupName))
+        if bestName == nil or score < bestScore then
+            bestName = candidateName
+            bestScore = score
+        end
+    end
+
+    if mist ~= nil and mist.DBs ~= nil and mist.DBs.groupsByName ~= nil then
+        for candidateName, _ in pairs(mist.DBs.groupsByName) do
+            considerCandidate(candidateName)
+        end
+    end
+
+    local resolvedName = bestName or groupName
+    if controller ~= nil then
+        controller.resolvedGroupNames[groupName] = resolvedName
+        if resolvedName ~= groupName and type(controller.logWriter) == "function" then
+            controller.logWriter("group_name_resolved | configured=" .. tostring(groupName) .. " | actual=" .. tostring(resolvedName))
+        end
+    end
+    return resolvedName
+end
+
+local function activateGroupByName(groupName, controller)
+    local actualGroupName = resolveMissionGroupName(controller, groupName)
+    local group = Group.getByName(actualGroupName)
+    if group ~= nil then
+        local okActivate = pcall(function()
+            trigger.action.activateGroup(group)
+        end)
+        if okActivate == true then
+            return true
+        end
+    end
+
+    if mist ~= nil and mist.respawnGroup ~= nil then
+        local okRespawn, respawned = pcall(function()
+            return mist.respawnGroup(actualGroupName)
+        end)
+        if okRespawn == true and respawned ~= nil then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function switchGroupWaypoint(groupName, fromIndex, toIndex, controller)
+    local actualGroupName = resolveMissionGroupName(controller, groupName)
+    local group = Group.getByName(actualGroupName)
     if group == nil then
         return false
     end
-    local okActivate = pcall(function()
-        trigger.action.activateGroup(group)
+    local okController, controller = pcall(function()
+        return group:getController()
     end)
-    return okActivate == true
+    if not okController or controller == nil then
+        return false
+    end
+    local okCommand = pcall(function()
+        controller:setCommand({
+            id = "SwitchWaypoint",
+            params = {
+                fromWaypointIndex = fromIndex,
+                goToWaypointIndex = toIndex,
+            }
+        })
+    end)
+    return okCommand == true
+end
+
+local function continueGroupMovement(groupName, controller)
+    local actualGroupName = resolveMissionGroupName(controller, groupName)
+    local group = Group.getByName(actualGroupName)
+    if group == nil then
+        return false, false, false
+    end
+    local okAIOn = pcall(function()
+        trigger.action.setGroupAIOn(group)
+    end)
+    local okContinue = pcall(function()
+        trigger.action.groupContinueMoving(group)
+    end)
+    local okStopRoute = pcall(function()
+        local controllerHandle = group:getController()
+        if controllerHandle ~= nil then
+            controllerHandle:setCommand({
+                id = "StopRoute",
+                params = {
+                    value = false,
+                }
+            })
+        end
+    end)
+    return okAIOn == true, okContinue == true, okStopRoute == true
 end
 
 local function destroyGroupByName(groupName)
@@ -357,6 +479,7 @@ function Task03BeirutExtractionController:create(config)
     instance.startVotes = {}
     instance.nextMarkId = 20300
     instance.sa15MarkId = nil
+    instance.runwaySuppressionMarkId = nil
     instance.activeArmorGroupNames = {}
     instance.enabledRushGroupNames = {}
     instance.rushObservedAlive = {}
@@ -389,11 +512,18 @@ function Task03BeirutExtractionController:create(config)
     instance.armorHitCooldownUntil = 0
     instance.lastAnxietyTime = 0
     instance.lastShoradLiveTime = 0
+    instance.lastShoradAcceptTime = 0
+    instance.shoradLiveState = false
     instance.shoradFirstTriggered = false
     instance.lastShoradHighPressureTime = 0
     instance.shoradKilledTriggered = false
     instance.atlasEscortTriggered = false
+    instance.runwaySuppressionActive = false
+    instance.runwaySuppressionGroupName = nil
     instance.debugValidationDone = false
+    instance.resolvedGroupNames = {}
+    instance.lastRavenMoveKickTime = 0
+    instance.lastAtlasMoveKickTime = 0
     return instance
 end
 
@@ -489,13 +619,22 @@ function Task03BeirutExtractionController:getAudiencePlayers()
 end
 
 function Task03BeirutExtractionController:notifyAllPlayers(text, duration)
+    local messageDuration = duration or self.config.messageDurationSeconds
+    if self.config and self.config.playerCoalition and trigger.action.outTextForCoalition ~= nil then
+        local okCoalition = pcall(function()
+            trigger.action.outTextForCoalition(self.config.playerCoalition, text, messageDuration)
+        end)
+        if okCoalition then
+            return
+        end
+    end
     local audience = self:getAudiencePlayers()
     if #audience == 0 then
-        trigger.action.outText(text, duration or self.config.messageDurationSeconds)
+        trigger.action.outText(text, messageDuration)
         return
     end
     for i = 1, #audience do
-        self:notifyPlayer(audience[i], text, duration)
+        self:notifyPlayer(audience[i], text, messageDuration)
     end
 end
 
@@ -809,6 +948,7 @@ function Task03BeirutExtractionController:configureEnemyParticipation()
         self.enabledRushGroupNames[#self.enabledRushGroupNames + 1] = self.config.airportRushGroupNames[2]
         self.rushObservedAlive[self.config.airportRushGroupNames[2]] = false
     end
+
 end
 
 function Task03BeirutExtractionController:allEffectivePlayersAirborne()
@@ -845,6 +985,12 @@ function Task03BeirutExtractionController:isAirportRushCleared()
     for i = 1, #self.enabledRushGroupNames do
         local groupName = self.enabledRushGroupNames[i]
         local aliveFraction = groupAliveFraction(groupName)
+        if self.airportRushTriggered == true and self.rushObservedAlive[groupName] ~= true then
+            local group = Group.getByName(groupName)
+            if group ~= nil then
+                self.rushObservedAlive[groupName] = true
+            end
+        end
         if aliveFraction > 0 then
             self.rushObservedAlive[groupName] = true
         end
@@ -878,10 +1024,23 @@ function Task03BeirutExtractionController:debugClearAirportRush(reason)
 end
 
 function Task03BeirutExtractionController:debugClearRunwaySuppression(reason)
-    self:debugDestroyGroup(self.config.mechAGroupName, reason or "runway_suppression")
-    for i = 1, #self.config.armorGroupNames do
-        self:debugDestroyGroup(self.config.armorGroupNames[i], reason or "runway_suppression")
+    local activeReason = reason or "runway_suppression"
+    local suppressingGroupName, _ = self:getRunwaySuppressingArmorContact()
+    if suppressingGroupName == nil then
+        self:log("debug_clear_runway_suppression_skip | reason=" .. tostring(activeReason) .. " | blocker=none")
+        self:clearRunwaySuppressionMark()
+        self.runwaySuppressionActive = false
+        self.runwaySuppressionGroupName = nil
+        return false
     end
+
+    local destroyed = self:debugDestroyGroup(suppressingGroupName, activeReason)
+    if destroyed == true then
+        self:clearRunwaySuppressionMark()
+        self.runwaySuppressionActive = false
+        self.runwaySuppressionGroupName = nil
+    end
+    return destroyed
 end
 
 function Task03BeirutExtractionController:debugClearShorad(reason)
@@ -942,6 +1101,25 @@ function Task03BeirutExtractionController:groupAnyUnitInZone(groupName, zoneName
     return false
 end
 
+function Task03BeirutExtractionController:getFirstUnitPointInZone(groupName, zoneName)
+    local zone = self:getZone(zoneName)
+    if zone == nil then
+        return nil
+    end
+    local group = Group.getByName(groupName)
+    if group == nil then
+        return nil
+    end
+    local units = getAliveUnits(group)
+    for i = 1, #units do
+        local point = getUnitPoint(units[i])
+        if point and pointInZone(point, zone) then
+            return point
+        end
+    end
+    return nil
+end
+
 function Task03BeirutExtractionController:isRunwayClearOfEnemies()
     local zoneName = self.config.runwayZoneName
     local namesToCheck = cloneTable(self.enabledRushGroupNames)
@@ -969,16 +1147,35 @@ function Task03BeirutExtractionController:isRunwaySuppressedByArmor()
     return false
 end
 
+function Task03BeirutExtractionController:getRunwaySuppressingArmorContact()
+    local point = self:getFirstUnitPointInZone(self.config.mechAGroupName, self.config.runwayLockZoneName)
+    if point ~= nil then
+        return self.config.mechAGroupName, point
+    end
+    for i = 1, #self.activeArmorGroupNames do
+        local groupName = self.activeArmorGroupNames[i]
+        point = self:getFirstUnitPointInZone(groupName, self.config.runwayLockZoneName)
+        if point ~= nil then
+            return groupName, point
+        end
+    end
+    return nil, nil
+end
+
 function Task03BeirutExtractionController:isMechABreachingAirport()
     return self:groupAnyUnitInZone(self.config.mechAGroupName, self.config.mechBreachZoneName)
 end
 
+function Task03BeirutExtractionController:getResolvedGroupName(groupName)
+    return resolveMissionGroupName(self, groupName)
+end
+
 function Task03BeirutExtractionController:getAtlasGroup()
-    return Group.getByName(self.config.atlasGroupName)
+    return Group.getByName(self:getResolvedGroupName(self.config.atlasGroupName))
 end
 
 function Task03BeirutExtractionController:getRavenGroup()
-    return Group.getByName(self.config.ravenGroupName)
+    return Group.getByName(self:getResolvedGroupName(self.config.ravenGroupName))
 end
 
 function Task03BeirutExtractionController:getAtlasLeadUnit()
@@ -1078,6 +1275,40 @@ function Task03BeirutExtractionController:updateSa15Mark()
     end)
 end
 
+function Task03BeirutExtractionController:updateRunwaySuppressionMark(groupName, point)
+    if point == nil then
+        return
+    end
+    if self.runwaySuppressionMarkId == nil then
+        self.runwaySuppressionMarkId = self.nextMarkId
+        self.nextMarkId = self.nextMarkId + 1
+    else
+        pcall(function()
+            trigger.action.removeMark(self.runwaySuppressionMarkId)
+        end)
+    end
+    local text = "跑道封锁装甲大致位置"
+    pcall(function()
+        trigger.action.markToCoalition(self.runwaySuppressionMarkId, text, point, self.config.playerCoalition, false)
+    end)
+    if trigger.action.markToAll ~= nil then
+        pcall(function()
+            trigger.action.markToAll(self.runwaySuppressionMarkId, text, point, false)
+        end)
+    end
+    self.runwaySuppressionGroupName = groupName
+end
+
+function Task03BeirutExtractionController:clearRunwaySuppressionMark()
+    if self.runwaySuppressionMarkId ~= nil then
+        pcall(function()
+            trigger.action.removeMark(self.runwaySuppressionMarkId)
+        end)
+    end
+    self.runwaySuppressionMarkId = nil
+    self.runwaySuppressionGroupName = nil
+end
+
 function Task03BeirutExtractionController:updateSa15MarkFallback()
     local group = Group.getByName(self.config.shoradGroupName)
     if group == nil then
@@ -1119,6 +1350,31 @@ function Task03BeirutExtractionController:handleShoradCycle()
         return
     end
     self:queueDialogueBlock("shorad_repeat_" .. tostring(math.floor(now)), "shorad_repeat")
+end
+
+function Task03BeirutExtractionController:handleRunwaySuppressionState()
+    local groupName, point = self:getRunwaySuppressingArmorContact()
+    if groupName == nil then
+        if self.runwaySuppressionActive == true then
+            self.runwaySuppressionActive = false
+            self:clearRunwaySuppressionMark()
+            self:log("runway_suppression_clear")
+        end
+        return
+    end
+
+    self:updateRunwaySuppressionMark(groupName, point)
+    if self.runwaySuppressionActive ~= true then
+        self.runwaySuppressionActive = true
+        self:log("runway_suppression_start | group=" .. tostring(groupName))
+        self:broadcastLine("AWACS / 灯塔", "装甲已经封住跑道，优先处理封锁位。", 8)
+        return
+    end
+
+    if self.runwaySuppressionGroupName ~= groupName then
+        self.runwaySuppressionGroupName = groupName
+        self:log("runway_suppression_shift | group=" .. tostring(groupName))
+    end
 end
 
 function Task03BeirutExtractionController:playShoradHighPressureIfNeeded()
@@ -1252,7 +1508,11 @@ function Task03BeirutExtractionController:attemptAtlasCall(playerState)
     self.ravenReleased = true
     self:setFlag(self.config.atlasInboundFlag, 1)
     self:setFlag(self.config.ravenReleasedFlag, 1)
-    activateGroupByName(self.config.ravenGroupName)
+    if activateGroupByName(self.config.ravenGroupName, self) ~= true then
+        self:log("raven_activate_fail | group=" .. tostring(self.config.ravenGroupName))
+    else
+        self:kickRavenMovement("atlas_call_release")
+    end
     self:markPhase("atlas_inbound")
     self:queueDialogueBlock("atlas_call_success", "atlas_call_success", {
         playerState = playerState,
@@ -1338,6 +1598,10 @@ function Task03BeirutExtractionController:triggerAtlasLanded()
     self:setFlag(self.config.atlasLandedFlag, 1)
     self:markPhase("atlas_land")
     self:queueDialogueBlock("atlas_landed", "atlas_landed")
+    if self.ravenLoadTriggered == true then
+        self:log("atlas_landed_hot_load_ready")
+        self:startHotLoad()
+    end
 end
 
 function Task03BeirutExtractionController:triggerRavenLoad()
@@ -1358,6 +1622,7 @@ function Task03BeirutExtractionController:startHotLoad()
     self.hotLoadCompleteTime = nil
     self:setFlag(self.config.hotLoadFlag, 1)
     self:markPhase("hot_load")
+    self:log("hot_load_start | ravenLoadTriggered=" .. tostring(self.ravenLoadTriggered) .. " | atlasLandedTriggered=" .. tostring(self.atlasLandedTriggered))
 end
 
 function Task03BeirutExtractionController:markHotLoadComplete()
@@ -1382,6 +1647,32 @@ function Task03BeirutExtractionController:isAtlasDepartureCleared()
     return true
 end
 
+function Task03BeirutExtractionController:isConfiguredGroupMatch(configuredName, actualName)
+    return normalizeMatchText(configuredName) ~= "" and normalizeMatchText(configuredName) == normalizeMatchText(actualName)
+end
+
+function Task03BeirutExtractionController:kickRavenMovement(reason)
+    local now = getCurrentTime()
+    if now - (self.lastRavenMoveKickTime or 0) < self.config.ravenMoveKickIntervalSeconds then
+        return false
+    end
+    self.lastRavenMoveKickTime = now
+    local okAIOn, okContinue, okStopRoute = continueGroupMovement(self.config.ravenGroupName, self)
+    self:log("raven_move_kick | reason=" .. tostring(reason) .. " | aiOn=" .. tostring(okAIOn) .. " | continue=" .. tostring(okContinue) .. " | stopRoute=" .. tostring(okStopRoute))
+    return okAIOn or okContinue or okStopRoute
+end
+
+function Task03BeirutExtractionController:kickAtlasDeparture(reason)
+    local now = getCurrentTime()
+    if now - (self.lastAtlasMoveKickTime or 0) < self.config.atlasMoveKickIntervalSeconds then
+        return false
+    end
+    self.lastAtlasMoveKickTime = now
+    local okAIOn, okContinue, okStopRoute = continueGroupMovement(self.config.atlasGroupName, self)
+    self:log("atlas_depart_kick | reason=" .. tostring(reason) .. " | aiOn=" .. tostring(okAIOn) .. " | continue=" .. tostring(okContinue) .. " | stopRoute=" .. tostring(okStopRoute))
+    return okAIOn or okContinue or okStopRoute
+end
+
 function Task03BeirutExtractionController:startAtlasDeparture()
     if self.atlasDepartTriggered == true then
         return
@@ -1390,6 +1681,7 @@ function Task03BeirutExtractionController:startAtlasDeparture()
     self:setFlag(self.config.atlasDepartFlag, 1)
     self:markPhase("atlas_depart")
     self:queueDialogueBlock("atlas_depart", "atlas_depart")
+    self:kickAtlasDeparture("start_depart")
 end
 
 function Task03BeirutExtractionController:triggerAtlasRolling()
@@ -1781,11 +2073,11 @@ function Task03BeirutExtractionController:onWorldEvent(event)
         or event.id == world.event.S_EVENT_KILL
     then
         local targetGroupName = getEventTargetGroupName(event.target)
-        if targetGroupName == self.config.atlasGroupName then
+        if self:isConfiguredGroupMatch(self.config.atlasGroupName, targetGroupName) then
             self:handleAtlasLost()
             return
         end
-        if targetGroupName == self.config.ravenGroupName then
+        if self:isConfiguredGroupMatch(self.config.ravenGroupName, targetGroupName) then
             self:handleRavenLost()
             return
         end
@@ -1825,10 +2117,14 @@ function Task03BeirutExtractionController:checkRunwayRecoveryGate()
     if self.airportRushTriggered ~= true then
         return
     end
-    if self:isAirportRushCleared() ~= true then
+    local rushCleared = self:isAirportRushCleared()
+    if rushCleared ~= true then
+        self:log("runway_recovery_blocked | reason=airport_rush_not_cleared")
         return
     end
-    if self:isRunwayClearOfEnemies() ~= true then
+    local runwayClear = self:isRunwayClearOfEnemies()
+    if runwayClear ~= true then
+        self:log("runway_recovery_blocked | reason=runway_not_clear")
         return
     end
     self.runwayRecoveredTriggered = true
@@ -1893,6 +2189,13 @@ function Task03BeirutExtractionController:checkRavenGate()
     end
     if self:isRavenInZone(self.config.ravenGateZoneName) then
         self:triggerRavenGate()
+        return
+    end
+    if self:isRavenInZone(self.config.ravenLoadZoneName) ~= true then
+        local unit = self:getRavenLeadUnit()
+        if unit ~= nil and getUnitSpeedMps(unit) <= self.config.ravenStuckSpeedMps then
+            self:kickRavenMovement("pre_gate_stuck")
+        end
     end
 end
 
@@ -1905,6 +2208,11 @@ function Task03BeirutExtractionController:checkRavenLoadGate()
         if self.atlasLandedTriggered == true then
             self:startHotLoad()
         end
+        return
+    end
+    local unit = self:getRavenLeadUnit()
+    if unit ~= nil and getUnitSpeedMps(unit) <= self.config.ravenStuckSpeedMps then
+        self:kickRavenMovement("pre_load_stuck")
     end
 end
 
@@ -1926,6 +2234,11 @@ function Task03BeirutExtractionController:checkAtlasRollingGate()
     end
     if self:isAtlasRolling() then
         self:triggerAtlasRolling()
+        return
+    end
+    local unit = self:getAtlasLeadUnit()
+    if unit ~= nil and getUnitSpeedMps(unit) <= self.config.atlasStuckSpeedMps then
+        self:kickAtlasDeparture("pre_roll_stuck")
     end
 end
 
@@ -1965,6 +2278,266 @@ function Task03BeirutExtractionController:checkMissionFailureLines()
     end
 end
 
+local function activateMissionGroup(groupName, controller)
+    local actualGroupName = resolveMissionGroupName(controller, groupName)
+    local group = Group.getByName(actualGroupName)
+    if group ~= nil then
+        local okActivate = pcall(function()
+            trigger.action.activateGroup(group)
+        end)
+        if okActivate == true then
+            return true
+        end
+    end
+
+    if mist ~= nil and mist.respawnGroup ~= nil then
+        local okRespawn, respawned = pcall(function()
+            return mist.respawnGroup(actualGroupName)
+        end)
+        if okRespawn == true and respawned ~= nil then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function switchMissionGroupWaypoint(groupName, fromIndex, toIndex, controller)
+    local actualGroupName = resolveMissionGroupName(controller, groupName)
+    local group = Group.getByName(actualGroupName)
+    if group == nil then
+        return false
+    end
+    local okController, controller = pcall(function()
+        return group:getController()
+    end)
+    if not okController or controller == nil then
+        return false
+    end
+    local okCommand = pcall(function()
+        controller:setCommand({
+            id = "SwitchWaypoint",
+            params = {
+                fromWaypointIndex = fromIndex,
+                goToWaypointIndex = toIndex,
+            }
+        })
+    end)
+    return okCommand == true
+end
+
+function Task03BeirutExtractionController:updateSa15Mark()
+    local group = Group.getByName(self.config.shoradGroupName)
+    if group == nil then
+        return
+    end
+    local units = getAliveUnits(group)
+    if #units == 0 then
+        return
+    end
+    local point = getUnitPoint(units[1])
+    if point == nil then
+        return
+    end
+    local previousMarkId = self.sa15MarkId
+    if previousMarkId ~= nil then
+        pcall(function()
+            trigger.action.removeMark(previousMarkId)
+        end)
+    end
+    self.sa15MarkId = self.nextMarkId
+    self.nextMarkId = self.nextMarkId + 1
+    pcall(function()
+        trigger.action.markToCoalition(self.sa15MarkId, "SA-15 大致位置", point, self.config.playerCoalition, false)
+    end)
+    if trigger.action.markToAll ~= nil then
+        pcall(function()
+            trigger.action.markToAll(self.sa15MarkId, "SA-15 大致位置", point, false)
+        end)
+    end
+    self:log("sa15_mark_refresh | oldId=" .. tostring(previousMarkId) .. " | newId=" .. tostring(self.sa15MarkId))
+end
+
+function Task03BeirutExtractionController:clearSa15Mark()
+    if self.sa15MarkId ~= nil then
+        pcall(function()
+            trigger.action.removeMark(self.sa15MarkId)
+        end)
+    end
+    self.sa15MarkId = nil
+end
+
+function Task03BeirutExtractionController:handleShoradCycle()
+    if self.airportContactTriggered ~= true then
+        self:log("shorad_cycle_skip | reason=airport_contact_not_started")
+        return
+    end
+    local now = getCurrentTime()
+    local quietGap = self.lastShoradAcceptTime == nil or self.lastShoradAcceptTime == 0
+        or (now - self.lastShoradAcceptTime) >= self.config.shoradCycleCooldownSeconds
+    self.lastShoradAcceptTime = now
+    self:updateSa15Mark()
+
+    if quietGap ~= true then
+        self:log("shorad_cycle_mark_refresh")
+        return
+    end
+
+    self.lastShoradLiveTime = now
+    if self.shoradFirstTriggered ~= true then
+        self.shoradFirstTriggered = true
+        self:queueDialogueBlock("shorad_first", "shorad_first")
+        return
+    end
+    self:queueDialogueBlock("shorad_repeat_" .. tostring(math.floor(now)), "shorad_repeat")
+end
+
+function Task03BeirutExtractionController:onSkynetGoLive(info)
+    if info == nil then
+        return
+    end
+    local normalizedGroup = normalizeMatchText(info.groupName)
+    local normalizedDcsName = normalizeMatchText(info.dcsName)
+    local normalizedShorad = normalizeMatchText(self.config.shoradGroupName)
+    if normalizedGroup ~= normalizedShorad and normalizedDcsName ~= normalizedShorad then
+        self:log("skynet_live_ignored | group=" .. tostring(info.groupName) .. " | dcsName=" .. tostring(info.dcsName) .. " | nato=" .. tostring(info.natoName) .. " | type=" .. tostring(info.typeName))
+        return
+    end
+    if self.airportContactTriggered ~= true then
+        self:log("skynet_live_ignored | reason=airport_contact_not_started | group=" .. tostring(info.groupName))
+        return
+    end
+    self:log("skynet_live_accept | group=" .. tostring(info.groupName) .. " | dcsName=" .. tostring(info.dcsName) .. " | nato=" .. tostring(info.natoName) .. " | type=" .. tostring(info.typeName))
+    self:handleShoradCycle()
+    self:playShoradHighPressureIfNeeded()
+end
+
+function Task03BeirutExtractionController:handleShoradDead()
+    if self.shoradKilledTriggered == true then
+        return
+    end
+    self.shoradKilledTriggered = true
+    self:clearSa15Mark()
+    self:queueDialogueBlock("shorad_dead", "shorad_dead")
+end
+
+function Task03BeirutExtractionController:triggerAirportContact()
+    if self.airportContactTriggered == true then
+        return
+    end
+    self.airportContactTriggered = true
+    self:setFlag(self.config.airportContactFlag, 1)
+    if self.airportRushTriggered ~= true then
+        self.airportRushTriggered = true
+        self:setFlag(self.config.airportRush1ActivateFlag, 1)
+        if activateMissionGroup(self.config.airportRushGroupNames[1]) ~= true then
+            self:log("airport_rush_activate_fail | group=" .. tostring(self.config.airportRushGroupNames[1]))
+        else
+            self.rushObservedAlive[self.config.airportRushGroupNames[1]] = true
+        end
+        if #self.enabledRushGroupNames >= 2 then
+            self:setFlag(self.config.airportRush2ActivateFlag, 1)
+            if activateMissionGroup(self.config.airportRushGroupNames[2]) ~= true then
+                self:log("airport_rush_activate_fail | group=" .. tostring(self.config.airportRushGroupNames[2]))
+            else
+                self.rushObservedAlive[self.config.airportRushGroupNames[2]] = true
+            end
+        end
+    end
+    self:markPhase("airport_contact")
+    self:queueDialogueBlock("airport_contact", "airport_contact", {
+        onComplete = function()
+            if self.phase == "airport_contact" then
+                self:markPhase("airport_rush")
+                self:queueDialogueBlock("airport_rush", "airport_rush")
+            end
+        end
+    })
+end
+
+function Task03BeirutExtractionController:attemptAtlasCall(playerState)
+    if self.missionEnded == true or self.denialTriggered == true then
+        return
+    end
+    if self.atlasInboundTriggered == true then
+        self:notifyPlayer(playerState, "AWACS / 灯塔：Atlas 已经在路上。", self.config.messageDurationSeconds)
+        return
+    end
+    if self.atlasCallUnlocked ~= true then
+        self:log("atlas_call_blocked | reason=call_window_locked")
+        self:notifyPlayer(playerState, "AWACS / 灯塔：现在还没到叫 Atlas 进来的时候。", self.config.messageDurationSeconds)
+        return
+    end
+
+    local rushCleared = self:isAirportRushCleared()
+    local runwaySuppressed = self:isRunwaySuppressedByArmor()
+    if rushCleared ~= true or runwaySuppressed == true then
+        self:log("atlas_call_blocked | reason=airport_not_clear | rushCleared=" .. tostring(rushCleared) .. " | runwaySuppressed=" .. tostring(runwaySuppressed))
+        local failBlock = "atlas_call_fail_rush"
+        if runwaySuppressed == true then
+            failBlock = "atlas_call_fail_runway_lock"
+        end
+        self:queueDialogueBlock("atlas_call_fail_" .. tostring(math.floor(getCurrentTime())), failBlock, {
+            playerState = playerState,
+        })
+        return
+    end
+
+    self.atlasInboundTriggered = true
+    self.ravenReleased = true
+    self:setFlag(self.config.atlasInboundFlag, 1)
+    self:setFlag(self.config.ravenReleasedFlag, 1)
+    if activateMissionGroup(self.config.ravenGroupName, self) ~= true then
+        self:log("raven_activate_fail | group=" .. tostring(self.config.ravenGroupName))
+    else
+        self:kickRavenMovement("atlas_inbound_release")
+    end
+    if switchMissionGroupWaypoint(self.config.atlasGroupName, 1, 2, self) ~= true then
+        self:log("atlas_switch_fail | from=1 | to=2")
+    end
+    self:markPhase("atlas_inbound")
+    self:queueDialogueBlock("atlas_call_success", "atlas_call_success", {
+        playerState = playerState,
+        onComplete = function()
+            self:queueDialogueBlock("raven_release", "raven_release")
+        end
+    })
+end
+
+function Task03BeirutExtractionController:startAtlasDeparture()
+    if self.atlasDepartTriggered == true then
+        return
+    end
+    self.atlasDepartTriggered = true
+    self:setFlag(self.config.atlasDepartFlag, 1)
+    self:log("atlas_depart_release | mode=flag_only | flag=" .. tostring(self.config.atlasDepartFlag))
+    self:markPhase("atlas_depart")
+    self:queueDialogueBlock("atlas_depart", "atlas_depart")
+    self:kickAtlasDeparture("flag_release")
+end
+
+function Task03BeirutExtractionController:debugForceAtlasInbound(playerState)
+    self:debugClearAirportRush("atlas_inbound")
+    self:debugClearRunwaySuppression("atlas_inbound")
+    self.atlasCallUnlocked = true
+    self.runwayRecoveredTriggered = true
+    self:unlockAtlasCallWindow()
+    self.atlasInboundTriggered = true
+    self.ravenReleased = true
+    self:setFlag(self.config.atlasInboundFlag, 1)
+    self:setFlag(self.config.ravenReleasedFlag, 1)
+    activateMissionGroup(self.config.ravenGroupName, self)
+    self:kickRavenMovement("debug_release")
+    switchMissionGroupWaypoint(self.config.atlasGroupName, 1, 2, self)
+    self:markPhase("atlas_inbound")
+    self:queueDialogueBlock("atlas_call_success_debug", "atlas_call_success", {
+        playerState = playerState,
+        onComplete = function()
+            self:queueDialogueBlock("raven_release_debug", "raven_release")
+        end
+    })
+end
+
 function Task03BeirutExtractionController:tick()
     self:updatePlayerRoster()
     self:ensureMenus()
@@ -1992,6 +2565,7 @@ function Task03BeirutExtractionController:tick()
     self:checkSuccessGate()
     self:checkAtlasGroundStuck()
     self:checkMissionFailureLines()
+    self:handleRunwaySuppressionState()
     self:playAnxietyIfNeeded()
 
     return getCurrentTime() + self.config.scanIntervalSeconds

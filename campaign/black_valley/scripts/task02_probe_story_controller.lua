@@ -30,6 +30,7 @@ local DEFAULT_CONFIG = {
     lowAltZoneName = "ZONE_PROBE_LOW_ALT",
     coordinateFallbackZoneName = "ZONE_PROBE_LOW_ALT",
     coordinateSourceGroupNames = { "EW-1" },
+    radarStationGroupNames = { "EW-1" },
     highAltMinAltitudeMeters = 6500,
     lowAltMaxAltitudeMeters = 1200,
     highAltEmitterNatoNames = { "SA-11" },
@@ -298,6 +299,7 @@ function ProbeStoryController:create(config)
     instance.highAltHintSent = false
     instance.highAltEmitterSeen = false
     instance.secondHighAltEmitterSeen = false
+    instance.highAltEmitterStoryKey = nil
     instance.firstHarmShotHandled = false
     instance.secondHarmShotHandled = false
     instance.highAltConclusionStarted = false
@@ -308,6 +310,8 @@ function ProbeStoryController:create(config)
     instance.lowAltContactStarted = false
     instance.lowAltTacticStarted = false
     instance.firstKillHandled = false
+    instance.radarStationDestroyed = false
+    instance.radarAttackBriefSent = false
     instance.nodeKillCount = 0
     instance.destroyedNodeGroups = {}
     instance.designatedHarmPlayerName = nil
@@ -791,6 +795,22 @@ function ProbeStoryController:isHighAltStoryEmitterInfo(info)
     return false
 end
 
+function ProbeStoryController:getHighAltStoryEmitterKey(info)
+    if info == nil then
+        return nil
+    end
+    if info.groupName and tostring(info.groupName) ~= "" then
+        return normalizeMatchText(info.groupName)
+    end
+    if info.dcsName and tostring(info.dcsName) ~= "" then
+        return normalizeMatchText(info.dcsName)
+    end
+    if info.natoName and tostring(info.natoName) ~= "" then
+        return normalizeMatchText(info.natoName)
+    end
+    return nil
+end
+
 function ProbeStoryController:beginHighAltEmitterDetected(info)
     if self.highAltEmitterSeen == true then
         return
@@ -819,6 +839,22 @@ function ProbeStoryController:onSkynetGoLive(info)
         return
     end
     if self:isHighAltStoryEmitterInfo(info) ~= true then
+        return
+    end
+    local emitterKey = self:getHighAltStoryEmitterKey(info)
+    if emitterKey == nil then
+        return
+    end
+    if self.highAltEmitterStoryKey == nil then
+        self.highAltEmitterStoryKey = emitterKey
+        self:log("high_alt_emitter_lock | key=" .. tostring(emitterKey))
+    elseif self.highAltEmitterStoryKey ~= emitterKey then
+        self:log(
+            "high_alt_emitter_ignore | locked="
+                .. tostring(self.highAltEmitterStoryKey)
+                .. " | incoming="
+                .. tostring(emitterKey)
+        )
         return
     end
     if self.firstHarmShotHandled ~= true then
@@ -1012,6 +1048,37 @@ function ProbeStoryController:beginLowAltitudeTacticConclusion()
     }, 0)
 end
 
+function ProbeStoryController:isRadarStationGroup(groupName)
+    if groupName == nil then
+        return false
+    end
+    for i = 1, #self.config.radarStationGroupNames do
+        if groupName == self.config.radarStationGroupNames[i] then
+            return true
+        end
+    end
+    return false
+end
+
+function ProbeStoryController:checkRadarStationDestroyed(groupName)
+    if groupName == nil or self.radarStationDestroyed == true then
+        return
+    end
+    if self:isRadarStationGroup(groupName) ~= true then
+        return
+    end
+    local group = Group.getByName(groupName)
+    if group and #getAliveUnits(group) > 0 then
+        return
+    end
+    self.radarStationDestroyed = true
+    self:log("radar_station_destroyed | group=" .. tostring(groupName))
+    self:queueSharedSequence("radar_station_destroyed", {
+        { speaker = "AWACS", text = "雷达站摧毁确认。外围这一段够了，全体准备脱离。", delay = 0, duration = 10 },
+        { action = function() self:beginMissionComplete() end, delay = 8 },
+    }, 0)
+end
+
 function ProbeStoryController:isTrackedNodeGroup(groupName)
     if groupName == nil then
         return false
@@ -1052,7 +1119,7 @@ function ProbeStoryController:checkNodeDestroyed(groupName)
         }, 0)
     end
     if self.nodeKillCount >= self.config.requiredNodeKills then
-        self:beginMissionComplete()
+        self:log("node_kill_requirement_met | count=" .. tostring(self.nodeKillCount))
     end
 end
 
@@ -1090,13 +1157,16 @@ function ProbeStoryController:getTaskHint()
         return "高空试探线：进入高空试探区，引诱外围 SA-11 亮机，测试远距 HARM 效果。"
     end
     if self.phase == "phase_high_alt_conclusion" then
-        return "高空结论已成立：远距 HARM 更接近压制。等待低空试探线解锁。"
+        return "高空结论已成立：远距 HARM 更接近压制。准备转向外围雷达站。"
     end
     if self.phase == "phase_low_alt_open" then
-        return "低空试探线已解锁。通过菜单请求坐标，然后在外围边缘低空试探，不要深入谷地。"
+        if self.coordsRequested ~= true then
+            return "低空试探线已解锁。通过菜单请求雷达站坐标，然后转向雷达站。"
+        end
+        return "雷达站坐标已发出。转向雷达站，压制并摧毁其附近防空，再摧毁雷达站。"
     end
     if self.phase == "phase_low_alt_contact" or self.phase == "phase_low_alt_tactic" then
-        return "低空节点已出现。尝试压近、逼规避，再用后续武器补刀。"
+        return "继续攻击外围雷达站。优先压制其附近防空，再摧毁雷达站本体。"
     end
     if self.phase == "phase_retreat" then
         return "任务目标达成，立即脱离。"
@@ -1155,6 +1225,12 @@ function ProbeStoryController:handleCoordsAckCommand(groupId)
     end
     local coordsText = self.coordsText or "尚未发送坐标"
     self:notifyPlayer(playerState, self:getPlayerLabel(playerState) .. "：坐标输入完成，" .. coordsText, self.config.messageDurationSeconds)
+    if self.radarAttackBriefSent ~= true then
+        self.radarAttackBriefSent = true
+        self:queueSharedSequence("radar_attack_brief", {
+            { speaker = "AWACS", text = "坐标确认。转向雷达站，压制并摧毁它附近的防空，然后拆掉雷达站。", delay = 0, duration = 11 },
+        }, 0)
+    end
 end
 
 function ProbeStoryController:handleCoordsRepeatCommand(groupId)
@@ -1264,6 +1340,7 @@ function ProbeStoryController:handleRedUnitLoss(event)
         return
     end
     local groupName = group and getGroupName(group) or nil
+    self:checkRadarStationDestroyed(groupName)
     self:checkNodeDestroyed(groupName)
 end
 
