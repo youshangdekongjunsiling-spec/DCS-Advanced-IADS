@@ -1,64 +1,89 @@
 # DCS Advanced IADS
 
-面向 DCS World 任务制作者的高级防空与电子战脚本项目。  
-本仓库基于定制版 Skynet-IADS，加入机动防空、兄弟组交接、轮换部署、伴随防空、GPS 欺骗、EWR 情报播报、任务级总开关和电子战模拟工具，用于构建更有对抗性的现代空地战场。
+> Advanced mission scripting package for DCS World.  
+> 中文说明在前，English version follows after the Chinese guide.
 
-> English short description: a mission-scripting package for DCS World that extends Skynet-IADS with mobile SAM patrols, sibling SAM coordination, rotating deployment, accompanying air defence, GPS spoofing, EWR reporting, and EW simulation tools.
+## 中文版
 
-## 目录
+### 项目简介
 
-- [项目内容](#项目内容)
-- [快速开始](#快速开始)
-- [DCS Mission Editor 加载顺序](#dcs-mission-editor-加载顺序)
-- [群组命名规则](#群组命名规则)
-- [核心功能](#核心功能)
-- [配置入口](#配置入口)
-- [日志与排障](#日志与排障)
-- [重新编译 Skynet 运行时](#重新编译-skynet-运行时)
-- [高级电子战模拟器](#高级电子战模拟器)
-- [Git 克隆和子仓库](#git-克隆和子仓库)
-- [常见问题](#常见问题)
+DCS Advanced IADS 是一个面向 DCS World 任务制作者的高级防空与电子战脚本项目。它基于 Skynet-IADS 扩展，重点解决动态防空、机动防空阵地、兄弟组交接、轮换部署、伴随防空和任务剧情控制等问题。
 
-## 项目内容
+本项目适合用于：
+
+- 制作更有压迫感的现代 SEAD / DEAD 任务。
+- 让 SA-11、SA-15 等防空单位具备更复杂的开关机、机动和交接行为。
+- 在任务中组织固定预警雷达、机动防空、伴随防空和剧情控制。
+- 为多人 PVP / PVE 任务提供更难被一次性摧毁的防空网络。
+
+### 原始项目声明
+
+本仓库基于并扩展了原版 Skynet-IADS。
+
+原项目地址：
+
+```text
+https://github.com/walder/Skynet-IADS
+```
+
+本仓库中的 `Skynet-IADS/` 子仓库包含定制修改。请同时阅读：
+
+- `LICENSE`
+- `Skynet-IADS/LICENSE.md`
+
+### 当前公开支持的功能
+
+| 功能 | 状态 | 说明 |
+| --- | --- | --- |
+| Skynet-IADS 基础防空网 | 支持 | 基于原 Skynet-IADS。 |
+| MSAM 机动防空 | 支持 | 机动巡逻、部署、撤收、重新部署。 |
+| Sibling family 兄弟组交接 | 支持 | 主战/备用/接防/轮换。 |
+| ASAM 伴随防空 | 支持 | 管理雷达和接敌，不接管原生路线。 |
+| EWR 情报播报 | 支持 | 定时向玩家播报早警雷达发现目标。 |
+| Skynet 武器雷达总开关 | 支持 | 可剧情锁定武器雷达，不影响 EW 情报雷达。 |
+| EA-18G / 电子战脚本 | 部分支持 | 取决于任务是否加载相关脚本。 |
+| GPS 干扰 / GPS 欺骗 | 暂不作为公开功能 | 相关实验代码可能存在，但 README 暂不指导启用，公开任务建议关闭。 |
+
+> 注意：GPS 干扰功能仍属于实验方向。DCS 没有稳定公开的原生 GPS 干扰接口，因此本 README 暂时不把它列为可直接使用功能。
+
+### 仓库结构
 
 | 路径 | 作用 |
 | --- | --- |
-| `skynet-iads-compiled-ea18g.lua` | DCS 任务中直接导入的完整 Skynet 运行时。一般玩家和任务作者优先使用它。 |
-| `my-iads-setup.lua` | 任务侧 IADS 配置入口，负责注册群组、开关功能、配置 family、GPS 欺骗和调试输出。 |
+| `skynet-iads-compiled-ea18g.lua` | DCS 任务中直接导入的完整 Skynet 运行时。普通用户优先使用它。 |
+| `my-iads-setup.lua` | 任务侧 IADS 配置入口。你主要需要修改这个文件。 |
 | `mist_4_5_126.lua` | MIST 依赖库，必须在 Skynet 之前加载。 |
-| `advanced_jammer_simulation.lua` | DCS 内的 EA-18G / 电子战模拟脚本。 |
-| `Skynet-IADS/` | 定制版 Skynet-IADS 源码子仓库。用于开发和重新编译，不是普通任务导入入口。 |
-| `Skynet-IADS-analysis/` | 模块地图、运行流程、主控文档和开发治理说明。 |
-| `advanced_ew_simulator/` | 外部高级电子战模拟器，包含 Python 源码和可运行 exe。 |
-| `campaign/black_valley/` | 黑谷行动战役文档和剧情控制脚本。 |
-| `*.miz` | 示例或测试任务文件。默认维护流程不会自动嵌入脚本到 miz。 |
+| `advanced_jammer_simulation.lua` | DCS 内电子战模拟脚本。 |
+| `Skynet-IADS/` | 定制 Skynet-IADS 源码子仓库。用于开发和重新编译。 |
+| `Skynet-IADS-analysis/` | 模块图、流程、开发治理和问题记录。 |
+| `advanced_ew_simulator/` | 外部高级电子战模拟器。 |
+| `campaign/black_valley/` | 黑谷行动战役文档和剧情脚本。 |
+| `*.miz` | 示例或测试任务文件。 |
 
-## 快速开始
+### 快速开始
 
-1. 克隆仓库。
+推荐克隆方式：
 
-   ```powershell
-   git clone --recurse-submodules git@github.com:youshangdekongjunsiling-spec/DCS-Advanced-IADS.git
-   cd DCS-Advanced-IADS
-   ```
+```powershell
+git clone --recurse-submodules git@github.com:youshangdekongjunsiling-spec/DCS-Advanced-IADS.git
+cd DCS-Advanced-IADS
+```
 
-2. 在 DCS Mission Editor 中打开你的任务。
+如果已经普通克隆：
 
-3. 按下方加载顺序添加 `DO SCRIPT FILE` 触发器。
+```powershell
+git submodule update --init --recursive
+```
 
-4. 按命名规则放置或重命名防空、预警、GPS 欺骗和伴随防空群组。
+### DCS Mission Editor 加载顺序
 
-5. 运行任务，查看屏幕提示和日志确认注册成功。
-
-## DCS Mission Editor 加载顺序
-
-在任务开始时按顺序加载：
+在任务开始时用 `DO SCRIPT FILE` 按顺序加载：
 
 ```text
 1. mist_4_5_126.lua
 2. skynet-iads-compiled-ea18g.lua
-3. advanced_jammer_simulation.lua
-4. EA18G_EW_Script_improved_by_flyingsampig.lua    如果你的任务使用该脚本
+3. advanced_jammer_simulation.lua              可选
+4. EA18G_EW_Script_improved_by_flyingsampig.lua 可选，如果你的任务使用它
 5. my-iads-setup.lua
 ```
 
@@ -70,155 +95,55 @@
 3. my-iads-setup.lua
 ```
 
-注意：
+规则：
 
-- `my-iads-setup.lua` 必须最后加载，因为它依赖前面已经定义好的 Skynet 类和扩展模块。
-- 如果你修改了 `Skynet-IADS/skynet-iads-source/` 源码，必须重新编译并同步 `skynet-iads-compiled-ea18g.lua`。
-- 默认交付方式是提供完整可导入 Lua，不主动修改或嵌入 `.miz`。
+- `my-iads-setup.lua` 必须最后加载。
+- 不需要手动嵌入 `.miz`，直接在 Mission Editor 选择脚本文件即可。
+- 修改 Skynet 源码后，必须重新编译 `skynet-iads-compiled-ea18g.lua`。
 
-## 群组命名规则
+### 群组命名规则
 
-`my-iads-setup.lua` 通过群组名前缀识别不同单位类型。
+脚本通过 DCS Mission Editor 中的群组名识别单位类型。
 
 | 前缀 | 类型 | 脚本行为 |
 | --- | --- | --- |
-| `EW` | 固定早警雷达 | 作为 IADS 情报源，提供态势感知。 |
-| `MEW` | 机动早警雷达 | 预留/扩展为机动巡逻、开关机和 HARM 响应的早警雷达。 |
-| `SAM` | 常规防空阵地 | 由 Skynet 管理开关机、HARM 反应和接敌逻辑。 |
-| `MSAM` | 机动防空阵地 | 支持巡逻、部署、兄弟组交接、轮换机动和 HARM 规避。 |
-| 其他名称 | ASAM 候选伴随防空 | 如果群组内含有效防空单位，可注册为伴随防空；脚本不接管路线和进攻任务。 |
+| `EW` | 固定早警雷达 | 提供 IADS 情报。 |
+| `MEW` | 机动早警雷达 | 机动早警扩展预留。 |
+| `SAM` | 常规防空阵地 | Skynet 管理开关机、接敌和 HARM 反应。 |
+| `MSAM` | 机动防空阵地 | 巡逻、部署、兄弟组交接、轮换机动。 |
+| 其他名称 | ASAM 候选 | 如果含有效防空单位，可注册为伴随防空。 |
 
-建议命名示例：
+示例：
 
 ```text
 EW-1-Main-Valley-Radar
-MEW-1-Mobile-EWR
 SAM-1-SA15-Point-Defence
 MSAM-1-SA11-Ambush-North
 MSAM-2-SA11-Ambush-North
 ```
 
-## 核心功能
+### 如何编写 `my-iads-setup.lua`
 
-### 1. 定制 Skynet-IADS
+`my-iads-setup.lua` 是任务配置文件。你通常不需要改 Skynet 源码，只需要按任务改这个文件。
 
-本项目不是原版 Skynet-IADS 的简单复制，而是在源码层加入了多个任务向扩展：
-
-- 武器雷达总开关。
-- GPS 欺骗模块。
-- 伴随防空 ASAM 注册与配置。
-- MSAM 机动巡逻和部署。
-- 兄弟组主战仲裁、压制交接和轮换机动。
-- EWR 情报播报。
-- 更细的 Skynet 专属日志。
-- HARM 判定角度和规避策略调整。
-- 部分 DCS 原生行为限制的规避和记录。
-
-### 2. MSAM 机动防空
-
-`MSAM` 群组用于可移动中近程防空阵地，例如 SA-11 机动防空组。
-
-典型行为：
-
-- 常态沿 Mission Editor 航路点巡逻。
-- 敌机进入警戒圈后进入部署态。
-- 根据射程、射高和 family 仲裁决定是否开雷达。
-- 被 HARM 压制时关机/机动/交接。
-- 长时间部署后执行轮换机动，移动足够距离后重新部署。
-
-### 3. Sibling Family 兄弟组交接
-
-多个 `MSAM` 可以组成一个 family。family 用于解决“谁开机、谁备用、谁接防”的问题。
-
-当前策略重点：
-
-- 按距离和可用性选择主战组。
-- 主战组被 HARM 压制后，最近可用成员接管。
-- 轮换时只允许一个成员撤出，避免防区真空。
-- 正在轮换的成员不会被普通仲裁立刻拉回，除非 cover 失效。
-- 默认轮换间隔和最小移动距离由 `my-iads-setup.lua` 和 sibling 模块配置。
-
-### 4. ASAM 伴随防空
-
-ASAM 是“Accompanying SAM”的任务内扩展类型。
-
-适用对象：
-
-- 不属于 `EW`、`MEW`、`SAM`、`MSAM` 前缀。
-- 群组内含有 Skynet 数据库支持的有效防空单位。
-- 需要保留 Mission Editor 原生路线、进攻、防御任务。
-
-脚本会：
-
-- 管理其防空雷达开关和接敌逻辑。
-- 支持 HARM 相关配置。
-- 不覆盖其移动路线。
-- 不把它变成 MSAM 巡逻/部署系统的一部分。
-
-### 5. GPS 欺骗
-
-GPS spoofing 模块会注册指定类型名的 GPS 欺骗器单位。
-
-当前配置入口：
+#### 1. 设置 IADS 名称和前缀
 
 ```lua
-local ENABLE_GPS_SPOOFING = true
-local GPS_SPOOFER_TYPE_NAMES = { "GPS_Spoofer_Red", "GPS_Spoofer_Blue" }
+local IADS_NAME = "RED"
+local EW_PREFIXES = { "EW", "MEW" }
+local SAM_PREFIXES = { "SAM", "MSAM" }
+local RESERVED_IADS_PREFIXES = { "EW", "MEW", "SAM", "MSAM" }
+local MOBILE_EW_PREFIX = "MEW"
+local MOBILE_SAM_PREFIX = "MSAM"
 ```
 
-默认行为：
+建议：
 
-- 注册任务中匹配 type name 的 GPS 欺骗器。
-- 对进入干扰半径内的 GPS 制导类武器进行脚本化偏移/欺骗模拟。
-- 屏幕提示会显示注册数量和干扰半径。
+- 红方防空用 `RED`。
+- 蓝方防空可复制一套 setup，改成 `BLUE`。
+- 不要随意改前缀，除非你的 Mission Editor 群组名也同步修改。
 
-注意：DCS 没有公开的原生 GPS 干扰接口，本项目使用 Lua 事件和武器效果模拟来实现“GPS 变得不可靠”的游戏效果。
-
-### 6. Skynet 武器雷达总开关
-
-配置项：
-
-```lua
-local ENABLE_SKYNET_MASTER_SWITCH = true
-```
-
-作用：
-
-- 开启时，Skynet 正常管理 SAM/MSAM/ASAM。
-- 关闭时，受 Skynet 管理的武器类雷达不会开机或开火。
-- EW/MEW 情报雷达不被该开关压制，仍可提供情报。
-
-用途：
-
-- 剧情控制。
-- 任务阶段锁定。
-- 测试 IADS 行为。
-- 给玩家提供“防空网激活/解除”的明确反馈。
-
-### 7. EWR 情报播报
-
-EWR reporter 会定时向玩家播报早警雷达发现的目标信息。
-
-主要配置：
-
-```lua
-local ENABLE_EWR_REPORTER = true
-local EWR_REPORT_INTERVAL_SECONDS = 15
-local EWR_REPORT_DURATION_SECONDS = 8
-local EWR_REPORT_MAX_CONTACTS = 3
-```
-
-适合用于：
-
-- 单人任务中的态势提示。
-- 调试早警雷达是否正常发现目标。
-- 剧情任务中的地面指挥引导。
-
-## 配置入口
-
-大多数任务级配置都集中在 `my-iads-setup.lua` 顶部。
-
-常用开关：
+#### 2. 开关功能模块
 
 ```lua
 local ENABLE_RADIO_MENU = true
@@ -226,19 +151,38 @@ local ENABLE_MOBILE_PATROL = true
 local ENABLE_EWR_REPORTER = true
 local ENABLE_SIBLING_COORDINATION = true
 local ENABLE_TACTICAL_RUNTIME_DEBUG = false
-local ENABLE_GPS_SPOOFING = true
 local ENABLE_SKYNET_MASTER_SWITCH = true
 ```
 
-Sibling family 示例：
+公开任务建议暂时关闭 GPS 相关功能：
+
+```lua
+local ENABLE_GPS_SPOOFING = false
+```
+
+说明：
+
+- `ENABLE_RADIO_MENU`：是否创建 F10 菜单。
+- `ENABLE_MOBILE_PATROL`：是否启用 MSAM / MEW 机动巡逻。
+- `ENABLE_EWR_REPORTER`：是否播报早警雷达目标。
+- `ENABLE_SIBLING_COORDINATION`：是否启用兄弟组交接。
+- `ENABLE_TACTICAL_RUNTIME_DEBUG`：调试输出，正式任务建议关闭。
+- `ENABLE_SKYNET_MASTER_SWITCH`：武器雷达总开关，剧情任务常用。
+
+#### 3. 定义 MSAM family
+
+Family 用来定义哪些 MSAM 是一组，谁主战，谁备用，多久轮换。
 
 ```lua
 local SIBLING_FAMILIES = {
     {
-        name = "MSAM ambush pair 1",
-        members = { "MSAM-1-...", "MSAM-2-..." },
+        name = "North SA-11 Ambush Pair",
+        members = {
+            "MSAM-1-SA11-Ambush-North",
+            "MSAM-2-SA11-Ambush-North",
+        },
         mode = "ambush",
-        primary = "MSAM-1-...",
+        primary = "MSAM-1-SA11-Ambush-North",
         denialAlertDistanceNm = 25,
         passiveAction = "relocate",
         rotationIntervalSeconds = 120,
@@ -246,71 +190,141 @@ local SIBLING_FAMILIES = {
 }
 ```
 
-建议：
+字段解释：
 
-- 先复制一份 `my-iads-setup.lua` 作为你的任务专用配置。
-- 保留前缀识别和加载顺序。
-- 根据你的 Mission Editor 群组名修改 `SIBLING_FAMILIES`。
-- 先开少量 debug 验证，再关闭高频日志。
+| 字段 | 作用 |
+| --- | --- |
+| `name` | family 名称，只用于日志和识别。 |
+| `members` | 必须完整匹配 DCS 群组名。 |
+| `mode` | `ambush` 或 `denial`。伏击型建议 `ambush`。 |
+| `primary` | 默认主战组。后续仲裁会根据距离和状态切换。 |
+| `denialAlertDistanceNm` | 警戒距离，单位海里。 |
+| `passiveAction` | 非主战成员行为，常用 `relocate`。 |
+| `rotationIntervalSeconds` | 部署后多久触发轮换。 |
 
-## 日志与排障
+常见错误：
 
-常用日志路径：
+- `members` 写的是单位名而不是群组名。
+- Mission Editor 里群组名和 Lua 字符串不完全一致。
+- MSAM 群组没有航路点，导致无法巡逻。
+- 两个 family 引用了同一个 MSAM 群组。
+
+#### 4. 创建 IADS 并设置刷新间隔
+
+```lua
+redIADS = SkynetIADS:create(IADS_NAME)
+redIADS:setUpdateInterval(1)
+```
+
+`setUpdateInterval(1)` 表示 1 秒更新一次。更短会增加性能压力，更长会降低反应速度。
+
+#### 5. 注册 SAM / EW / MSAM / ASAM
+
+当前示例文件已经包含自动注册逻辑。一般使用者只需要按命名规则放置群组。
+
+推荐思路：
+
+- 固定早警雷达命名为 `EW-*`。
+- 常规防空命名为 `SAM-*`。
+- 需要机动巡逻和部署的防空命名为 `MSAM-*`。
+- 伴随地面部队的防空可以保留原群组名，由 ASAM 候选逻辑识别。
+
+#### 6. 调试输出
+
+正式任务建议：
+
+```lua
+iadsDebug.warnings = true
+iadsDebug.IADSStatus = false
+iadsDebug.contacts = false
+iadsDebug.radarWentLive = false
+iadsDebug.radarWentDark = false
+iadsDebug.jammerProbability = false
+iadsDebug.harmDefence = false
+```
+
+排障时可以临时打开更详细日志，但不要长期开启高频 contact 日志。
+
+#### 7. 最小自定义模板
+
+你可以从这个最小结构开始：
+
+```lua
+do
+    local IADS_NAME = "RED"
+    local ENABLE_MOBILE_PATROL = true
+    local ENABLE_SIBLING_COORDINATION = true
+    local ENABLE_EWR_REPORTER = true
+    local ENABLE_SKYNET_MASTER_SWITCH = true
+    local ENABLE_GPS_SPOOFING = false
+
+    local SIBLING_FAMILIES = {
+        {
+            name = "Example SA-11 Pair",
+            members = {
+                "MSAM-1-SA11-Ambush",
+                "MSAM-2-SA11-Ambush",
+            },
+            mode = "ambush",
+            primary = "MSAM-1-SA11-Ambush",
+            denialAlertDistanceNm = 25,
+            passiveAction = "relocate",
+            rotationIntervalSeconds = 120,
+        },
+    }
+
+    if not SkynetIADS then
+        trigger.action.outText("SkynetIADS not loaded", 10)
+        return
+    end
+
+    redIADS = SkynetIADS:create(IADS_NAME)
+    redIADS:setUpdateInterval(1)
+
+    -- Keep the full repository setup file as the reference for automatic
+    -- registration, ASAM, sibling coordination, EWR reporter, and radio menu.
+end
+```
+
+实际任务建议直接复制仓库里的 `my-iads-setup.lua`，再改顶部配置和 `SIBLING_FAMILIES`。
+
+### 日志与排障
+
+常用日志：
 
 ```text
 C:\Users\<你的用户名>\Saved Games\DCS\Logs\dcs.log
 C:\Users\<你的用户名>\Saved Games\DCS\Logs\Skynet\skynet-order-trace-RED.log
 ```
 
-判断加载是否成功：
-
-- 屏幕出现 `my-iads-setup: ... active` 之类提示。
-- `dcs.log` 没有 Lua 报错。
-- Skynet 专属日志中能看到 SAM/EW/MSAM 注册、目标扫描、go-live 决策和 HARM 处理记录。
-
-常见排障方向：
+常见问题：
 
 | 现象 | 检查项 |
 | --- | --- |
-| 没有任何防空响应 | 检查 MIST、compiled Skynet、setup 加载顺序。 |
-| `module missing` 提示 | 重新选择最新 `skynet-iads-compiled-ea18g.lua`，可能导入了旧编译版。 |
-| MSAM 不巡逻 | 检查群组是否有有效航路点，是否以 `MSAM` 开头。 |
-| MSAM 不加入 family | 检查 `SIBLING_FAMILIES.members` 是否和 Mission Editor 群组名完全一致。 |
-| ASAM 没注册 | 检查群组是否含 Skynet 数据库支持的防空单位。 |
-| GPS 欺骗器未注册 | 检查 DCS 单位 type name 是否匹配 `GPS_SPOOFER_TYPE_NAMES`。 |
-| SA-15 被 HARM 打死但不移动 | 这可能是 DCS 原生 AI 限制，尤其是 SA-15 开火后停车。脚本可以关机，但未必能强制其立即机动。 |
+| 完全没有防空响应 | 检查 MIST、compiled Skynet、setup 加载顺序。 |
+| 提示 `module missing` | Mission Editor 可能加载了旧版 compiled Lua。 |
+| MSAM 不巡逻 | 检查是否有航路点，群组名是否以 `MSAM` 开头。 |
+| MSAM family 不工作 | 检查 `SIBLING_FAMILIES.members` 是否完全匹配群组名。 |
+| ASAM 没注册 | 检查群组内单位是否被 Skynet 数据库支持。 |
+| SA-15 被 HARM 攻击后不移动 | 可能是 DCS 原生 AI 限制，尤其是发射后停车。 |
 
-## 重新编译 Skynet 运行时
+### 重新编译 Skynet 运行时
 
-普通任务制作者不需要重新编译。只有修改 `Skynet-IADS/skynet-iads-source/` 后才需要。
-
-步骤：
+普通用户不需要重新编译。修改 `Skynet-IADS/skynet-iads-source/` 后才需要。
 
 ```powershell
 cd Skynet-IADS\build-tools
 .\build-compiled-script.ps1 ea18g-your-build-name
-```
-
-该脚本会生成：
-
-```text
-Skynet-IADS\demo-missions\skynet-iads-compiled.lua
-```
-
-然后将生成内容同步为根目录运行时：
-
-```powershell
 Copy-Item ..\demo-missions\skynet-iads-compiled.lua ..\..\skynet-iads-compiled-ea18g.lua -Force
 ```
 
-开发约束：
+要求：
 
-- 修改源码后必须重新编译。
-- 根目录 `skynet-iads-compiled-ea18g.lua` 必须与源码变更同步。
-- 每个可测试功能建议独立提交，便于回退。
-- 不要只改源码不更新编译产物。
+- 源码和编译产物必须同步提交。
+- 不要只改源码不更新根目录 compiled Lua。
+- 每个功能建议单独提交，方便回退。
 
-## 高级电子战模拟器
+### 高级电子战模拟器
 
 外部工具位于：
 
@@ -318,7 +332,7 @@ Copy-Item ..\demo-missions\skynet-iads-compiled.lua ..\..\skynet-iads-compiled-e
 advanced_ew_simulator/
 ```
 
-直接运行 exe：
+可运行版本：
 
 ```text
 advanced_ew_simulator/dist/AdvancedEWSimulator/AdvancedEWSimulator.exe
@@ -332,91 +346,216 @@ advanced_ew_simulator/jammer_research_main.py
 advanced_ew_simulator/build_exe.py
 ```
 
-用途：
+---
 
-- 研究雷达、干扰机和干扰参数。
-- 生成概率报告、图表和模板映射建议。
-- 给任务设计提供电子战平衡参考。
+## English Version
 
-## Git 克隆和子仓库
+### Overview
 
-本仓库把 `Skynet-IADS` 作为 git submodule/gitlink 管理。
+DCS Advanced IADS is a DCS World mission-scripting project based on Skynet-IADS. It adds mission-oriented behaviour for mobile SAM groups, sibling SAM coordination, rotating deployment, accompanying air defence, EWR reporting, and story-controlled weapon radar activation.
 
-推荐克隆方式：
+The goal is not to replace DCS AI completely. The goal is to provide a more dynamic, testable, and mission-friendly IADS layer for modern air-to-ground scenarios.
+
+### Original Skynet-IADS Project
+
+This repository is based on and extends Skynet-IADS.
+
+Original project:
+
+```text
+https://github.com/walder/Skynet-IADS
+```
+
+The `Skynet-IADS/` submodule in this repository contains the customized source history used by this project.
+
+### Public Feature Status
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Base Skynet-IADS network | Supported | Based on the original Skynet-IADS project. |
+| Mobile SAM patrol | Supported | Patrol, deploy, withdraw, redeploy. |
+| Sibling SAM coordination | Supported | Primary / standby / takeover / rotation. |
+| ASAM accompanying SAM | Supported | Controls radar and engagement, not movement routes. |
+| EWR reporting | Supported | Periodic contact reports for players. |
+| Skynet weapon radar master switch | Supported | Can disable weapon radars while keeping EW sensors active. |
+| EA-18G / EW scripts | Partially supported | Depends on mission loadout and optional scripts. |
+| GPS spoofing / GPS jamming | Not public-supported for now | Experimental code may exist, but this README does not instruct users to enable it. |
+
+### Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `skynet-iads-compiled-ea18g.lua` | Single-file runtime imported into DCS missions. |
+| `my-iads-setup.lua` | Mission-side configuration. Most users edit this file. |
+| `mist_4_5_126.lua` | MIST dependency. Load before Skynet. |
+| `advanced_jammer_simulation.lua` | Optional DCS-side EW simulation script. |
+| `Skynet-IADS/` | Customized Skynet-IADS source submodule. |
+| `Skynet-IADS-analysis/` | Design notes, module maps, runtime flow, and development governance. |
+| `advanced_ew_simulator/` | External EW simulation tool. |
+| `campaign/black_valley/` | Campaign documents and story scripts. |
+
+### Quick Start
+
+Clone with submodules:
 
 ```powershell
 git clone --recurse-submodules git@github.com:youshangdekongjunsiling-spec/DCS-Advanced-IADS.git
+cd DCS-Advanced-IADS
 ```
 
-如果已经普通克隆：
+If you already cloned without submodules:
 
 ```powershell
 git submodule update --init --recursive
 ```
 
-远端分支说明：
+### Mission Editor Load Order
+
+Use `DO SCRIPT FILE` in this order:
 
 ```text
-main                 项目主分支
-master               项目主分支镜像
-skynet-iads-master   定制版 Skynet-IADS 源码历史
+1. mist_4_5_126.lua
+2. skynet-iads-compiled-ea18g.lua
+3. advanced_jammer_simulation.lua                optional
+4. EA18G_EW_Script_improved_by_flyingsampig.lua  optional
+5. my-iads-setup.lua
 ```
 
-## 常见问题
-
-### 我只想在任务里用，应该导入哪些文件？
-
-最少导入：
+Minimal IADS setup:
 
 ```text
-mist_4_5_126.lua
-skynet-iads-compiled-ea18g.lua
-my-iads-setup.lua
+1. mist_4_5_126.lua
+2. skynet-iads-compiled-ea18g.lua
+3. my-iads-setup.lua
 ```
 
-需要 EA-18G 电子战时，再加入：
+### Group Naming Rules
+
+The setup script identifies DCS groups by name prefix.
+
+| Prefix | Type | Behaviour |
+| --- | --- | --- |
+| `EW` | Fixed early warning radar | Provides IADS sensor input. |
+| `MEW` | Mobile early warning radar | Reserved for mobile EWR behaviour. |
+| `SAM` | Regular SAM site | Skynet manages radar, engagement, and HARM reaction. |
+| `MSAM` | Mobile SAM site | Patrol, deploy, sibling coordination, rotation. |
+| Other names | ASAM candidate | May be registered if the group contains supported SAM units. |
+
+Example:
 
 ```text
-advanced_jammer_simulation.lua
-EA18G_EW_Script_improved_by_flyingsampig.lua
+EW-1-Main-Valley-Radar
+SAM-1-SA15-Point-Defence
+MSAM-1-SA11-Ambush-North
+MSAM-2-SA11-Ambush-North
 ```
 
-### 我需要改 `.miz` 吗？
+### How To Write `my-iads-setup.lua`
 
-不需要。项目默认不直接修改 `.miz`。你在 Mission Editor 中用 `DO SCRIPT FILE` 选择脚本即可。
+`my-iads-setup.lua` is the mission configuration file. In most cases, you should copy the repository version and only edit the top configuration block.
 
-### 为什么 GitHub 上还有 `Skynet-IADS` 子模块？
-
-因为 Skynet 定制源码很大，且有独立历史。根仓库记录当前使用的 Skynet 提交，`skynet-iads-master` 分支保存这部分源码历史。
-
-### 为什么不把所有内容打成一个 Lua？
-
-对任务导入来说已经有完整单文件：`skynet-iads-compiled-ea18g.lua`。  
-源码拆分是为了开发、排障和回退。
-
-### 可以用于任何阵营吗？
-
-可以改，但当前 `my-iads-setup.lua` 默认创建的是：
+#### 1. Basic IADS Settings
 
 ```lua
 local IADS_NAME = "RED"
+local EW_PREFIXES = { "EW", "MEW" }
+local SAM_PREFIXES = { "SAM", "MSAM" }
+local MOBILE_EW_PREFIX = "MEW"
+local MOBILE_SAM_PREFIX = "MSAM"
 ```
 
-你可以按任务需要复制并修改阵营、群组名前缀和 family 配置。
+Use `RED` for a red-side IADS. For a blue-side mission, copy the setup and change the name and group prefixes as needed.
 
-### 是否完全模拟真实电子战？
+#### 2. Feature Switches
 
-不是。DCS 脚本接口有边界。本项目优先追求“可玩、可测试、可调参”的任务效果，并在日志中尽量暴露决策原因。
+```lua
+local ENABLE_RADIO_MENU = true
+local ENABLE_MOBILE_PATROL = true
+local ENABLE_EWR_REPORTER = true
+local ENABLE_SIBLING_COORDINATION = true
+local ENABLE_TACTICAL_RUNTIME_DEBUG = false
+local ENABLE_SKYNET_MASTER_SWITCH = true
+local ENABLE_GPS_SPOOFING = false
+```
 
-## 许可证
+For public missions, keep GPS spoofing disabled until the feature is validated for your mission.
 
-本仓库包含原 Skynet-IADS 派生内容、任务脚本和自定义工具。使用前请同时查看：
+#### 3. Sibling Families
+
+```lua
+local SIBLING_FAMILIES = {
+    {
+        name = "North SA-11 Ambush Pair",
+        members = {
+            "MSAM-1-SA11-Ambush-North",
+            "MSAM-2-SA11-Ambush-North",
+        },
+        mode = "ambush",
+        primary = "MSAM-1-SA11-Ambush-North",
+        denialAlertDistanceNm = 25,
+        passiveAction = "relocate",
+        rotationIntervalSeconds = 120,
+    },
+}
+```
+
+Important rules:
+
+- `members` must contain DCS group names, not unit names.
+- Names must match exactly.
+- MSAM groups need route points if you expect them to patrol.
+- Do not put the same MSAM group into two families.
+
+#### 4. Create The IADS
+
+```lua
+redIADS = SkynetIADS:create(IADS_NAME)
+redIADS:setUpdateInterval(1)
+```
+
+The repository setup file already contains the full auto-registration logic for SAM, EW, MSAM, ASAM, EWR reporter, radio menus, and sibling coordination.
+
+### Logs And Troubleshooting
+
+Useful log files:
+
+```text
+C:\Users\<your user>\Saved Games\DCS\Logs\dcs.log
+C:\Users\<your user>\Saved Games\DCS\Logs\Skynet\skynet-order-trace-RED.log
+```
+
+Common checks:
+
+| Symptom | Check |
+| --- | --- |
+| No SAM activity | Verify MIST, compiled Skynet, and setup load order. |
+| `module missing` message | You probably loaded an old compiled Lua. |
+| MSAM does not patrol | Check route points and `MSAM` prefix. |
+| Family coordination does not work | Check exact group names in `SIBLING_FAMILIES`. |
+| ASAM is not registered | Check whether the group contains Skynet-supported SAM units. |
+| SA-15 shuts down but does not move under HARM | This may be a DCS native AI limitation after firing. |
+
+### Rebuilding The Compiled Runtime
+
+Only developers need this step.
+
+```powershell
+cd Skynet-IADS\build-tools
+.\build-compiled-script.ps1 ea18g-your-build-name
+Copy-Item ..\demo-missions\skynet-iads-compiled.lua ..\..\skynet-iads-compiled-ea18g.lua -Force
+```
+
+Do not commit source changes without updating the compiled root runtime.
+
+### License
+
+This repository contains original mission scripts, custom tools, and a modified Skynet-IADS subtree. Read:
 
 - `LICENSE`
 - `Skynet-IADS/LICENSE.md`
 
-## 鸣谢
+### Credits
 
-- Skynet-IADS 原项目和社区文档。
-- DCS Mission Scripting 社区。
-- 多轮实测中暴露问题并推动修正的任务测试流程。
+- Original Skynet-IADS by walder and contributors.
+- DCS Mission Scripting community.
+- Mission testing feedback that drove the mobile IADS and sibling coordination work.
