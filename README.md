@@ -15,6 +15,7 @@ DCS Advanced IADS 是一个面向 DCS World 任务制作者的高级防空与电
 - 让 SA-11、SA-15 等防空单位具备更复杂的开关机、机动和交接行为。
 - 在任务中组织固定预警雷达、机动防空、伴随防空和剧情控制。
 - 为多人 PVP / PVE 任务提供更难被一次性摧毁的防空网络。
+- 参考“黑谷行动”任务模板，体验一套多层次防御体系如何在实战任务中运作。
 
 ### 原始项目声明
 
@@ -56,8 +57,8 @@ https://github.com/walder/Skynet-IADS
 | `advanced_jammer_simulation.lua` | DCS 内电子战模拟脚本。 |
 | `Skynet-IADS/` | 定制 Skynet-IADS 源码子仓库。用于开发和重新编译。 |
 | `Skynet-IADS-analysis/` | 模块图、流程、开发治理和问题记录。 |
-| `advanced_ew_simulator/` | 外部高级电子战模拟器。 |
-| `campaign/black_valley/` | 黑谷行动战役文档和剧情脚本。 |
+| `advanced_ew_simulator/` | 高级电子战干扰成功距离模拟器，用于研究干扰参数、成功概率和距离窗口。 |
+| `campaign/black_valley/` | “黑谷行动”展示任务资料。该任务尚未完全完成，但已经提供完整的多层次 IADS 防御体系模板。 |
 | `*.miz` | 示例或测试任务文件。 |
 
 ### 快速开始
@@ -346,6 +347,28 @@ advanced_ew_simulator/jammer_research_main.py
 advanced_ew_simulator/build_exe.py
 ```
 
+这个工具的重点不是替代 DCS 内脚本，而是帮助任务制作者在任务外估算电子战参数：
+
+- 不同干扰强度下的有效距离窗口。
+- 干扰成功概率随距离和参数变化的趋势。
+- 雷达、干扰机和模板参数的对照关系。
+- 任务平衡时，玩家需要接近到多远才可能获得有效压制。
+
+如果你只想玩任务，不需要运行它；如果你要调任务难度或设计电子战玩法，建议先用它估算参数，再回到 DCS 里实测。
+
+### 黑谷行动展示任务
+
+`campaign/black_valley/` 是本项目用于展示新 IADS 系统能力的一整套任务设计资料。
+
+当前状态：
+
+- 任务还没有完全完成。
+- 多层次防御体系模板已经完整。
+- 适合用来体验固定预警、机动防空、伴随防空、兄弟组交接和任务剧情控制如何组合。
+- 也适合作为你制作自己任务时的结构参考。
+
+它不是一个“只放几个 SAM 的测试场”，而是面向实际任务体验设计的防空体系模板。
+
 ---
 
 ## English Version
@@ -355,6 +378,8 @@ advanced_ew_simulator/build_exe.py
 DCS Advanced IADS is a DCS World mission-scripting project based on Skynet-IADS. It adds mission-oriented behaviour for mobile SAM groups, sibling SAM coordination, rotating deployment, accompanying air defence, EWR reporting, and story-controlled weapon radar activation.
 
 The goal is not to replace DCS AI completely. The goal is to provide a more dynamic, testable, and mission-friendly IADS layer for modern air-to-ground scenarios.
+
+The `Black Valley` campaign materials are included as a showcase mission set for the new IADS system. The campaign is not fully finished yet, but its layered defence template is already useful for testing and experiencing the system.
 
 ### Original Skynet-IADS Project
 
@@ -391,8 +416,8 @@ The `Skynet-IADS/` submodule in this repository contains the customized source h
 | `advanced_jammer_simulation.lua` | Optional DCS-side EW simulation script. |
 | `Skynet-IADS/` | Customized Skynet-IADS source submodule. |
 | `Skynet-IADS-analysis/` | Design notes, module maps, runtime flow, and development governance. |
-| `advanced_ew_simulator/` | External EW simulation tool. |
-| `campaign/black_valley/` | Campaign documents and story scripts. |
+| `advanced_ew_simulator/` | External EW jamming success-distance simulator for parameter studies. |
+| `campaign/black_valley/` | Black Valley showcase mission documents and scripts. The campaign is unfinished, but the layered defence template is usable. |
 
 ### Quick Start
 
@@ -546,6 +571,51 @@ Copy-Item ..\demo-missions\skynet-iads-compiled.lua ..\..\skynet-iads-compiled-e
 ```
 
 Do not commit source changes without updating the compiled root runtime.
+
+### Advanced EW Simulator
+
+The external simulator is located in:
+
+```text
+advanced_ew_simulator/
+```
+
+Runnable build:
+
+```text
+advanced_ew_simulator/dist/AdvancedEWSimulator/AdvancedEWSimulator.exe
+```
+
+Source entry points:
+
+```text
+advanced_ew_simulator/jammer_research_ui.py
+advanced_ew_simulator/jammer_research_main.py
+advanced_ew_simulator/build_exe.py
+```
+
+Use it to estimate:
+
+- effective jamming distance windows;
+- success probability trends under different jammer strengths;
+- radar / jammer / template parameter relationships;
+- how close players should need to get before jamming becomes effective.
+
+You do not need it to simply play a mission. It is mainly a mission-design and balancing tool.
+
+### Black Valley Showcase
+
+`campaign/black_valley/` contains the Black Valley mission and design materials.
+
+The mission set is not fully complete yet, but its layered IADS defence template is complete enough to demonstrate:
+
+- fixed early warning radars;
+- mobile SAM patrol and deployment;
+- sibling SAM takeover and rotation;
+- accompanying air defence;
+- story-level IADS control.
+
+Use it as a reference template when building your own mission.
 
 ### License
 
