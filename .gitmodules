@@ -1,0 +1,4 @@
+[submodule "Skynet-IADS"]
+	path = Skynet-IADS
+	url = git@github.com:youshangdekongjunsiling-spec/DCS-Advanced-IADS.git
+	branch = skynet-iads-master
