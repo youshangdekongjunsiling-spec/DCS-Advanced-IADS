@@ -9,6 +9,25 @@
 
 DCS Advanced IADS 是一个面向 DCS World 任务制作者的高级防空与电子战脚本项目。它基于 Skynet-IADS 扩展，重点解决动态防空、机动防空阵地、兄弟组交接、轮换部署、伴随防空和任务剧情控制等问题。
 
+### 设计理念：让 HARM 重新具有战术意义
+
+传统 DCS 空地对抗里，反辐射作战经常落入两个极端。
+
+第一种极端是地面雷达过于容易被摧毁。防空系统持续开机，玩家发射 HARM 后很容易直接摧毁核心雷达，整个防空网迅速崩溃。
+
+第二种极端出现在加入 HARM 拦截系统的任务里。每一发反辐射导弹都可能被 SA-15、NASAMS 或其他点防御系统拦截，防空阵地可以长期保持全程开机，玩家发射 HARM 只是在消耗弹药，几乎得不到战术反馈。
+
+本项目试图在这两者之间建立更接近现实的空地对抗逻辑：
+
+- HARM 不再被设计为轻松秒杀整个防空网的按钮。
+- 防空系统也不再能无代价全程开机并稳定拦截每一发 HARM。
+- 每一发 HARM 都应该迫使被威胁的防空单位关机、机动、规避或转移。
+- HARM 的核心价值是制造雷达沉默和阵地转移窗口，为后续突防、压制或打击创造机会。
+
+因此，在这套 IADS 里，反辐射导弹即使没有直接摧毁目标，也应该让玩家切实感受到作用：目标关机了、阵地转移了、防区出现了短暂缺口。它不会像传统简单任务那样一发解决全部问题，也不会像全拦截任务那样变成毫无反馈的空耗弹药。
+
+这套逻辑让空地对抗更有策略性：玩家需要规划 HARM 发射时机、压制窗口、后续突防路线和多轮打击节奏；防空方则通过关机、转移、兄弟组接替和轮换部署来维持体系生存。
+
 本项目适合用于：
 
 - 制作更有压迫感的现代 SEAD / DEAD 任务。
@@ -34,32 +53,33 @@ https://github.com/walder/Skynet-IADS
 
 ### 当前公开支持的功能
 
-| 功能 | 状态 | 说明 |
-| --- | --- | --- |
-| Skynet-IADS 基础防空网 | 支持 | 基于原 Skynet-IADS。 |
-| MSAM 机动防空 | 支持 | 机动巡逻、部署、撤收、重新部署。 |
-| Sibling family 兄弟组交接 | 支持 | 主战/备用/接防/轮换。 |
-| ASAM 伴随防空 | 支持 | 管理雷达和接敌，不接管原生路线。 |
-| EWR 情报播报 | 支持 | 定时向玩家播报早警雷达发现目标。 |
-| Skynet 武器雷达总开关 | 支持 | 可剧情锁定武器雷达，不影响 EW 情报雷达。 |
-| EA-18G / 电子战脚本 | 部分支持 | 取决于任务是否加载相关脚本。 |
-| GPS 干扰 / GPS 欺骗 | 暂不作为公开功能 | 相关实验代码可能存在，但 README 暂不指导启用，公开任务建议关闭。 |
+| 功能                   | 状态       | 说明                                   |
+| -------------------- | -------- | ------------------------------------ |
+| Skynet-IADS 基础防空网    | 支持       | 基于原 Skynet-IADS。                     |
+| MSAM 机动防空            | 支持       | 机动巡逻、部署、撤收、重新部署。                     |
+| Sibling family 兄弟组交接 | 支持       | 主战/备用/接防/轮换。                         |
+| HARM 压制驱动规避          | 支持       | HARM 会迫使受威胁单位关机、规避、转移或交接。             |
+| ASAM 伴随防空            | 支持       | 管理雷达和接敌，不接管原生路线。                     |
+| EWR 情报播报             | 支持       | 定时向玩家播报早警雷达发现目标。                     |
+| Skynet 武器雷达总开关       | 支持       | 可剧情锁定武器雷达，不影响 EW 情报雷达。               |
+| EA-18G / 电子战脚本       | 部分支持     | 取决于任务是否加载相关脚本。                       |
+| GPS 干扰 / GPS 欺骗      | 暂不作为公开功能 | 相关实验代码可能存在，但 README 暂不指导启用，公开任务建议关闭。 |
 
 > 注意：GPS 干扰功能仍属于实验方向。DCS 没有稳定公开的原生 GPS 干扰接口，因此本 README 暂时不把它列为可直接使用功能。
 
 ### 仓库结构
 
-| 路径 | 作用 |
-| --- | --- |
-| `skynet-iads-compiled-ea18g.lua` | DCS 任务中直接导入的完整 Skynet 运行时。普通用户优先使用它。 |
-| `my-iads-setup.lua` | 任务侧 IADS 配置入口。你主要需要修改这个文件。 |
-| `mist_4_5_126.lua` | MIST 依赖库，必须在 Skynet 之前加载。 |
-| `advanced_jammer_simulation.lua` | DCS 内电子战模拟脚本。 |
-| `Skynet-IADS/` | 定制 Skynet-IADS 源码子仓库。用于开发和重新编译。 |
-| `Skynet-IADS-analysis/` | 模块图、流程、开发治理和问题记录。 |
-| `advanced_ew_simulator/` | 高级电子战干扰成功距离模拟器，用于研究干扰参数、成功概率和距离窗口。 |
-| `campaign/black_valley/` | “黑谷行动”展示任务资料。该任务尚未完全完成，但已经提供完整的多层次 IADS 防御体系模板。 |
-| `*.miz` | 示例或测试任务文件。 |
+| 路径                               | 作用                                              |
+| -------------------------------- | ----------------------------------------------- |
+| `skynet-iads-compiled-ea18g.lua` | DCS 任务中直接导入的完整 Skynet 运行时。普通用户优先使用它。            |
+| `my-iads-setup.lua`              | 任务侧 IADS 配置入口。你主要需要修改这个文件。                      |
+| `mist_4_5_126.lua`               | MIST 依赖库，必须在 Skynet 之前加载。                       |
+| `advanced_jammer_simulation.lua` | DCS 内电子战模拟脚本。                                   |
+| `Skynet-IADS/`                   | 定制 Skynet-IADS 源码子仓库。用于开发和重新编译。                 |
+| `Skynet-IADS-analysis/`          | 模块图、流程、开发治理和问题记录。                               |
+| `advanced_ew_simulator/`         | 高级电子战干扰成功距离模拟器，用于研究干扰参数、成功概率和距离窗口。              |
+| `campaign/black_valley/`         | “黑谷行动”展示任务资料。该任务尚未完全完成，但已经提供完整的多层次 IADS 防御体系模板。 |
+| `*.miz`                          | 示例或测试任务文件。                                      |
 
 ### 快速开始
 
@@ -106,13 +126,13 @@ git submodule update --init --recursive
 
 脚本通过 DCS Mission Editor 中的群组名识别单位类型。
 
-| 前缀 | 类型 | 脚本行为 |
-| --- | --- | --- |
-| `EW` | 固定早警雷达 | 提供 IADS 情报。 |
-| `MEW` | 机动早警雷达 | 机动早警扩展预留。 |
-| `SAM` | 常规防空阵地 | Skynet 管理开关机、接敌和 HARM 反应。 |
-| `MSAM` | 机动防空阵地 | 巡逻、部署、兄弟组交接、轮换机动。 |
-| 其他名称 | ASAM 候选 | 如果含有效防空单位，可注册为伴随防空。 |
+| 前缀     | 类型      | 脚本行为                      |
+| ------ | ------- | ------------------------- |
+| `EW`   | 固定早警雷达  | 提供 IADS 情报。               |
+| `MEW`  | 机动早警雷达  | 机动早警扩展预留。                 |
+| `SAM`  | 常规防空阵地  | Skynet 管理开关机、接敌和 HARM 反应。 |
+| `MSAM` | 机动防空阵地  | 巡逻、部署、兄弟组交接、轮换机动。         |
+| 其他名称   | ASAM 候选 | 如果含有效防空单位，可注册为伴随防空。       |
 
 示例：
 
@@ -193,15 +213,15 @@ local SIBLING_FAMILIES = {
 
 字段解释：
 
-| 字段 | 作用 |
-| --- | --- |
-| `name` | family 名称，只用于日志和识别。 |
-| `members` | 必须完整匹配 DCS 群组名。 |
-| `mode` | `ambush` 或 `denial`。伏击型建议 `ambush`。 |
-| `primary` | 默认主战组。后续仲裁会根据距离和状态切换。 |
-| `denialAlertDistanceNm` | 警戒距离，单位海里。 |
-| `passiveAction` | 非主战成员行为，常用 `relocate`。 |
-| `rotationIntervalSeconds` | 部署后多久触发轮换。 |
+| 字段                        | 作用                                  |
+| ------------------------- | ----------------------------------- |
+| `name`                    | family 名称，只用于日志和识别。                 |
+| `members`                 | 必须完整匹配 DCS 群组名。                     |
+| `mode`                    | `ambush` 或 `denial`。伏击型建议 `ambush`。 |
+| `primary`                 | 默认主战组。后续仲裁会根据距离和状态切换。               |
+| `denialAlertDistanceNm`   | 警戒距离，单位海里。                          |
+| `passiveAction`           | 非主战成员行为，常用 `relocate`。              |
+| `rotationIntervalSeconds` | 部署后多久触发轮换。                          |
 
 常见错误：
 
@@ -300,14 +320,14 @@ C:\Users\<你的用户名>\Saved Games\DCS\Logs\Skynet\skynet-order-trace-RED.lo
 
 常见问题：
 
-| 现象 | 检查项 |
-| --- | --- |
-| 完全没有防空响应 | 检查 MIST、compiled Skynet、setup 加载顺序。 |
-| 提示 `module missing` | Mission Editor 可能加载了旧版 compiled Lua。 |
-| MSAM 不巡逻 | 检查是否有航路点，群组名是否以 `MSAM` 开头。 |
-| MSAM family 不工作 | 检查 `SIBLING_FAMILIES.members` 是否完全匹配群组名。 |
-| ASAM 没注册 | 检查群组内单位是否被 Skynet 数据库支持。 |
-| SA-15 被 HARM 攻击后不移动 | 可能是 DCS 原生 AI 限制，尤其是发射后停车。 |
+| 现象                  | 检查项                                      |
+| ------------------- | ---------------------------------------- |
+| 完全没有防空响应            | 检查 MIST、compiled Skynet、setup 加载顺序。      |
+| 提示 `module missing` | Mission Editor 可能加载了旧版 compiled Lua。     |
+| MSAM 不巡逻            | 检查是否有航路点，群组名是否以 `MSAM` 开头。               |
+| MSAM family 不工作     | 检查 `SIBLING_FAMILIES.members` 是否完全匹配群组名。 |
+| ASAM 没注册            | 检查群组内单位是否被 Skynet 数据库支持。                 |
+| SA-15 被 HARM 攻击后不移动 | 可能是 DCS 原生 AI 限制，尤其是发射后停车。               |
 
 ### 重新编译 Skynet 运行时
 
@@ -358,16 +378,14 @@ advanced_ew_simulator/build_exe.py
 
 ### 黑谷行动展示任务
 
-`campaign/black_valley/` 是本项目用于展示新 IADS 系统能力的一整套任务设计资料。
+`campaign/black_valley/` 是本项目用于展示新 IADS 系统能力的一整套任务设计资料，聚焦于架空的1990年前后的贝卡谷地，以色列-美国联合海空军部队需要应对在某东方国家支持下的一整个苏制装甲师和其完整附属防空部队的挑战。
 
 当前状态：
 
-- 任务还没有完全完成。
-- 多层次防御体系模板已经完整。
+- 任务1-3已经完成。
+- 任务 黑谷行动模板.miz 里面已经有了完整的多层次防御体系模板。
 - 适合用来体验固定预警、机动防空、伴随防空、兄弟组交接和任务剧情控制如何组合。
-- 也适合作为你制作自己任务时的结构参考。
-
-它不是一个“只放几个 SAM 的测试场”，而是面向实际任务体验设计的防空体系模板。
+- 也适合作为新制作防空体系时的结构参考。
 
 ---
 
@@ -379,7 +397,24 @@ DCS Advanced IADS is a DCS World mission-scripting project based on Skynet-IADS.
 
 The goal is not to replace DCS AI completely. The goal is to provide a more dynamic, testable, and mission-friendly IADS layer for modern air-to-ground scenarios.
 
-The `Black Valley` campaign materials are included as a showcase mission set for the new IADS system. The campaign is not fully finished yet, but its layered defence template is already useful for testing and experiencing the system.
+The `Black Valley` campaign materials are included as a showcase mission set for the new IADS system. Missions 1-3 are complete, and the template mission already contains a complete layered IADS defence system for testing and experiencing the system.
+
+### Design Philosophy: Making HARM Matter Again
+
+Traditional DCS air-to-ground missions often fall into one of two extremes.
+
+In the first extreme, ground radars are too easy to kill. The air defence network keeps emitting, a HARM is launched, the key radar dies, and the whole system collapses quickly.
+
+In the second extreme, missions add aggressive HARM interception. Every anti-radiation missile can be intercepted by SA-15s, NASAMS, or other point-defence systems. The SAM network can then stay online for the entire fight, and HARM shots become expensive ammunition with almost no tactical feedback.
+
+This project is designed around a different logic that is closer to real SEAD behaviour:
+
+- HARM should not be a simple button that deletes an entire air defence network.
+- SAM systems should not be able to remain online forever while reliably intercepting every HARM.
+- Each HARM shot should force the threatened air defence unit to shut down, evade, relocate, or hand off the fight.
+- The main value of HARM is to create radar-silence and relocation windows for follow-up penetration, suppression, or strike actions.
+
+In this IADS, an anti-radiation missile does not need to directly destroy its target to matter. If it forces the target to go dark, move, or give up the engagement for a short time, it has created a real tactical opening. The result is a more strategic air-to-ground fight: attackers must plan HARM timing, suppression windows, ingress routes, and follow-up strikes, while defenders survive through shutdown, relocation, sibling takeover, and rotating deployment.
 
 ### Original Skynet-IADS Project
 
@@ -395,29 +430,30 @@ The `Skynet-IADS/` submodule in this repository contains the customized source h
 
 ### Public Feature Status
 
-| Feature | Status | Notes |
-| --- | --- | --- |
-| Base Skynet-IADS network | Supported | Based on the original Skynet-IADS project. |
-| Mobile SAM patrol | Supported | Patrol, deploy, withdraw, redeploy. |
-| Sibling SAM coordination | Supported | Primary / standby / takeover / rotation. |
-| ASAM accompanying SAM | Supported | Controls radar and engagement, not movement routes. |
-| EWR reporting | Supported | Periodic contact reports for players. |
-| Skynet weapon radar master switch | Supported | Can disable weapon radars while keeping EW sensors active. |
-| EA-18G / EW scripts | Partially supported | Depends on mission loadout and optional scripts. |
-| GPS spoofing / GPS jamming | Not public-supported for now | Experimental code may exist, but this README does not instruct users to enable it. |
+| Feature                           | Status                       | Notes                                                                              |
+| --------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------- |
+| Base Skynet-IADS network          | Supported                    | Based on the original Skynet-IADS project.                                         |
+| Mobile SAM patrol                 | Supported                    | Patrol, deploy, withdraw, redeploy.                                                |
+| Sibling SAM coordination          | Supported                    | Primary / standby / takeover / rotation.                                           |
+| HARM-driven evasion               | Supported                    | HARM threats force shutdown, evasion, relocation, or handoff.                      |
+| ASAM accompanying SAM             | Supported                    | Controls radar and engagement, not movement routes.                                |
+| EWR reporting                     | Supported                    | Periodic contact reports for players.                                              |
+| Skynet weapon radar master switch | Supported                    | Can disable weapon radars while keeping EW sensors active.                         |
+| EA-18G / EW scripts               | Partially supported          | Depends on mission loadout and optional scripts.                                   |
+| GPS spoofing / GPS jamming        | Not public-supported for now | Experimental code may exist, but this README does not instruct users to enable it. |
 
 ### Repository Layout
 
-| Path | Purpose |
-| --- | --- |
-| `skynet-iads-compiled-ea18g.lua` | Single-file runtime imported into DCS missions. |
-| `my-iads-setup.lua` | Mission-side configuration. Most users edit this file. |
-| `mist_4_5_126.lua` | MIST dependency. Load before Skynet. |
-| `advanced_jammer_simulation.lua` | Optional DCS-side EW simulation script. |
-| `Skynet-IADS/` | Customized Skynet-IADS source submodule. |
-| `Skynet-IADS-analysis/` | Design notes, module maps, runtime flow, and development governance. |
-| `advanced_ew_simulator/` | External EW jamming success-distance simulator for parameter studies. |
-| `campaign/black_valley/` | Black Valley showcase mission documents and scripts. The campaign is unfinished, but the layered defence template is usable. |
+| Path                             | Purpose                                                                                                                      |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `skynet-iads-compiled-ea18g.lua` | Single-file runtime imported into DCS missions.                                                                              |
+| `my-iads-setup.lua`              | Mission-side configuration. Most users edit this file.                                                                       |
+| `mist_4_5_126.lua`               | MIST dependency. Load before Skynet.                                                                                         |
+| `advanced_jammer_simulation.lua` | Optional DCS-side EW simulation script.                                                                                      |
+| `Skynet-IADS/`                   | Customized Skynet-IADS source submodule.                                                                                     |
+| `Skynet-IADS-analysis/`          | Design notes, module maps, runtime flow, and development governance.                                                         |
+| `advanced_ew_simulator/`         | External EW jamming success-distance simulator for parameter studies.                                                        |
+| `campaign/black_valley/`         | Black Valley showcase mission documents and scripts. Missions 1-3 are complete, and the template mission contains a complete layered IADS defence system. |
 
 ### Quick Start
 
@@ -458,13 +494,13 @@ Minimal IADS setup:
 
 The setup script identifies DCS groups by name prefix.
 
-| Prefix | Type | Behaviour |
-| --- | --- | --- |
-| `EW` | Fixed early warning radar | Provides IADS sensor input. |
-| `MEW` | Mobile early warning radar | Reserved for mobile EWR behaviour. |
-| `SAM` | Regular SAM site | Skynet manages radar, engagement, and HARM reaction. |
-| `MSAM` | Mobile SAM site | Patrol, deploy, sibling coordination, rotation. |
-| Other names | ASAM candidate | May be registered if the group contains supported SAM units. |
+| Prefix      | Type                       | Behaviour                                                    |
+| ----------- | -------------------------- | ------------------------------------------------------------ |
+| `EW`        | Fixed early warning radar  | Provides IADS sensor input.                                  |
+| `MEW`       | Mobile early warning radar | Reserved for mobile EWR behaviour.                           |
+| `SAM`       | Regular SAM site           | Skynet manages radar, engagement, and HARM reaction.         |
+| `MSAM`      | Mobile SAM site            | Patrol, deploy, sibling coordination, rotation.              |
+| Other names | ASAM candidate             | May be registered if the group contains supported SAM units. |
 
 Example:
 
@@ -551,14 +587,14 @@ C:\Users\<your user>\Saved Games\DCS\Logs\Skynet\skynet-order-trace-RED.log
 
 Common checks:
 
-| Symptom | Check |
-| --- | --- |
-| No SAM activity | Verify MIST, compiled Skynet, and setup load order. |
-| `module missing` message | You probably loaded an old compiled Lua. |
-| MSAM does not patrol | Check route points and `MSAM` prefix. |
-| Family coordination does not work | Check exact group names in `SIBLING_FAMILIES`. |
-| ASAM is not registered | Check whether the group contains Skynet-supported SAM units. |
-| SA-15 shuts down but does not move under HARM | This may be a DCS native AI limitation after firing. |
+| Symptom                                       | Check                                                        |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| No SAM activity                               | Verify MIST, compiled Skynet, and setup load order.          |
+| `module missing` message                      | You probably loaded an old compiled Lua.                     |
+| MSAM does not patrol                          | Check route points and `MSAM` prefix.                        |
+| Family coordination does not work             | Check exact group names in `SIBLING_FAMILIES`.               |
+| ASAM is not registered                        | Check whether the group contains Skynet-supported SAM units. |
+| SA-15 shuts down but does not move under HARM | This may be a DCS native AI limitation after firing.         |
 
 ### Rebuilding The Compiled Runtime
 
@@ -605,9 +641,16 @@ You do not need it to simply play a mission. It is mainly a mission-design and b
 
 ### Black Valley Showcase
 
-`campaign/black_valley/` contains the Black Valley mission and design materials.
+`campaign/black_valley/` contains the Black Valley mission and design materials. It is a fictional late-Cold-War / early-1990s Bekaa Valley scenario in which an Israeli-US joint air and naval force faces a Soviet-style armored division and its attached layered air defence network, supported by an unnamed eastern power.
 
-The mission set is not fully complete yet, but its layered IADS defence template is complete enough to demonstrate:
+Current state:
+
+- missions 1-3 are complete;
+- the `Black Valley Operation Template.miz` mission already contains a complete layered IADS defence template;
+- the mission set is suitable for experiencing how fixed EWRs, mobile SAMs, accompanying air defence, sibling SAM handoff, and story-level IADS control work together;
+- it can also be used as a structural reference when building a new air defence system.
+
+The template demonstrates:
 
 - fixed early warning radars;
 - mobile SAM patrol and deployment;
